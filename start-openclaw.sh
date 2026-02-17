@@ -94,6 +94,19 @@ if r2_configured; then
         rclone copy "r2:${R2_BUCKET}/skills/" "$SKILLS_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: skills restore failed with exit code $?"
         echo "Skills restored"
     fi
+
+    # Symlink SSH keys from workspace (persisted via workspace R2 sync)
+    # See: docs/onboarding/SSH-Keys.md
+    WORKSPACE_SSH="$WORKSPACE_DIR/.ssh"
+    if [ -d "$WORKSPACE_SSH" ]; then
+        echo "Linking SSH keys from workspace..."
+        rm -rf /root/.ssh
+        ln -s "$WORKSPACE_SSH" /root/.ssh
+        chmod 700 "$WORKSPACE_SSH"
+        chmod 600 "$WORKSPACE_SSH"/* 2>/dev/null || true
+        chmod 644 "$WORKSPACE_SSH"/*.pub 2>/dev/null || true
+        echo "SSH keys linked"
+    fi
 else
     echo "R2 not configured, starting fresh"
 fi
@@ -153,6 +166,10 @@ try {
 
 config.gateway = config.gateway || {};
 config.channels = config.channels || {};
+config.commands = {
+  ...config.commands,
+  restart: true,
+};
 
 // Gateway configuration
 config.gateway.port = 18789;
@@ -216,6 +233,67 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
         console.log('AI Gateway model override: provider=' + providerName + ' model=' + modelId + ' via ' + baseUrl);
     } else {
         console.warn('CF_AI_GATEWAY_MODEL set but missing required config (account ID, gateway ID, or API key)');
+    }
+}
+
+// Default model override (for direct API key users, not using AI Gateway)
+// e.g. DEFAULT_MODEL=google/gemini-3-pro-preview
+if (process.env.DEFAULT_MODEL) {
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.model = { primary: process.env.DEFAULT_MODEL };
+    console.log('Default model override:', process.env.DEFAULT_MODEL);
+}
+
+// Model allowlist + fallbacks for /model command
+// When multiple providers are configured, populate the model catalog (allowlist)
+// so users can switch between them at runtime via /model, and add fallback models.
+// Format: agents.defaults.models is an object keyed by model ID, not an array.
+{
+    const available = [];
+    if (process.env.GOOGLE_API_KEY) {
+        available.push(
+            { id: 'google/gemini-3-flash-preview', alias: 'Gemini 3 Flash' },
+            { id: 'google/gemini-3-pro-preview', alias: 'Gemini 3 Pro' },
+            { id: 'google/gemini-2.5-flash', alias: 'Gemini 2.5 Flash' },
+            { id: 'google/gemini-2.5-pro', alias: 'Gemini 2.5 Pro' },
+            { id: 'google/gemini-2.5-flash-lite', alias: 'Gemini 2.5 Flash Lite' }
+        );
+    }
+    if (process.env.ANTHROPIC_API_KEY) {
+        available.push(
+            { id: 'anthropic/claude-haiku-4-5', alias: 'Claude Haiku' },
+            { id: 'anthropic/claude-sonnet-4-5', alias: 'Claude Sonnet' },
+            { id: 'anthropic/claude-opus-4-6', alias: 'Claude Opus' }
+        );
+    }
+    if (process.env.OPENAI_API_KEY) {
+        available.push({ id: 'openai/gpt-4o', alias: 'GPT-4o' });
+    }
+
+    if (available.length >= 2) {
+        config.agents = config.agents || {};
+        config.agents.defaults = config.agents.defaults || {};
+
+        // Build model catalog (object keyed by model ID) — acts as allowlist for /model
+        var catalog = {};
+        available.forEach(function(m) {
+            catalog[m.id] = { alias: m.alias };
+        });
+        config.agents.defaults.models = catalog;
+        console.log('Model allowlist:', available.map(function(m) { return m.alias; }).join(', '));
+
+        // Build fallbacks (all available models except the current primary)
+        var primary = (config.agents.defaults.model && config.agents.defaults.model.primary) || '';
+        var fallbacks = available
+            .filter(function(m) { return m.id !== primary; })
+            .map(function(m) { return m.id; });
+
+        if (fallbacks.length > 0) {
+            config.agents.defaults.model = config.agents.defaults.model || {};
+            config.agents.defaults.model.fallbacks = fallbacks;
+            console.log('Model fallbacks:', fallbacks.join(', '));
+        }
     }
 }
 

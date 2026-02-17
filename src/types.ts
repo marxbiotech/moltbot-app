@@ -19,6 +19,8 @@ export interface MoltbotEnv {
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_BASE_URL?: string;
   OPENAI_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+  DEFAULT_MODEL?: string; // Default model override: "provider/model-id" e.g. "google/gemini-3-flash-preview"
   MOLTBOT_GATEWAY_TOKEN?: string; // Gateway token (mapped to OPENCLAW_GATEWAY_TOKEN for container)
   DEV_MODE?: string; // Set to 'true' for local dev (skips CF Access auth + openclaw device pairing)
   E2E_TEST_MODE?: string; // Set to 'true' for E2E tests (skips CF Access auth but keeps device pairing)

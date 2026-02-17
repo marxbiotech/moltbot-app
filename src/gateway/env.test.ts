@@ -144,6 +144,12 @@ describe('buildEnvVars', () => {
     expect(result.CF_ACCOUNT_ID).toBe('acct-123');
   });
 
+  it('passes DEFAULT_MODEL to container', () => {
+    const env = createMockEnv({ DEFAULT_MODEL: 'google/gemini-3-flash-preview' });
+    const result = buildEnvVars(env);
+    expect(result.DEFAULT_MODEL).toBe('google/gemini-3-flash-preview');
+  });
+
   it('combines all env vars correctly', () => {
     const env = createMockEnv({
       ANTHROPIC_API_KEY: 'sk-key',

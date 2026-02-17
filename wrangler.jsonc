@@ -3,7 +3,9 @@
   "name": "moltbot-ryougi-shiki",
   "main": "src/index.ts",
   "compatibility_date": "2025-05-06",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "observability": {
     "enabled": true,
   },
@@ -19,12 +21,16 @@
   "rules": [
     {
       "type": "Text",
-      "globs": ["**/*.html"],
+      "globs": [
+        "**/*.html"
+      ],
       "fallthrough": false,
     },
     {
       "type": "Data",
-      "globs": ["**/*.png"],
+      "globs": [
+        "**/*.png"
+      ],
       "fallthrough": false,
     },
   ],
@@ -51,7 +57,9 @@
   },
   "migrations": [
     {
-      "new_sqlite_classes": ["Sandbox"],
+      "new_sqlite_classes": [
+        "Sandbox"
+      ],
       "tag": "v1",
     },
   ],
@@ -59,13 +67,23 @@
   "r2_buckets": [
     {
       "binding": "MOLTBOT_BUCKET",
-      "bucket_name": "moltbot-ryougi-shiki-data","preview_bucket_name": "moltbot-ryougi-shiki-data",
+      "bucket_name": "moltbot-ryougi-shiki-data",
+      "preview_bucket_name": "moltbot-ryougi-shiki-data",
     },
   ],
-
   // Browser Rendering binding for CDP shim
   "browser": {
     "binding": "BROWSER",
+  },
+  // Environment variables (non-secret)
+  "vars": {
+    "SANDBOX_SLEEP_AFTER": "10m",
+    "DEBUG_ROUTES": "true",
+    "CF_ACCESS_TEAM_DOMAIN": "aehrt55.cloudflareaccess.com",
+    "CF_ACCOUNT_ID": "cc38da9797000cbe4d1ca4cd8c12fed7",
+    "CF_ACCESS_AUD": "1fbf204ac373bcd72e90deb5f7143188d35a7bfe9757334410d775687346cd71",
+    "R2_BUCKET_NAME": "moltbot-ryougi-shiki-data",
+    "DEFAULT_MODEL": "google/gemini-3-flash-preview",
   },
   // Note: CF_ACCOUNT_ID should be set via `wrangler secret put CF_ACCOUNT_ID`
   // Secrets to configure via `wrangler secret put`:
