@@ -9,17 +9,20 @@
 
 set -e
 
-if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
-    echo "OpenClaw gateway is already running, exiting."
-    exit 0
-fi
-
 CONFIG_DIR="/root/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
 WORKSPACE_DIR="/root/clawd"
 SKILLS_DIR="/root/clawd/skills"
 RCLONE_CONF="/root/.config/rclone/rclone.conf"
 LAST_SYNC_FILE="/tmp/.last-sync"
+
+# Stop any leftover gateway from a previous invocation.
+# When this script uses `exec openclaw gateway`, the sandbox loses track of the
+# process (marks start-openclaw.sh as "killed"), but the gateway keeps running.
+# On the next invocation the sandbox thinks no gateway exists and re-runs us,
+# so we must explicitly stop the old gateway to free port 18789 and the lock file.
+openclaw gateway stop 2>/dev/null || true
+rm -f /tmp/openclaw-gateway.lock "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 
 echo "Config directory: $CONFIG_DIR"
 
@@ -86,15 +89,6 @@ if r2_configured; then
         echo "Workspace restored"
     fi
 
-    # Restore skills
-    REMOTE_SK_COUNT=$(rclone ls "r2:${R2_BUCKET}/skills/" $RCLONE_FLAGS 2>/dev/null | wc -l)
-    if [ "$REMOTE_SK_COUNT" -gt 0 ]; then
-        echo "Restoring skills from R2 ($REMOTE_SK_COUNT files)..."
-        mkdir -p "$SKILLS_DIR"
-        rclone copy "r2:${R2_BUCKET}/skills/" "$SKILLS_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: skills restore failed with exit code $?"
-        echo "Skills restored"
-    fi
-
     # Symlink SSH keys from workspace (persisted via workspace R2 sync)
     # See: docs/onboarding/SSH-Keys.md
     WORKSPACE_SSH="$WORKSPACE_DIR/.ssh"
@@ -110,6 +104,27 @@ if r2_configured; then
 else
     echo "R2 not configured, starting fresh"
 fi
+
+# Clean up ALL known skill names from managed skills dir (~/.openclaw/skills/)
+# to prevent OpenClaw from seeing duplicates (e.g. sk_doctor vs sk_doctor2).
+# Both hyphen and underscore variants — SKILLS_DIR is canonical via R2 restore.
+for name in aws-auth ssh-check ssh-setup sk-doctor sk-git-check sk-git-sync sk-workspace-check cloudflare-browser \
+            aws_auth ssh_check ssh_setup sk_doctor git_check git_sync ws_check cloudflare_browser; do
+    rm -rf "$CONFIG_DIR/skills/$name"
+done
+
+# Install skill scripts to PATH so command-dispatch: tool works
+# This runs every startup to pick up R2-restored or newly deployed scripts
+for skill_dir in "$SKILLS_DIR"/*/scripts; do
+    if [ -d "$skill_dir" ]; then
+        skill_name=$(basename "$(dirname "$skill_dir")")
+        if [ -f "$skill_dir/run.sh" ]; then
+            cp "$skill_dir/run.sh" "/usr/local/bin/$skill_name"
+            chmod +x "/usr/local/bin/$skill_name"
+        fi
+    fi
+done
+echo "Skill scripts installed to PATH"
 
 # ============================================================
 # ONBOARD (only if no config exists yet)
@@ -170,6 +185,13 @@ config.commands = {
   ...config.commands,
   restart: true,
 };
+
+// Ensure exec tool is allowed (required for command-dispatch: tool skills)
+config.tools = config.tools || {};
+config.tools.allow = config.tools.allow || [];
+if (!config.tools.allow.includes('exec')) {
+    config.tools.allow.push('exec');
+}
 
 // Gateway configuration
 config.gateway.port = 18789;
@@ -340,6 +362,83 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
+
+// Patch auth-profiles.json to ensure API keys from env vars override cached keys.
+// OpenClaw caches API keys in per-agent auth-profiles.json files, which get
+// persisted to R2. When a key is rotated via wrangler secret, the cached key
+// becomes stale. This patch overwrites cached keys with current env var values.
+const glob = require('path');
+const agentsDir = '/root/.openclaw/agents';
+try {
+    const fs2 = require('fs');
+    const path = require('path');
+
+    // Build a map of provider -> key from env vars
+    const envKeys = {};
+    if (process.env.ANTHROPIC_API_KEY) envKeys['anthropic'] = process.env.ANTHROPIC_API_KEY;
+    if (process.env.GOOGLE_API_KEY) envKeys['google'] = process.env.GOOGLE_API_KEY;
+    if (process.env.OPENAI_API_KEY) envKeys['openai'] = process.env.OPENAI_API_KEY;
+
+    if (Object.keys(envKeys).length === 0) {
+        console.log('No API keys in env, skipping auth-profiles patch');
+    } else {
+        // Find all auth-profiles.json files under agents/
+        function findAuthProfiles(dir) {
+            var results = [];
+            try {
+                var entries = fs2.readdirSync(dir, { withFileTypes: true });
+                for (var i = 0; i < entries.length; i++) {
+                    var entry = entries[i];
+                    var full = path.join(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        results = results.concat(findAuthProfiles(full));
+                    } else if (entry.name === 'auth-profiles.json') {
+                        results.push(full);
+                    }
+                }
+            } catch (e) {}
+            return results;
+        }
+
+        var files = findAuthProfiles(agentsDir);
+        files.forEach(function(filePath) {
+            try {
+                var data = JSON.parse(fs2.readFileSync(filePath, 'utf8'));
+                var patched = false;
+                if (data.profiles) {
+                    Object.keys(data.profiles).forEach(function(profileId) {
+                        var profile = data.profiles[profileId];
+                        var provider = profile.provider;
+                        if (provider && envKeys[provider] && profile.key !== envKeys[provider]) {
+                            console.log('Patching auth profile ' + profileId + ' key in ' + filePath);
+                            profile.key = envKeys[provider];
+                            patched = true;
+                        }
+                    });
+                }
+                // Clear error stats for patched profiles so OpenClaw doesn't keep them in cooldown
+                if (patched && data.usageStats) {
+                    Object.keys(data.profiles).forEach(function(profileId) {
+                        if (data.usageStats[profileId]) {
+                            data.usageStats[profileId].errorCount = 0;
+                            delete data.usageStats[profileId].failureCounts;
+                            delete data.usageStats[profileId].cooldownUntil;
+                        }
+                    });
+                    fs2.writeFileSync(filePath, JSON.stringify(data, null, 2));
+                    console.log('Auth profiles patched and error stats cleared');
+                } else if (patched) {
+                    fs2.writeFileSync(filePath, JSON.stringify(data, null, 2));
+                    console.log('Auth profiles patched');
+                }
+            } catch (e) {
+                console.log('Could not patch ' + filePath + ': ' + e.message);
+            }
+        });
+    }
+} catch (e) {
+    console.log('Auth-profiles patch skipped:', e.message);
+}
 EOFPATCH
 
 # ============================================================
@@ -369,14 +468,11 @@ if r2_configured; then
             if [ "$COUNT" -gt 0 ]; then
                 echo "[sync] Uploading changes ($COUNT files) at $(date)" >> "$LOGFILE"
                 rclone sync "$CONFIG_DIR/" "r2:${R2_BUCKET}/openclaw/" \
-                    $RCLONE_FLAGS --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='.git/**' 2>> "$LOGFILE"
+                    $RCLONE_FLAGS --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' \
+                    --filter='+ workspace/**/.git/**' --exclude='.git/**' 2>> "$LOGFILE"
                 if [ -d "$WORKSPACE_DIR" ]; then
                     rclone sync "$WORKSPACE_DIR/" "r2:${R2_BUCKET}/workspace/" \
-                        $RCLONE_FLAGS --exclude='skills/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
-                fi
-                if [ -d "$SKILLS_DIR" ]; then
-                    rclone sync "$SKILLS_DIR/" "r2:${R2_BUCKET}/skills/" \
-                        $RCLONE_FLAGS 2>> "$LOGFILE"
+                        $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
                 fi
                 date -Iseconds > "$LAST_SYNC_FILE"
                 touch "$MARKER"
@@ -392,10 +488,6 @@ fi
 # ============================================================
 echo "Starting OpenClaw Gateway..."
 echo "Gateway will be available on port 18789"
-
-rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
-rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
-
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then

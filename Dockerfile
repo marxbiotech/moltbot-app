@@ -31,11 +31,24 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd/skills
 
 # Copy startup script
+# Build cache bust: 2026-02-19-auth-profiles-patch
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
 # Copy custom skills
 COPY skills/ /root/clawd/skills/
+
+# Install skill scripts to PATH for command-dispatch: tool (LLM-free execution)
+COPY skills/ssh_check/scripts/run.sh /usr/local/bin/ssh_check
+COPY skills/ssh_setup/scripts/run.sh /usr/local/bin/ssh_setup
+COPY skills/ws_check/scripts/run.sh /usr/local/bin/ws_check
+COPY skills/git_check/scripts/run.sh /usr/local/bin/git_check
+COPY skills/git_sync/scripts/run.sh /usr/local/bin/git_sync
+COPY skills/sk_doctor/scripts/run.sh /usr/local/bin/sk_doctor
+COPY skills/aws_auth/scripts/run.sh /usr/local/bin/aws_auth
+RUN chmod +x /usr/local/bin/ssh_check /usr/local/bin/ssh_setup /usr/local/bin/ws_check \
+    /usr/local/bin/git_check /usr/local/bin/git_sync /usr/local/bin/sk_doctor \
+    /usr/local/bin/aws_auth
 
 # Set working directory
 WORKDIR /root/clawd
