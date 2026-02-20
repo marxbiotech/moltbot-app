@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "moltbot-ryougi-shiki",
+  "name": "moltbot-local",
   "main": "src/index.ts",
   "compatibility_date": "2025-05-06",
   "compatibility_flags": [
@@ -67,26 +67,16 @@
   "r2_buckets": [
     {
       "binding": "MOLTBOT_BUCKET",
-      "bucket_name": "moltbot-ryougi-shiki-data",
-      "preview_bucket_name": "moltbot-ryougi-shiki-data",
+      "bucket_name": "moltbot-dev-data",
+      "preview_bucket_name": "moltbot-dev-data",
     },
   ],
   // Browser Rendering binding for CDP shim
   "browser": {
     "binding": "BROWSER",
   },
-  // Environment variables (non-secret)
-  "vars": {
-    "SANDBOX_SLEEP_AFTER": "10m",
-    "DEBUG_ROUTES": "true",
-    "CF_ACCESS_TEAM_DOMAIN": "aehrt55.cloudflareaccess.com",
-    "CF_ACCOUNT_ID": "cc38da9797000cbe4d1ca4cd8c12fed7",
-    "CF_ACCESS_AUD": "1fbf204ac373bcd72e90deb5f7143188d35a7bfe9757334410d775687346cd71",
-    "R2_BUCKET_NAME": "moltbot-ryougi-shiki-data",
-    "DEFAULT_MODEL": "google/gemini-3-flash-preview",
-    "BEDROCK_DEFAULT_MODEL": "claude-sonnet-4-6",
-  },
-  // Note: CF_ACCOUNT_ID should be set via `wrangler secret put CF_ACCOUNT_ID`
+  // No "vars" block — for local dev, use .dev.vars
+  // For production, the env repo's wrangler.jsonc provides vars.
   // Secrets to configure via `wrangler secret put`:
   //
   // AI Provider (at least one set required):
