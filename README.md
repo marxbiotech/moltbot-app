@@ -325,9 +325,11 @@ All endpoints require authentication via the `?secret=<CDP_SECRET>` query parame
 
 ## Built-in Skills
 
-The container includes pre-installed skills in `/root/clawd/skills/`:
+The container includes pre-installed skills in `/root/.openclaw/skills/` and plugins in `/root/.openclaw/extensions/`.
 
-### cloudflare-browser
+### Skills
+
+#### cloudflare_browser
 
 Browser automation via the CDP shim. Requires `CDP_SECRET` and `WORKER_URL` to be set (see [Browser Automation](#optional-browser-automation-cdp) above).
 
@@ -339,13 +341,24 @@ Browser automation via the CDP shim. Requires `CDP_SECRET` and `WORKER_URL` to b
 **Usage:**
 ```bash
 # Screenshot
-node /root/clawd/skills/cloudflare-browser/scripts/screenshot.js https://example.com output.png
+node /root/.openclaw/skills/cloudflare_browser/scripts/screenshot.js https://example.com output.png
 
 # Video from multiple URLs
-node /root/clawd/skills/cloudflare-browser/scripts/video.js "https://site1.com,https://site2.com" output.mp4 --scroll
+node /root/.openclaw/skills/cloudflare_browser/scripts/video.js "https://site1.com,https://site2.com" output.mp4 --scroll
 ```
 
-See `skills/cloudflare-browser/SKILL.md` for full documentation.
+See `skills/cloudflare_browser/SKILL.md` for full documentation.
+
+### Plugins
+
+Commands registered via plugins execute WITHOUT the AI agent (LLM-free). Each plugin lives in `extensions/` and is installed to `/root/.openclaw/extensions/` on boot.
+
+| Plugin | Commands | Description |
+|--------|----------|-------------|
+| `bedrock-auth` | `/aws_auth` | AWS Bedrock MFA authentication |
+| `ssh-tools` | `/ssh_setup`, `/ssh_check` | SSH key management and GitHub connectivity |
+| `git-tools` | `/git_check`, `/git_sync`, `/git_repos` | Git operations and repo scanning |
+| `moltbot-utils` | `/ws_check`, `/sys_info`, `/net_check` | Workspace health, system info, network diagnostics |
 
 ## Optional: Cloudflare AI Gateway
 

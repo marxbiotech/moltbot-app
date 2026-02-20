@@ -7,8 +7,8 @@ import { execFile } from "node:child_process";
  * This is critical because /aws_auth bootstraps Bedrock credentials —
  * it must work before any LLM API key is available.
  *
- * The actual logic lives in /usr/local/bin/aws_auth (installed by
- * start-openclaw.sh from skills/aws_auth/scripts/run.sh).
+ * The actual logic lives in /usr/local/bin/aws_auth
+ * (installed by start-openclaw.sh from extensions/bedrock-auth/scripts/).
  */
 
 function runScript(

@@ -5,7 +5,7 @@
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
 # Scripts may be colocated (in skills dir) or run from /usr/local/bin
-SKILLS_SCRIPTS="/root/clawd/skills/cloudflare_browser/scripts"
+SKILLS_SCRIPTS="/root/.openclaw/skills/cloudflare_browser/scripts"
 
 find_script() {
     local name="$1"

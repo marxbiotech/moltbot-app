@@ -47,13 +47,13 @@ RUN mkdir -p /root/.openclaw \
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy custom skills to staging area (outside R2 sync paths).
-# start-openclaw.sh installs them to ~/.openclaw/skills/ (level 2) on every boot,
-# so Docker image is always the single source of truth for skills.
+# Copy skills to staging area (currently only cloudflare_browser).
+# start-openclaw.sh installs them to ~/.openclaw/skills/ on every boot.
 COPY skills/ /opt/openclaw-skills/
 
-# Copy bedrock-auth plugin (LLM-free /aws_auth MFA command via registerCommand)
-COPY extensions/bedrock-auth/ /opt/openclaw-extensions/bedrock-auth/
+# Copy all plugins to staging area.
+# start-openclaw.sh installs them to ~/.openclaw/extensions/ on every boot.
+COPY extensions/ /opt/openclaw-extensions/
 
 # Set working directory
 WORKDIR /root/clawd

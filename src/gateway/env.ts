@@ -61,6 +61,7 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.AWS_MFA_SERIAL) envVars.AWS_MFA_SERIAL = env.AWS_MFA_SERIAL;
   if (env.AWS_ROLE_ARN) envVars.AWS_ROLE_ARN = env.AWS_ROLE_ARN;
   if (env.BEDROCK_DEFAULT_MODEL) envVars.BEDROCK_DEFAULT_MODEL = env.BEDROCK_DEFAULT_MODEL;
+  if (env.MOLTBOT_EMAIL) envVars.MOLTBOT_EMAIL = env.MOLTBOT_EMAIL;
 
   // R2 persistence credentials (used by rclone in start-openclaw.sh)
   if (env.R2_ACCESS_KEY_ID) envVars.R2_ACCESS_KEY_ID = env.R2_ACCESS_KEY_ID;

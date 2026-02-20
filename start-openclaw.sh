@@ -67,11 +67,11 @@ if r2_configured; then
     # Check if R2 has an openclaw config backup
     if rclone ls "r2:${R2_BUCKET}/openclaw/openclaw.json" $RCLONE_FLAGS 2>/dev/null | grep -q openclaw.json; then
         echo "Restoring config from R2..."
-        rclone copy "r2:${R2_BUCKET}/openclaw/" "$CONFIG_DIR/" $RCLONE_FLAGS --exclude='skills/**' -v 2>&1 || echo "WARNING: config restore failed with exit code $?"
+        rclone copy "r2:${R2_BUCKET}/openclaw/" "$CONFIG_DIR/" $RCLONE_FLAGS --exclude='skills/**' --exclude='extensions/**' -v 2>&1 || echo "WARNING: config restore failed with exit code $?"
         echo "Config restored"
     elif rclone ls "r2:${R2_BUCKET}/clawdbot/clawdbot.json" $RCLONE_FLAGS 2>/dev/null | grep -q clawdbot.json; then
         echo "Restoring from legacy R2 backup..."
-        rclone copy "r2:${R2_BUCKET}/clawdbot/" "$CONFIG_DIR/" $RCLONE_FLAGS --exclude='skills/**' -v 2>&1 || echo "WARNING: legacy config restore failed with exit code $?"
+        rclone copy "r2:${R2_BUCKET}/clawdbot/" "$CONFIG_DIR/" $RCLONE_FLAGS --exclude='skills/**' --exclude='extensions/**' -v 2>&1 || echo "WARNING: legacy config restore failed with exit code $?"
         if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
             mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
         fi
@@ -106,13 +106,14 @@ else
 fi
 
 # ============================================================
-# INSTALL SKILLS from Docker image staging → ~/.openclaw/skills/ (level 2)
+# INSTALL SKILLS from Docker image staging → ~/.openclaw/skills/
 # ============================================================
+# Currently only cloudflare_browser. Most commands are now plugins (extensions/).
 # Docker image (/opt/openclaw-skills/) is the single source of truth.
 # R2 never stores skills (excluded from both config and workspace sync).
 # Clean legacy names first, then copy fresh from staging every boot.
 for name in aws-auth ssh-check ssh-setup sk-doctor sk-git-check sk-git-sync sk-workspace-check cloudflare-browser \
-            aws_auth ssh_check ssh_setup sk_doctor git_check git_sync ws_check cloudflare_browser; do
+            aws_auth ssh_check ssh_setup sk_doctor git_check git_sync git_repos ws_check sys_info net_check cloudflare_browser; do
     rm -rf "$CONFIG_DIR/skills/$name"
 done
 mkdir -p "$CONFIG_DIR/skills"
@@ -123,31 +124,31 @@ for skill_dir in "$SKILLS_STAGING"/*/; do
 done
 echo "Skills installed to $CONFIG_DIR/skills/"
 
-# Install skill scripts to PATH (used by moltbot-tools plugin registerCommand)
-for skill_dir in "$SKILLS_STAGING"/*/scripts; do
-    if [ -d "$skill_dir" ]; then
-        skill_name=$(basename "$(dirname "$skill_dir")")
-        if [ -f "$skill_dir/run.sh" ]; then
-            cp "$skill_dir/run.sh" "/usr/local/bin/$skill_name"
-            chmod +x "/usr/local/bin/$skill_name"
-        fi
-    fi
-done
-echo "Skill scripts installed to PATH"
-
 # ============================================================
-# INSTALL PLUGIN: bedrock-auth (LLM-free /aws_auth MFA command)
+# INSTALL PLUGINS from Docker image staging → ~/.openclaw/extensions/
 # ============================================================
-# Plugin uses registerCommand() which executes WITHOUT the AI agent,
-# bypassing the exec tool entirely. Critical for bootstrapping Bedrock
-# credentials before any LLM API key is available.
-PLUGIN_STAGING="/opt/openclaw-extensions/bedrock-auth"
-PLUGIN_TARGET="$CONFIG_DIR/extensions/bedrock-auth"
+# Plugins use registerCommand() which executes WITHOUT the AI agent,
+# bypassing the exec tool entirely. Docker image is the single source of truth.
+# Each plugin may include a scripts/ dir with shell scripts to install to PATH.
+PLUGIN_STAGING="/opt/openclaw-extensions"
 if [ -d "$PLUGIN_STAGING" ]; then
     mkdir -p "$CONFIG_DIR/extensions"
-    rm -rf "$PLUGIN_TARGET"
-    cp -r "$PLUGIN_STAGING" "$PLUGIN_TARGET"
-    echo "Plugin bedrock-auth installed to $PLUGIN_TARGET"
+    for plugin_dir in "$PLUGIN_STAGING"/*/; do
+        [ -d "$plugin_dir" ] || continue
+        plugin_name=$(basename "$plugin_dir")
+        rm -rf "$CONFIG_DIR/extensions/$plugin_name"
+        cp -r "$plugin_dir" "$CONFIG_DIR/extensions/$plugin_name"
+        # Install scripts to PATH (e.g. scripts/ssh_check.sh → /usr/local/bin/ssh_check)
+        if [ -d "$plugin_dir/scripts" ]; then
+            for script in "$plugin_dir"/scripts/*.sh; do
+                [ -f "$script" ] || continue
+                cmd_name=$(basename "$script" .sh)
+                cp "$script" "/usr/local/bin/$cmd_name"
+                chmod +x "/usr/local/bin/$cmd_name"
+            done
+        fi
+    done
+    echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
 fi
 
 # ============================================================
@@ -255,8 +256,8 @@ delete config.tools.exec.askFallback;
 // Add all skill wrapper names so command-dispatch exec calls never get blocked
 config.tools.exec.safeBins = [
     'bash', 'sh', 'node', 'git', 'ssh', 'ssh-keygen', 'ssh-keyscan', 'aws', 'pgrep', 'curl',
-    'sk_doctor', 'ws_check', 'aws_auth', 'ssh_setup', 'ssh_check', 'git_sync', 'git_check',
-    'cloudflare_browser'
+    'ws_check', 'sys_info', 'net_check', 'aws_auth', 'ssh_setup', 'ssh_check',
+    'git_sync', 'git_check', 'git_repos', 'cloudflare_browser'
 ];
 
 // Layer 6: tools.sandbox.tools — sandbox TOOL POLICY (separate from sandbox mode!)
@@ -648,8 +649,8 @@ cat > "$APPROVALS_FILE" << 'EOF'
     "safeBins": [
       "bash", "sh", "node", "git", "ssh", "ssh-keygen", "ssh-keyscan",
       "aws", "pgrep", "curl",
-      "sk_doctor", "ws_check", "aws_auth", "ssh_setup", "ssh_check",
-      "git_sync", "git_check", "cloudflare_browser"
+      "ws_check", "sys_info", "net_check", "aws_auth", "ssh_setup", "ssh_check",
+      "git_sync", "git_check", "git_repos", "cloudflare_browser"
     ]
   },
   "rules": []
