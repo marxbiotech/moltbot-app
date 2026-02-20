@@ -66,7 +66,7 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 
   // Sync workspace (non-fatal, rclone sync propagates deletions)
   await sandbox.exec(
-    `test -d /root/clawd && rclone sync /root/clawd/ ${remote('workspace/')} ${RCLONE_FLAGS} --exclude='skills/**' --exclude='repos/**' --exclude='.git/**' || true`,
+    `test -d /root/clawd && rclone sync /root/clawd/ ${remote('workspace/')} ${RCLONE_FLAGS} --exclude='skills/**' --exclude='node_modules/**' || true`,
     { timeout: 120000 },
   );
 
