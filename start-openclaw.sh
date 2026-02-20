@@ -1,7 +1,7 @@
 #!/bin/bash
 # Startup script for OpenClaw in Cloudflare Sandbox
 # This script:
-# 1. Restores config/workspace/skills from R2 via rclone (if configured)
+# 1. Restores config/workspace from R2 via rclone (if configured)
 # 2. Runs openclaw onboard --non-interactive to configure from env vars
 # 3. Patches config for features onboard doesn't cover (channels, gateway auth)
 # 4. Starts a background sync loop (rclone, watches for file changes)
@@ -12,7 +12,7 @@ set -e
 CONFIG_DIR="/root/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
 WORKSPACE_DIR="/root/clawd"
-SKILLS_DIR="/root/clawd/skills"
+SKILLS_STAGING="/opt/openclaw-skills"
 RCLONE_CONF="/root/.config/rclone/rclone.conf"
 LAST_SYNC_FILE="/tmp/.last-sync"
 
@@ -67,11 +67,11 @@ if r2_configured; then
     # Check if R2 has an openclaw config backup
     if rclone ls "r2:${R2_BUCKET}/openclaw/openclaw.json" $RCLONE_FLAGS 2>/dev/null | grep -q openclaw.json; then
         echo "Restoring config from R2..."
-        rclone copy "r2:${R2_BUCKET}/openclaw/" "$CONFIG_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: config restore failed with exit code $?"
+        rclone copy "r2:${R2_BUCKET}/openclaw/" "$CONFIG_DIR/" $RCLONE_FLAGS --exclude='skills/**' -v 2>&1 || echo "WARNING: config restore failed with exit code $?"
         echo "Config restored"
     elif rclone ls "r2:${R2_BUCKET}/clawdbot/clawdbot.json" $RCLONE_FLAGS 2>/dev/null | grep -q clawdbot.json; then
         echo "Restoring from legacy R2 backup..."
-        rclone copy "r2:${R2_BUCKET}/clawdbot/" "$CONFIG_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: legacy config restore failed with exit code $?"
+        rclone copy "r2:${R2_BUCKET}/clawdbot/" "$CONFIG_DIR/" $RCLONE_FLAGS --exclude='skills/**' -v 2>&1 || echo "WARNING: legacy config restore failed with exit code $?"
         if [ -f "$CONFIG_DIR/clawdbot.json" ] && [ ! -f "$CONFIG_FILE" ]; then
             mv "$CONFIG_DIR/clawdbot.json" "$CONFIG_FILE"
         fi
@@ -85,7 +85,7 @@ if r2_configured; then
     if [ "$REMOTE_WS_COUNT" -gt 0 ]; then
         echo "Restoring workspace from R2 ($REMOTE_WS_COUNT files)..."
         mkdir -p "$WORKSPACE_DIR"
-        rclone copy "r2:${R2_BUCKET}/workspace/" "$WORKSPACE_DIR/" $RCLONE_FLAGS -v 2>&1 || echo "WARNING: workspace restore failed with exit code $?"
+        rclone copy "r2:${R2_BUCKET}/workspace/" "$WORKSPACE_DIR/" $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' -v 2>&1 || echo "WARNING: workspace restore failed with exit code $?"
         echo "Workspace restored"
     fi
 
@@ -105,17 +105,26 @@ else
     echo "R2 not configured, starting fresh"
 fi
 
-# Clean up ALL known skill names from managed skills dir (~/.openclaw/skills/)
-# to prevent OpenClaw from seeing duplicates (e.g. sk_doctor vs sk_doctor2).
-# Both hyphen and underscore variants — SKILLS_DIR is canonical via R2 restore.
+# ============================================================
+# INSTALL SKILLS from Docker image staging → ~/.openclaw/skills/ (level 2)
+# ============================================================
+# Docker image (/opt/openclaw-skills/) is the single source of truth.
+# R2 never stores skills (excluded from both config and workspace sync).
+# Clean legacy names first, then copy fresh from staging every boot.
 for name in aws-auth ssh-check ssh-setup sk-doctor sk-git-check sk-git-sync sk-workspace-check cloudflare-browser \
             aws_auth ssh_check ssh_setup sk_doctor git_check git_sync ws_check cloudflare_browser; do
     rm -rf "$CONFIG_DIR/skills/$name"
 done
+mkdir -p "$CONFIG_DIR/skills"
+for skill_dir in "$SKILLS_STAGING"/*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name=$(basename "$skill_dir")
+    cp -r "$skill_dir" "$CONFIG_DIR/skills/$skill_name"
+done
+echo "Skills installed to $CONFIG_DIR/skills/"
 
-# Install skill scripts to PATH so command-dispatch: tool works
-# This runs every startup to pick up R2-restored or newly deployed scripts
-for skill_dir in "$SKILLS_DIR"/*/scripts; do
+# Install skill scripts to PATH (used by moltbot-tools plugin registerCommand)
+for skill_dir in "$SKILLS_STAGING"/*/scripts; do
     if [ -d "$skill_dir" ]; then
         skill_name=$(basename "$(dirname "$skill_dir")")
         if [ -f "$skill_dir/run.sh" ]; then
@@ -125,6 +134,21 @@ for skill_dir in "$SKILLS_DIR"/*/scripts; do
     fi
 done
 echo "Skill scripts installed to PATH"
+
+# ============================================================
+# INSTALL PLUGIN: bedrock-auth (LLM-free /aws_auth MFA command)
+# ============================================================
+# Plugin uses registerCommand() which executes WITHOUT the AI agent,
+# bypassing the exec tool entirely. Critical for bootstrapping Bedrock
+# credentials before any LLM API key is available.
+PLUGIN_STAGING="/opt/openclaw-extensions/bedrock-auth"
+PLUGIN_TARGET="$CONFIG_DIR/extensions/bedrock-auth"
+if [ -d "$PLUGIN_STAGING" ]; then
+    mkdir -p "$CONFIG_DIR/extensions"
+    rm -rf "$PLUGIN_TARGET"
+    cp -r "$PLUGIN_STAGING" "$PLUGIN_TARGET"
+    echo "Plugin bedrock-auth installed to $PLUGIN_TARGET"
+fi
 
 # ============================================================
 # ONBOARD (only if no config exists yet)
@@ -186,11 +210,110 @@ config.commands = {
   restart: true,
 };
 
-// Ensure exec tool is allowed (required for command-dispatch: tool skills)
+// ── TOOL POLICY CHAIN: aggressively clear ALL layers that could deny exec ──
+// command-dispatch: tool routes slash commands directly to exec without LLM.
+// The tool policy chain is: tools.profile → tools.byProvider.profile →
+// tools.allow/deny → tools.byProvider.allow/deny → agents.<id>.tools →
+// group policies → sandbox tool policy.
+// "deny always wins" — ANY layer denying exec breaks command-dispatch.
+// We must clear every possible layer, especially from R2-restored config.
+
 config.tools = config.tools || {};
+
+// Layer 1: tools.profile — base permission level
+config.tools.profile = 'full';
+
+// Layer 2: tools.byProvider — R2 config may have per-provider restrictions
+// Nuke the entire byProvider section to remove any provider-level exec denials
+delete config.tools.byProvider;
+
+// Layer 3: tools.allow/deny — explicit allow/deny lists
 config.tools.allow = config.tools.allow || [];
 if (!config.tools.allow.includes('exec')) {
     config.tools.allow.push('exec');
+}
+// Remove exec and group:runtime from deny list
+if (Array.isArray(config.tools.deny)) {
+    config.tools.deny = config.tools.deny.filter(function(t) {
+        return t !== 'exec' && t !== 'group:runtime' && t !== 'group:all';
+    });
+}
+
+// Layer 4: tools.exec — exec-specific security settings
+// Default is 'deny' which blocks all shell commands
+// NOTE: ToolExecSchema is .strict() — only known keys allowed.
+//   Valid keys: security, ask, node, pathPrepend, safeBins, backgroundMs,
+//   timeoutSec, cleanupMs, notifyOnExit, notifyOnExitEmptySuccess, applyPatch.
+//   askFallback is NOT valid here (only in exec-approvals.json).
+config.tools.exec = config.tools.exec || {};
+config.tools.exec.security = 'full';
+config.tools.exec.ask = 'off';
+// Remove any stale invalid keys that may have been written by earlier deploys
+delete config.tools.exec.askFallback;
+
+// Layer 5: tools.exec.safeBins — binaries that bypass approval entirely
+// Add all skill wrapper names so command-dispatch exec calls never get blocked
+config.tools.exec.safeBins = [
+    'bash', 'sh', 'node', 'git', 'ssh', 'ssh-keygen', 'ssh-keyscan', 'aws', 'pgrep', 'curl',
+    'sk_doctor', 'ws_check', 'aws_auth', 'ssh_setup', 'ssh_check', 'git_sync', 'git_check',
+    'cloudflare_browser'
+];
+
+// Layer 6: tools.sandbox.tools — sandbox TOOL POLICY (separate from sandbox mode!)
+// R2 config may have tools.sandbox.tools.deny including exec
+delete config.tools.sandbox;
+
+// Layer 7: Disable sandbox mode — we're inside a Cloudflare Sandbox container,
+// no Docker-in-Docker available. Without this, exec reports
+// "currently restricted in sandbox mode" and command-tool: exec fails.
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+config.agents.defaults.sandbox = { mode: 'off' };
+
+// Layer 8: Per-agent tool restrictions — R2 config may have per-agent denials
+// Clear tools restrictions on all agents in agents.list
+if (config.agents.list) {
+    Object.keys(config.agents.list).forEach(function(agentId) {
+        var agent = config.agents.list[agentId];
+        if (agent && agent.tools) {
+            // Remove any deny list that includes exec
+            if (Array.isArray(agent.tools.deny)) {
+                agent.tools.deny = agent.tools.deny.filter(function(t) {
+                    return t !== 'exec' && t !== 'group:runtime' && t !== 'group:all';
+                });
+            }
+            // Ensure exec is in allow if there's an allow list
+            if (Array.isArray(agent.tools.allow) && !agent.tools.allow.includes('exec')) {
+                agent.tools.allow.push('exec');
+            }
+        }
+    });
+}
+
+// Layer 9: Per-agent defaults tool restrictions
+if (config.agents.defaults.tools) {
+    if (Array.isArray(config.agents.defaults.tools.deny)) {
+        config.agents.defaults.tools.deny = config.agents.defaults.tools.deny.filter(function(t) {
+            return t !== 'exec' && t !== 'group:runtime' && t !== 'group:all';
+        });
+    }
+    if (Array.isArray(config.agents.defaults.tools.allow) && !config.agents.defaults.tools.allow.includes('exec')) {
+        config.agents.defaults.tools.allow.push('exec');
+    }
+}
+
+// Layer 10: Group policies — clear any group-level exec denials
+if (config.groups) {
+    Object.keys(config.groups).forEach(function(groupId) {
+        var group = config.groups[groupId];
+        if (group && group.tools) {
+            if (Array.isArray(group.tools.deny)) {
+                group.tools.deny = group.tools.deny.filter(function(t) {
+                    return t !== 'exec' && t !== 'group:runtime' && t !== 'group:all';
+                });
+            }
+        }
+    });
 }
 
 // Gateway configuration
@@ -292,6 +415,8 @@ if (process.env.DEFAULT_MODEL) {
     if (process.env.OPENAI_API_KEY) {
         available.push({ id: 'openai/gpt-4o', alias: 'GPT-4o' });
     }
+    // Bedrock models are added dynamically by the BEDROCK MODEL DISCOVERY section below.
+    // Static entries removed — ListFoundationModels provides correct model IDs.
 
     if (available.length >= 2) {
         config.agents = config.agents || {};
@@ -317,6 +442,15 @@ if (process.env.DEFAULT_MODEL) {
             console.log('Model fallbacks:', fallbacks.join(', '));
         }
     }
+}
+
+// Enable bedrockDiscovery for Bedrock provider auto-creation.
+// This creates the amazon-bedrock provider at gateway startup so
+// /aws_auth only needs to write credentials — no restart needed.
+if (process.env.AWS_BASE_ACCESS_KEY_ID) {
+    config.models = config.models || {};
+    config.models.bedrockDiscovery = { enabled: true, region: process.env.AWS_REGION || 'us-east-1' };
+    console.log('Bedrock discovery enabled (region: ' + (process.env.AWS_REGION || 'us-east-1') + ')');
 }
 
 // Telegram configuration
@@ -362,6 +496,18 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
+
+// Diagnostic: dump tool policy state so we can verify all layers are clear
+console.log('=== TOOL POLICY DUMP ===');
+console.log('tools.profile:', config.tools.profile);
+console.log('tools.allow:', JSON.stringify(config.tools.allow));
+console.log('tools.deny:', JSON.stringify(config.tools.deny || []));
+console.log('tools.exec:', JSON.stringify(config.tools.exec));
+console.log('tools.byProvider:', config.tools.byProvider ? JSON.stringify(config.tools.byProvider) : 'DELETED');
+console.log('tools.sandbox:', config.tools.sandbox ? JSON.stringify(config.tools.sandbox) : 'DELETED');
+console.log('agents.defaults.sandbox:', JSON.stringify(config.agents.defaults.sandbox));
+console.log('agents.defaults.tools:', config.agents.defaults.tools ? JSON.stringify(config.agents.defaults.tools) : 'none');
+console.log('=== END TOOL POLICY DUMP ===');
 
 // Patch auth-profiles.json to ensure API keys from env vars override cached keys.
 // OpenClaw caches API keys in per-agent auth-profiles.json files, which get
@@ -468,7 +614,7 @@ if r2_configured; then
             if [ "$COUNT" -gt 0 ]; then
                 echo "[sync] Uploading changes ($COUNT files) at $(date)" >> "$LOGFILE"
                 rclone sync "$CONFIG_DIR/" "r2:${R2_BUCKET}/openclaw/" \
-                    $RCLONE_FLAGS --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' \
+                    $RCLONE_FLAGS --exclude='skills/**' --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' \
                     --filter='+ workspace/**/.git/**' --exclude='.git/**' 2>> "$LOGFILE"
                 if [ -d "$WORKSPACE_DIR" ]; then
                     rclone sync "$WORKSPACE_DIR/" "r2:${R2_BUCKET}/workspace/" \
@@ -481,6 +627,157 @@ if r2_configured; then
         done
     ) &
     echo "Background sync loop started (PID: $!)"
+fi
+
+# ============================================================
+# EXEC APPROVALS — headless container, allow everything
+# ============================================================
+# exec-approvals.json is a SEPARATE file from openclaw.json.
+# The effective policy = stricter of tools.exec.* and exec-approvals defaults.
+# In headless containers there's no companion app UI, so askFallback must not be 'deny'.
+# Write permissive exec-approvals.json to unblock exec tool for skills.
+APPROVALS_FILE="/root/.openclaw/exec-approvals.json"
+cat > "$APPROVALS_FILE" << 'EOF'
+{
+  "version": 1,
+  "defaults": {
+    "security": "full",
+    "ask": "off",
+    "askFallback": "allow",
+    "autoAllowSkills": true,
+    "safeBins": [
+      "bash", "sh", "node", "git", "ssh", "ssh-keygen", "ssh-keyscan",
+      "aws", "pgrep", "curl",
+      "sk_doctor", "ws_check", "aws_auth", "ssh_setup", "ssh_check",
+      "git_sync", "git_check", "cloudflare_browser"
+    ]
+  },
+  "rules": []
+}
+EOF
+echo "Exec approvals: written $APPROVALS_FILE (security=full, autoAllowSkills=true)"
+
+# Also run openclaw config set commands as a belt-and-suspenders approach
+# These CLI commands may write to a different layer than the JSON patch
+openclaw config set tools.profile full 2>/dev/null || true
+openclaw config set tools.exec.security full 2>/dev/null || true
+openclaw config set tools.exec.ask off 2>/dev/null || true
+echo "CLI config set: tools.profile=full, exec.security=full, exec.ask=off"
+
+# ============================================================
+# BEDROCK MODEL DISCOVERY (filtered allowlist at startup)
+# ============================================================
+# Calls ListFoundationModels with base IAM creds, then intersects with a curated
+# list of 6 models. This ensures the allowlist has CORRECT model IDs from AWS
+# while keeping the /model menu clean. Static IDs are used as fallback if discovery fails.
+if [ -n "$AWS_BASE_ACCESS_KEY_ID" ] && [ -n "$AWS_BASE_SECRET_ACCESS_KEY" ]; then
+    BR_REGION="${AWS_REGION:-us-east-1}"
+
+    # Use credential_process so the AWS SDK refreshes credentials automatically.
+    # The helper returns session creds from /aws_auth (with Expiration for SDK caching),
+    # or falls back to base IAM creds with 60-second expiration (forces frequent refresh
+    # so /aws_auth's new creds are picked up within a minute — no gateway restart needed).
+    mkdir -p /root/.aws
+    rm -f /root/.aws/credentials  # Remove stale file — credential_process takes priority
+
+    # Create credential helper script
+    cat > /usr/local/bin/aws-cred-helper << 'CREDHELPER'
+#!/bin/bash
+SESSION_FILE="/root/.aws/session.json"
+if [ -f "$SESSION_FILE" ]; then
+    cat "$SESSION_FILE"
+else
+    # Base IAM creds with 60-second expiration — forces SDK to re-check frequently
+    # so it picks up /aws_auth's session creds quickly after authentication.
+    EXPIRES=$(node -e "console.log(new Date(Date.now()+60000).toISOString())" 2>/dev/null)
+    echo "{\"Version\":1,\"AccessKeyId\":\"$AWS_BASE_ACCESS_KEY_ID\",\"SecretAccessKey\":\"$AWS_BASE_SECRET_ACCESS_KEY\",\"Expiration\":\"${EXPIRES}\"}"
+fi
+CREDHELPER
+    chmod +x /usr/local/bin/aws-cred-helper
+
+    cat > /root/.aws/config << AWSCONF
+[default]
+region = $BR_REGION
+credential_process = /usr/local/bin/aws-cred-helper
+AWSCONF
+    echo "AWS credential_process configured for SDK auto-refresh"
+
+    echo "Discovering Bedrock models in $BR_REGION..."
+
+    BEDROCK_MODELS=$(AWS_ACCESS_KEY_ID="$AWS_BASE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_BASE_SECRET_ACCESS_KEY" \
+        aws bedrock list-foundation-models \
+        --region "$BR_REGION" \
+        --query 'modelSummaries[?responseStreamingSupported==`true`].modelId' \
+        --output json 2>&1)
+    BEDROCK_EXIT=$?
+
+    if [ $BEDROCK_EXIT -ne 0 ]; then
+        echo "WARNING: Bedrock model discovery failed: $BEDROCK_MODELS"
+        BEDROCK_MODELS="[]"
+    fi
+
+    BEDROCK_MODELS="${BEDROCK_MODELS:-[]}" node -e "
+    const fs = require('fs');
+    const configPath = '/root/.openclaw/openclaw.json';
+    try {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const discovered = JSON.parse(process.env.BEDROCK_MODELS || '[]');
+
+        // Curated models — only these 6 patterns are allowed in the allowlist.
+        // Each pattern is matched as substring against discovered model IDs.
+        const curated = [
+            { match: 'claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6' },
+            { match: 'claude-opus-4-6', alias: 'Bedrock Opus 4.6' },
+            { match: 'claude-haiku-4-5', alias: 'Bedrock Haiku 4.5' },
+            { match: 'deepseek.r1', alias: 'DeepSeek R1' },
+            { match: 'qwen3-coder', alias: 'Qwen3 Coder' },
+            { match: 'deepseek.v3', alias: 'DeepSeek V3' },
+        ];
+
+        // Static fallback IDs (used when discovery fails)
+        // Use us. prefix (cross-region inference profiles) — required by AWS for on-demand.
+        const staticFallback = [
+            { id: 'us.anthropic.claude-sonnet-4-6-v1', alias: 'Bedrock Sonnet 4.6' },
+            { id: 'us.anthropic.claude-opus-4-6-v1', alias: 'Bedrock Opus 4.6' },
+            { id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', alias: 'Bedrock Haiku 4.5' },
+            { id: 'us.deepseek.r1-v1:0', alias: 'DeepSeek R1' },
+            { id: 'qwen.qwen3-coder-next', alias: 'Qwen3 Coder' },
+            { id: 'deepseek.v3.2', alias: 'DeepSeek V3' },
+        ];
+
+        config.agents = config.agents || {};
+        config.agents.defaults = config.agents.defaults || {};
+        config.agents.defaults.models = config.agents.defaults.models || {};
+
+        let added = 0;
+        if (discovered.length > 0) {
+            // Intersection: for each curated pattern, find matching discovered model.
+            // Prefer us. prefix (cross-region inference profiles) — AWS Bedrock
+            // requires these for on-demand invocation; base model IDs are rejected.
+            for (const c of curated) {
+                const matches = discovered.filter(function(m) { return m.includes(c.match); });
+                const found = matches.find(function(m) { return m.startsWith('us.'); }) || matches[0];
+                if (found) {
+                    const key = 'amazon-bedrock/' + found;
+                    config.agents.defaults.models[key] = { alias: c.alias };
+                    added++;
+                }
+            }
+            console.log('Bedrock allowlist: ' + added + ' models (filtered from ' + discovered.length + ' discovered)');
+        } else {
+            // Fallback: use static IDs
+            for (const s of staticFallback) {
+                config.agents.defaults.models['amazon-bedrock/' + s.id] = { alias: s.alias };
+                added++;
+            }
+            console.log('Bedrock allowlist: ' + added + ' models (static fallback)');
+        }
+
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch(e) {
+        console.error('Bedrock allowlist patch failed: ' + e.message);
+    }
+    " 2>&1
 fi
 
 # ============================================================

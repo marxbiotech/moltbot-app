@@ -20,6 +20,19 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # Install pnpm globally
 RUN npm install -g pnpm
 
+# Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "${ARCH}" in \
+         amd64) AWS_ARCH="x86_64" ;; \
+         arm64) AWS_ARCH="aarch64" ;; \
+         *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws \
+    && aws --version
+
 # Install OpenClaw (formerly clawdbot/moltbot)
 RUN npm install -g openclaw@2026.2.15 \
     && openclaw --version
@@ -27,28 +40,20 @@ RUN npm install -g openclaw@2026.2.15 \
 # Create OpenClaw directories
 # Legacy .clawdbot paths are kept for R2 backup migration
 RUN mkdir -p /root/.openclaw \
-    && mkdir -p /root/clawd \
-    && mkdir -p /root/clawd/skills
+    && mkdir -p /root/clawd
 
 # Copy startup script
-# Build cache bust: 2026-02-19-auth-profiles-patch
+# Build cache bust: 2026-02-19-skills-to-level2
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy custom skills
-COPY skills/ /root/clawd/skills/
+# Copy custom skills to staging area (outside R2 sync paths).
+# start-openclaw.sh installs them to ~/.openclaw/skills/ (level 2) on every boot,
+# so Docker image is always the single source of truth for skills.
+COPY skills/ /opt/openclaw-skills/
 
-# Install skill scripts to PATH for command-dispatch: tool (LLM-free execution)
-COPY skills/ssh_check/scripts/run.sh /usr/local/bin/ssh_check
-COPY skills/ssh_setup/scripts/run.sh /usr/local/bin/ssh_setup
-COPY skills/ws_check/scripts/run.sh /usr/local/bin/ws_check
-COPY skills/git_check/scripts/run.sh /usr/local/bin/git_check
-COPY skills/git_sync/scripts/run.sh /usr/local/bin/git_sync
-COPY skills/sk_doctor/scripts/run.sh /usr/local/bin/sk_doctor
-COPY skills/aws_auth/scripts/run.sh /usr/local/bin/aws_auth
-RUN chmod +x /usr/local/bin/ssh_check /usr/local/bin/ssh_setup /usr/local/bin/ws_check \
-    /usr/local/bin/git_check /usr/local/bin/git_sync /usr/local/bin/sk_doctor \
-    /usr/local/bin/aws_auth
+# Copy bedrock-auth plugin (LLM-free /aws_auth MFA command via registerCommand)
+COPY extensions/bedrock-auth/ /opt/openclaw-extensions/bedrock-auth/
 
 # Set working directory
 WORKDIR /root/clawd

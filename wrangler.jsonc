@@ -84,6 +84,7 @@
     "CF_ACCESS_AUD": "1fbf204ac373bcd72e90deb5f7143188d35a7bfe9757334410d775687346cd71",
     "R2_BUCKET_NAME": "moltbot-ryougi-shiki-data",
     "DEFAULT_MODEL": "google/gemini-3-flash-preview",
+    "BEDROCK_DEFAULT_MODEL": "claude-sonnet-4-6",
   },
   // Note: CF_ACCOUNT_ID should be set via `wrangler secret put CF_ACCOUNT_ID`
   // Secrets to configure via `wrangler secret put`:

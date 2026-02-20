@@ -355,6 +355,10 @@ debug.get('/env', async (c) => {
     bind_mode: 'lan',
     cf_access_team_domain: c.env.CF_ACCESS_TEAM_DOMAIN,
     has_cf_access_aud: !!c.env.CF_ACCESS_AUD,
+    has_aws_access_key: !!c.env.AWS_ACCESS_KEY_ID,
+    has_aws_secret_key: !!c.env.AWS_SECRET_ACCESS_KEY,
+    has_aws_mfa_serial: !!c.env.AWS_MFA_SERIAL,
+    has_aws_role_arn: !!c.env.AWS_ROLE_ARN,
   });
 });
 

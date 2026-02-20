@@ -52,6 +52,16 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
 
+  // AWS Bedrock MFA auth (used by aws_auth skill in container)
+  // IMPORTANT: Pass as AWS_BASE_* to avoid colliding with AWS SDK credential chain.
+  // AWS SDK reads AWS_ACCESS_KEY_ID automatically — if we pass the base IAM user creds
+  // under that name, they override ~/.aws/credentials (where assumed-role creds live).
+  if (env.AWS_ACCESS_KEY_ID) envVars.AWS_BASE_ACCESS_KEY_ID = env.AWS_ACCESS_KEY_ID;
+  if (env.AWS_SECRET_ACCESS_KEY) envVars.AWS_BASE_SECRET_ACCESS_KEY = env.AWS_SECRET_ACCESS_KEY;
+  if (env.AWS_MFA_SERIAL) envVars.AWS_MFA_SERIAL = env.AWS_MFA_SERIAL;
+  if (env.AWS_ROLE_ARN) envVars.AWS_ROLE_ARN = env.AWS_ROLE_ARN;
+  if (env.BEDROCK_DEFAULT_MODEL) envVars.BEDROCK_DEFAULT_MODEL = env.BEDROCK_DEFAULT_MODEL;
+
   // R2 persistence credentials (used by rclone in start-openclaw.sh)
   if (env.R2_ACCESS_KEY_ID) envVars.R2_ACCESS_KEY_ID = env.R2_ACCESS_KEY_ID;
   if (env.R2_SECRET_ACCESS_KEY) envVars.R2_SECRET_ACCESS_KEY = env.R2_SECRET_ACCESS_KEY;

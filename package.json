@@ -6,7 +6,8 @@
   "description": "Run Moltbot personal AI assistant in a Cloudflare Sandbox",
   "scripts": {
     "build": "vite build",
-    "deploy": "npm run build && wrangler deploy",
+    "sync-skills": "bash scripts/sync-skills.sh",
+    "deploy": "npm run sync-skills && npm run build && wrangler deploy",
     "dev": "vite dev",
     "start": "wrangler dev",
     "types": "wrangler types",

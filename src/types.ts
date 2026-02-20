@@ -32,6 +32,12 @@ export interface MoltbotEnv {
   DISCORD_DM_POLICY?: string;
   SLACK_BOT_TOKEN?: string;
   SLACK_APP_TOKEN?: string;
+  // AWS Bedrock MFA auth (zero standing privileges)
+  AWS_ACCESS_KEY_ID?: string;
+  AWS_SECRET_ACCESS_KEY?: string;
+  AWS_MFA_SERIAL?: string; // MFA device ARN
+  AWS_ROLE_ARN?: string; // Role to assume for Bedrock access
+  BEDROCK_DEFAULT_MODEL?: string; // Default model after bedrock auth e.g. "amazon-bedrock/us.anthropic.claude-sonnet-4-6-v1"
   // Cloudflare Access configuration for admin routes
   CF_ACCESS_TEAM_DOMAIN?: string; // e.g., 'myteam.cloudflareaccess.com'
   CF_ACCESS_AUD?: string; // Application Audience (AUD) tag
