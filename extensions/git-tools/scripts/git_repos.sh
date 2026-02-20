@@ -3,19 +3,19 @@
 # Usage: git_repos (no arguments)
 
 PASS=0; WARN=0; FAIL=0
-WORKSPACE="/root/.openclaw/workspace"
+REPOS_DIR="/root/.openclaw/workspace/repos"
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 warn() { echo "[WARN] $1"; WARN=$((WARN + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 info() { echo "[INFO] $1"; }
 
-info "Scanning workspace for git repos..."
+info "Scanning $REPOS_DIR for git repos..."
 
-REPOS=$(find "$WORKSPACE" -maxdepth 4 -name .git -type d 2>/dev/null | while read -r d; do dirname "$d"; done)
+REPOS=$(find "$REPOS_DIR" -maxdepth 3 -name .git -type d 2>/dev/null | while read -r d; do dirname "$d"; done)
 
 if [ -z "$REPOS" ]; then
-    warn "No git repos found in $WORKSPACE"
+    warn "No git repos found in $REPOS_DIR"
     info "To clone a repo: /git_sync <git-url>"
 else
     COUNT=$(echo "$REPOS" | wc -l | tr -d ' ')

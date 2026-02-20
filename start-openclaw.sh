@@ -85,7 +85,7 @@ if r2_configured; then
     if [ "$REMOTE_WS_COUNT" -gt 0 ]; then
         echo "Restoring workspace from R2 ($REMOTE_WS_COUNT files)..."
         mkdir -p "$WORKSPACE_DIR"
-        rclone copy "r2:${R2_BUCKET}/workspace/" "$WORKSPACE_DIR/" $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' -v 2>&1 || echo "WARNING: workspace restore failed with exit code $?"
+        rclone copy "r2:${R2_BUCKET}/workspace/" "$WORKSPACE_DIR/" $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' --exclude='repos/**' -v 2>&1 || echo "WARNING: workspace restore failed with exit code $?"
         echo "Workspace restored"
     fi
 
@@ -619,7 +619,7 @@ if r2_configured; then
                     --filter='+ workspace/**/.git/**' --exclude='.git/**' 2>> "$LOGFILE"
                 if [ -d "$WORKSPACE_DIR" ]; then
                     rclone sync "$WORKSPACE_DIR/" "r2:${R2_BUCKET}/workspace/" \
-                        $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
+                        $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' --exclude='repos/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
                 fi
                 date -Iseconds > "$LAST_SYNC_FILE"
                 touch "$MARKER"

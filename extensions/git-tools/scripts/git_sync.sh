@@ -1,10 +1,11 @@
 #!/bin/bash
 # git_sync — Pull all workspace repos or clone a new one (LLM-free execution)
-# Usage: git_sync          — pull all repos
-#        git_sync <url>    — clone or pull specific repo
+# Usage: git_sync              — pull all repos
+#        git_sync <url>        — clone or pull specific repo
+#        git_sync <url> <dir>  — clone into repos/<dir> (custom directory name)
 
 PASS=0; WARN=0; FAIL=0
-WORKSPACE="/root/.openclaw/workspace"
+REPOS_DIR="/root/.openclaw/workspace/repos"
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 warn() { echo "[WARN] $1"; WARN=$((WARN + 1)); }
@@ -27,18 +28,9 @@ if [ -n "$1" ]; then
         exit 0
     fi
 
-    # Extract repo name
-    REPO_NAME=$(basename "$URL" .git)
-
-    # Check both flat and repos/ layouts for existing repos
-    if [ -d "$WORKSPACE/$REPO_NAME/.git" ]; then
-        TARGET="$WORKSPACE/$REPO_NAME"
-    elif [ -d "$WORKSPACE/repos/$REPO_NAME/.git" ]; then
-        TARGET="$WORKSPACE/repos/$REPO_NAME"
-    else
-        # New clone — use flat layout (backward compatible)
-        TARGET="$WORKSPACE/$REPO_NAME"
-    fi
+    # Extract repo name, allow optional custom dir
+    REPO_NAME="${2:-$(basename "$URL" .git)}"
+    TARGET="$REPOS_DIR/$REPO_NAME"
 
     if [ -d "$TARGET/.git" ]; then
         # Repo exists — pull instead
@@ -71,12 +63,12 @@ if [ -n "$1" ]; then
     fi
 else
     # Mode 1: Pull all repos
-    info "Scanning workspace for git repos..."
+    info "Scanning $REPOS_DIR for git repos..."
 
-    REPOS=$(find "$WORKSPACE" -maxdepth 4 -name .git -type d 2>/dev/null | while read -r gitdir; do dirname "$gitdir"; done)
+    REPOS=$(find "$REPOS_DIR" -maxdepth 3 -name .git -type d 2>/dev/null | while read -r gitdir; do dirname "$gitdir"; done)
 
     if [ -z "$REPOS" ]; then
-        warn "No git repos found in $WORKSPACE"
+        warn "No git repos found in $REPOS_DIR"
         info "To clone a repo: /git_sync <git-url>"
     else
         COUNT=$(echo "$REPOS" | wc -l | tr -d ' ')
