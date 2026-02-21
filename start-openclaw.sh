@@ -739,13 +739,15 @@ AWSCONF
             { match: 'deepseek.v3', alias: 'DeepSeek V3' },
         ];
 
-        // Static fallback IDs (used when discovery fails)
-        // Use us. prefix (cross-region inference profiles) — required by AWS for on-demand.
+        // Static fallback IDs (used when discovery fails).
+        // Use base model IDs to match what OpenClaw's bedrockDiscovery registers
+        // in the provider's internal model registry. OpenClaw handles inference
+        // profile ID mapping (us. prefix) at the API call level.
         const staticFallback = [
-            { id: 'us.anthropic.claude-sonnet-4-6-v1', alias: 'Bedrock Sonnet 4.6' },
-            { id: 'us.anthropic.claude-opus-4-6-v1', alias: 'Bedrock Opus 4.6' },
-            { id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', alias: 'Bedrock Haiku 4.5' },
-            { id: 'us.deepseek.r1-v1:0', alias: 'DeepSeek R1' },
+            { id: 'anthropic.claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6' },
+            { id: 'anthropic.claude-opus-4-6-v1', alias: 'Bedrock Opus 4.6' },
+            { id: 'anthropic.claude-haiku-4-5-20251001-v1:0', alias: 'Bedrock Haiku 4.5' },
+            { id: 'deepseek.r1-v1:0', alias: 'DeepSeek R1' },
             { id: 'qwen.qwen3-coder-next', alias: 'Qwen3 Coder' },
             { id: 'deepseek.v3.2', alias: 'DeepSeek V3' },
         ];
@@ -754,15 +756,22 @@ AWSCONF
         config.agents.defaults = config.agents.defaults || {};
         config.agents.defaults.models = config.agents.defaults.models || {};
 
+        // Remove stale us. prefix entries from previous deploys
+        Object.keys(config.agents.defaults.models).forEach(function(key) {
+            if (key.startsWith('amazon-bedrock/us.')) {
+                delete config.agents.defaults.models[key];
+            }
+        });
+
         let added = 0;
         if (discovered.length > 0) {
             // Intersection: for each curated pattern, find matching discovered model.
-            // Prefer us. prefix (cross-region inference profiles) — AWS Bedrock
-            // requires these for on-demand invocation; base model IDs are rejected.
+            // Use base model IDs (matching bedrockDiscovery's internal registry).
             for (const c of curated) {
                 const matches = discovered.filter(function(m) { return m.includes(c.match); });
-                const preferred = matches.find(function(m) { return m.startsWith('us.'); });
-                const found = preferred || (matches[0] ? 'us.' + matches[0] : null);
+                // Prefer non-us. prefix (base model IDs) since that's what bedrockDiscovery registers
+                const preferred = matches.find(function(m) { return !m.startsWith('us.'); });
+                const found = preferred || matches[0] || null;
                 if (found) {
                     const key = 'amazon-bedrock/' + found;
                     config.agents.defaults.models[key] = { alias: c.alias };
