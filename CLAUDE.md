@@ -79,7 +79,7 @@ Three-layer flow: `wrangler.jsonc`/secrets → `env.ts:buildEnvVars()` → `star
 
 **Runtime model switching (`/model` command):** When 2+ provider API keys are present, `start-openclaw.sh` auto-populates `agents.defaults.models` (object keyed by model ID, acts as allowlist for `/model`) and `agents.defaults.model.fallbacks`. Users can type `/model` in chat to see available models and `/model <number>` to switch. Models per provider:
 - Google: `gemini-3-flash-preview`, `gemini-3-pro-preview`, `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`
-- Anthropic: `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-6`
+- Anthropic: `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-opus-4-6`
 - OpenAI: `gpt-4o`
 
 **To switch default model/provider:** Change env vars in `wrangler.jsonc` (vars) or secrets → `npm run deploy` → restart gateway via admin UI or `POST /api/admin/gateway/restart`.

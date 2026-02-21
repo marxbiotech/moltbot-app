@@ -370,7 +370,7 @@ if (process.env.OPENCLAW_DEV_MODE === 'true') {
 // Examples:
 //   workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
 //   openai/gpt-4o
-//   anthropic/claude-sonnet-4-5
+//   anthropic/claude-sonnet-4-6
 if (process.env.CF_AI_GATEWAY_MODEL) {
     const raw = process.env.CF_AI_GATEWAY_MODEL;
     const slashIdx = raw.indexOf('/');
@@ -437,7 +437,7 @@ if (process.env.DEFAULT_MODEL) {
     if (process.env.ANTHROPIC_API_KEY) {
         available.push(
             { id: 'anthropic/claude-haiku-4-5', alias: 'Claude Haiku' },
-            { id: 'anthropic/claude-sonnet-4-5', alias: 'Claude Sonnet' },
+            { id: 'anthropic/claude-sonnet-4-6', alias: 'Claude Sonnet' },
             { id: 'anthropic/claude-opus-4-6', alias: 'Claude Opus' }
         );
     }

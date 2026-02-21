@@ -34,7 +34,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && aws --version
 
 # Install OpenClaw (formerly clawdbot/moltbot)
-RUN npm install -g openclaw@2026.2.15 \
+RUN npm install -g openclaw@2026.2.19-2 \
     && openclaw --version
 
 # Create OpenClaw directories
