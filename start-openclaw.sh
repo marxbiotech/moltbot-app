@@ -757,7 +757,8 @@ AWSCONF
             // requires these for on-demand invocation; base model IDs are rejected.
             for (const c of curated) {
                 const matches = discovered.filter(function(m) { return m.includes(c.match); });
-                const found = matches.find(function(m) { return m.startsWith('us.'); }) || matches[0];
+                const preferred = matches.find(function(m) { return m.startsWith('us.'); });
+                const found = preferred || (matches[0] ? 'us.' + matches[0] : null);
                 if (found) {
                     const key = 'amazon-bedrock/' + found;
                     config.agents.defaults.models[key] = { alias: c.alias };
