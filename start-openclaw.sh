@@ -445,13 +445,18 @@ if (process.env.DEFAULT_MODEL) {
     }
 }
 
-// Enable bedrockDiscovery for Bedrock provider auto-creation.
-// This creates the amazon-bedrock provider at gateway startup so
-// /aws_auth only needs to write credentials — no restart needed.
+// Manually configure amazon-bedrock provider (instead of bedrockDiscovery which
+// uses base model IDs that AWS rejects for on-demand invocation — inference
+// profile IDs with us. prefix are required).
 if (process.env.AWS_BASE_ACCESS_KEY_ID) {
+    const brRegion = process.env.AWS_REGION || 'us-east-1';
     config.models = config.models || {};
-    config.models.bedrockDiscovery = { enabled: true, region: process.env.AWS_REGION || 'us-east-1' };
-    console.log('Bedrock discovery enabled (region: ' + (process.env.AWS_REGION || 'us-east-1') + ')');
+    config.models.providers = config.models.providers || {};
+    config.models.providers['amazon-bedrock'] = { enabled: true, region: brRegion };
+    // Disable bedrockDiscovery — it creates entries with base model IDs
+    // (e.g. anthropic.claude-sonnet-4-6) that fail on-demand invocation.
+    delete config.models.bedrockDiscovery;
+    console.log('Bedrock provider configured (region: ' + brRegion + ')');
 }
 
 // Telegram configuration
