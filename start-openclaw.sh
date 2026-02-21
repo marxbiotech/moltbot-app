@@ -714,8 +714,9 @@ credential_process = /usr/local/bin/aws-cred-helper
 AWSCONF
     echo "AWS credential_process configured for SDK auto-refresh"
 
-    echo "Discovering Bedrock inference profiles in $BR_REGION..."
+    echo "Discovering Bedrock models in $BR_REGION..."
 
+    # 1. Discover inference profiles (for Anthropic and other models that require them)
     BEDROCK_PROFILES=$(AWS_ACCESS_KEY_ID="$AWS_BASE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_BASE_SECRET_ACCESS_KEY" \
         aws bedrock list-inference-profiles \
         --region "$BR_REGION" \
@@ -728,44 +729,76 @@ AWSCONF
         BEDROCK_PROFILES="[]"
     fi
 
-    BEDROCK_PROFILES="${BEDROCK_PROFILES:-[]}" BR_REGION="$BR_REGION" node -e "
+    # 2. Discover foundation models (for third-party models without inference profiles)
+    BEDROCK_MODELS=$(AWS_ACCESS_KEY_ID="$AWS_BASE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_BASE_SECRET_ACCESS_KEY" \
+        aws bedrock list-foundation-models \
+        --region "$BR_REGION" \
+        --query 'modelSummaries[?responseStreamingSupported==`true`].modelId' \
+        --output json 2>&1) || true
+
+    if ! echo "$BEDROCK_MODELS" | head -1 | grep -q '^\['; then
+        echo "WARNING: Bedrock foundation model discovery failed: $BEDROCK_MODELS"
+        BEDROCK_MODELS="[]"
+    fi
+
+    BEDROCK_PROFILES="${BEDROCK_PROFILES:-[]}" BEDROCK_MODELS="${BEDROCK_MODELS:-[]}" BR_REGION="$BR_REGION" node -e "
     const fs = require('fs');
     const configPath = '/root/.openclaw/openclaw.json';
     try {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const discovered = JSON.parse(process.env.BEDROCK_PROFILES || '[]');
+        const profiles = JSON.parse(process.env.BEDROCK_PROFILES || '[]');
+        const foundations = JSON.parse(process.env.BEDROCK_MODELS || '[]');
         const brRegion = process.env.BR_REGION || 'us-east-1';
 
         // Curated models with metadata for manual provider config.
-        // 'match' is substring-matched against discovered inference profile IDs.
+        // 'match' is substring-matched against discovered IDs.
+        // 'needsProfile': true = newer Anthropic models that MUST use inference profile IDs.
+        //                 false = third-party models that use base model IDs (no inference profile exists).
         const curated = [
-            { match: 'claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6', name: 'Claude Sonnet 4.6', reasoning: false, input: ['text', 'image'], contextWindow: 200000, maxTokens: 8192 },
-            { match: 'claude-opus-4-6', alias: 'Bedrock Opus 4.6', name: 'Claude Opus 4.6', reasoning: true, input: ['text', 'image'], contextWindow: 200000, maxTokens: 32000 },
-            { match: 'claude-haiku-4-5', alias: 'Bedrock Haiku 4.5', name: 'Claude Haiku 4.5', reasoning: false, input: ['text', 'image'], contextWindow: 200000, maxTokens: 8192 },
-            { match: 'deepseek.r1', alias: 'DeepSeek R1', name: 'DeepSeek R1', reasoning: true, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
-            { match: 'qwen3-coder', alias: 'Qwen3 Coder', name: 'Qwen3 Coder', reasoning: false, input: ['text'], contextWindow: 131072, maxTokens: 8192 },
-            { match: 'deepseek.v3', alias: 'DeepSeek V3', name: 'DeepSeek V3', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
+            { match: 'claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6', name: 'Claude Sonnet 4.6', needsProfile: true, reasoning: false, input: ['text', 'image'], contextWindow: 200000, maxTokens: 8192 },
+            { match: 'claude-opus-4-6', alias: 'Bedrock Opus 4.6', name: 'Claude Opus 4.6', needsProfile: true, reasoning: true, input: ['text', 'image'], contextWindow: 200000, maxTokens: 32000 },
+            { match: 'claude-haiku-4-5', alias: 'Bedrock Haiku 4.5', name: 'Claude Haiku 4.5', needsProfile: true, reasoning: false, input: ['text', 'image'], contextWindow: 200000, maxTokens: 8192 },
+            { match: 'deepseek.r1', alias: 'DeepSeek R1', name: 'DeepSeek R1', needsProfile: true, reasoning: true, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
+            { match: 'qwen3-coder', alias: 'Qwen3 Coder', name: 'Qwen3 Coder', needsProfile: false, reasoning: false, input: ['text'], contextWindow: 131072, maxTokens: 8192 },
+            { match: 'deepseek.v3', alias: 'DeepSeek V3', name: 'DeepSeek V3', needsProfile: false, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
+            { match: 'gpt-oss-120b', alias: 'GPT-OSS 120B', name: 'GPT-OSS 120B', needsProfile: false, reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
         ];
 
-        // Static fallback — inference profile IDs (us. prefix).
-        // Used when discovery fails (e.g. base IAM user has no ListInferenceProfiles permission).
+        // Static fallback — used when BOTH discovery APIs fail.
+        // Inference profile IDs for models that need them, base IDs for the rest.
         const staticFallback = [
             { id: 'us.anthropic.claude-sonnet-4-6', match: 'claude-sonnet-4-6' },
             { id: 'us.anthropic.claude-opus-4-6-v1', match: 'claude-opus-4-6' },
-            { id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', match: 'claude-haiku-4-5' },
+            { id: 'global.anthropic.claude-haiku-4-5-20251001-v1:0', match: 'claude-haiku-4-5' },
             { id: 'us.deepseek.r1-v1:0', match: 'deepseek.r1' },
+            { id: 'qwen.qwen3-coder-next', match: 'qwen3-coder' },
+            { id: 'deepseek.v3.2', match: 'deepseek.v3' },
+            { id: 'openai.gpt-oss-120b-1:0', match: 'gpt-oss-120b' },
         ];
 
-        // Resolve models: discovery → curated intersection, or static fallback
+        // Resolve models: for each curated entry, find the best available ID.
+        // Models with needsProfile=true → search inference profiles first.
+        // Models with needsProfile=false → search foundation models (base IDs).
         const resolvedModels = [];
-        if (discovered.length > 0) {
+        var discoveryUsed = profiles.length > 0 || foundations.length > 0;
+
+        if (discoveryUsed) {
             for (const c of curated) {
-                const found = discovered.find(function(id) { return id.includes(c.match); });
+                var found = null;
+                if (c.needsProfile) {
+                    // Search inference profiles for models that require them
+                    found = profiles.find(function(id) { return id.includes(c.match); });
+                }
+                if (!found) {
+                    // Search foundation models (base IDs) — works for third-party models
+                    // and as fallback for profile models
+                    found = foundations.find(function(id) { return id.includes(c.match); });
+                }
                 if (found) {
                     resolvedModels.push({ id: found, curated: c });
                 }
             }
-            console.log('Bedrock: ' + resolvedModels.length + ' models (from ' + discovered.length + ' inference profiles)');
+            console.log('Bedrock: ' + resolvedModels.length + ' models (from ' + profiles.length + ' profiles + ' + foundations.length + ' foundation models)');
         } else {
             for (const s of staticFallback) {
                 const c = curated.find(function(c) { return c.match === s.match; });
@@ -782,9 +815,9 @@ AWSCONF
             config.models = config.models || {};
             config.models.bedrockDiscovery = { enabled: false };
 
-            // 2. Set up manual amazon-bedrock provider with inference profile IDs.
-            //    Schema: { baseUrl, api: 'bedrock-converse-stream', auth: 'aws-sdk', models: [...] }
-            //    auth: 'aws-sdk' uses the AWS SDK credential chain (no apiKey needed).
+            // 2. Set up manual amazon-bedrock provider.
+            //    Mix of inference profile IDs (for Anthropic) and base model IDs (for third-party).
+            //    OpenClaw passes model ID as-is to Bedrock API — both types work.
             config.models.providers = config.models.providers || {};
             config.models.providers['amazon-bedrock'] = {
                 baseUrl: 'https://bedrock-runtime.' + brRegion + '.amazonaws.com',
@@ -802,22 +835,22 @@ AWSCONF
                     };
                 })
             };
-            console.log('Bedrock provider: manual config with inference profile IDs');
+            console.log('Bedrock provider: manual config (' + resolvedModels.length + ' models)');
             console.log('bedrockDiscovery: disabled');
 
-            // 3. Update allowlist (for /model menu) with inference profile IDs.
+            // 3. Update allowlist (for /model menu).
             config.agents = config.agents || {};
             config.agents.defaults = config.agents.defaults || {};
             config.agents.defaults.models = config.agents.defaults.models || {};
 
-            // Remove all old amazon-bedrock entries (base IDs and us. prefix from previous deploys)
+            // Remove all old amazon-bedrock entries
             Object.keys(config.agents.defaults.models).forEach(function(key) {
                 if (key.startsWith('amazon-bedrock/')) {
                     delete config.agents.defaults.models[key];
                 }
             });
 
-            // Add new entries with inference profile IDs
+            // Add entries (mix of inference profile and base model IDs)
             for (const m of resolvedModels) {
                 config.agents.defaults.models['amazon-bedrock/' + m.id] = { alias: m.curated.alias };
             }
