@@ -43,7 +43,7 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd
 
 # Copy startup script
-# Build cache bust: 2026-02-19-skills-to-level2
+# Build cache bust: 2026-02-21-subscription-auth-plugin
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
