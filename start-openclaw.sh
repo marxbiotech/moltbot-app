@@ -451,12 +451,13 @@ if (process.env.DEFAULT_MODEL) {
     }
 }
 
-// Clean up invalid manual amazon-bedrock provider from previous deploys.
-// A prior deploy wrote { enabled, region } which is not a valid provider format
-// (providers need baseUrl, apiKey, api, models). bedrockDiscovery handles this natively.
+// Clean up stale amazon-bedrock provider from R2 backups.
+// The BEDROCK MODEL DISCOVERY section below will recreate it with correct
+// inference profile IDs and provider format. Remove any existing entry to
+// prevent conflicts between stale base-model-ID entries and new inference-profile-ID entries.
 if (config.models && config.models.providers && config.models.providers['amazon-bedrock']) {
     delete config.models.providers['amazon-bedrock'];
-    console.log('Removed invalid manual amazon-bedrock provider config (stale R2 data)');
+    console.log('Cleaned up stale amazon-bedrock provider (will be recreated by discovery section)');
 }
 
 // Telegram configuration
@@ -671,11 +672,16 @@ openclaw config set tools.exec.ask off 2>/dev/null || true
 echo "CLI config set: tools.profile=full, exec.security=full, exec.ask=off"
 
 # ============================================================
-# BEDROCK MODEL DISCOVERY (filtered allowlist at startup)
+# BEDROCK MODEL DISCOVERY + MANUAL PROVIDER SETUP
 # ============================================================
-# Calls ListFoundationModels with base IAM creds, then intersects with a curated
-# list of 6 models. This ensures the allowlist has CORRECT model IDs from AWS
-# while keeping the /model menu clean. Static IDs are used as fallback if discovery fails.
+# OpenClaw's built-in bedrockDiscovery uses ListFoundationModels which returns
+# base model IDs (e.g. anthropic.claude-sonnet-4-6). Since Oct 2024, newer models
+# require inference profile IDs (e.g. us.anthropic.claude-sonnet-4-6) for on-demand
+# invocation. We disable bedrockDiscovery and manually set up the amazon-bedrock
+# provider with inference profile IDs.
+#
+# Flow: list-inference-profiles → curated intersection → manual provider config
+# IAM: requires bedrock:ListInferenceProfiles (falls back to static IDs if unavailable)
 if [ -n "$AWS_BASE_ACCESS_KEY_ID" ] && [ -n "$AWS_BASE_SECRET_ACCESS_KEY" ]; then
     BR_REGION="${AWS_REGION:-us-east-1}"
 
@@ -708,89 +714,119 @@ credential_process = /usr/local/bin/aws-cred-helper
 AWSCONF
     echo "AWS credential_process configured for SDK auto-refresh"
 
-    echo "Discovering Bedrock models in $BR_REGION..."
+    echo "Discovering Bedrock inference profiles in $BR_REGION..."
 
-    BEDROCK_MODELS=$(AWS_ACCESS_KEY_ID="$AWS_BASE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_BASE_SECRET_ACCESS_KEY" \
-        aws bedrock list-foundation-models \
+    BEDROCK_PROFILES=$(AWS_ACCESS_KEY_ID="$AWS_BASE_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_BASE_SECRET_ACCESS_KEY" \
+        aws bedrock list-inference-profiles \
         --region "$BR_REGION" \
-        --query 'modelSummaries[?responseStreamingSupported==`true`].modelId' \
+        --type-equals SYSTEM_DEFINED \
+        --query 'inferenceProfileSummaries[?status==`ACTIVE`].inferenceProfileId' \
         --output json 2>&1) || true
 
-    if ! echo "$BEDROCK_MODELS" | head -1 | grep -q '^\['; then
-        echo "WARNING: Bedrock model discovery failed: $BEDROCK_MODELS"
-        BEDROCK_MODELS="[]"
+    if ! echo "$BEDROCK_PROFILES" | head -1 | grep -q '^\['; then
+        echo "WARNING: Bedrock inference profile discovery failed: $BEDROCK_PROFILES"
+        BEDROCK_PROFILES="[]"
     fi
 
-    BEDROCK_MODELS="${BEDROCK_MODELS:-[]}" node -e "
+    BEDROCK_PROFILES="${BEDROCK_PROFILES:-[]}" BR_REGION="$BR_REGION" node -e "
     const fs = require('fs');
     const configPath = '/root/.openclaw/openclaw.json';
     try {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const discovered = JSON.parse(process.env.BEDROCK_MODELS || '[]');
+        const discovered = JSON.parse(process.env.BEDROCK_PROFILES || '[]');
+        const brRegion = process.env.BR_REGION || 'us-east-1';
 
-        // Curated models — only these 6 patterns are allowed in the allowlist.
-        // Each pattern is matched as substring against discovered model IDs.
+        // Curated models with metadata for manual provider config.
+        // 'match' is substring-matched against discovered inference profile IDs.
         const curated = [
-            { match: 'claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6' },
-            { match: 'claude-opus-4-6', alias: 'Bedrock Opus 4.6' },
-            { match: 'claude-haiku-4-5', alias: 'Bedrock Haiku 4.5' },
-            { match: 'deepseek.r1', alias: 'DeepSeek R1' },
-            { match: 'qwen3-coder', alias: 'Qwen3 Coder' },
-            { match: 'deepseek.v3', alias: 'DeepSeek V3' },
+            { match: 'claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6', name: 'Claude Sonnet 4.6', reasoning: false, input: ['text', 'image'], contextWindow: 200000, maxTokens: 8192 },
+            { match: 'claude-opus-4-6', alias: 'Bedrock Opus 4.6', name: 'Claude Opus 4.6', reasoning: true, input: ['text', 'image'], contextWindow: 200000, maxTokens: 32000 },
+            { match: 'claude-haiku-4-5', alias: 'Bedrock Haiku 4.5', name: 'Claude Haiku 4.5', reasoning: false, input: ['text', 'image'], contextWindow: 200000, maxTokens: 8192 },
+            { match: 'deepseek.r1', alias: 'DeepSeek R1', name: 'DeepSeek R1', reasoning: true, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
+            { match: 'qwen3-coder', alias: 'Qwen3 Coder', name: 'Qwen3 Coder', reasoning: false, input: ['text'], contextWindow: 131072, maxTokens: 8192 },
+            { match: 'deepseek.v3', alias: 'DeepSeek V3', name: 'DeepSeek V3', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192 },
         ];
 
-        // Static fallback IDs (used when discovery fails).
-        // Use base model IDs to match what OpenClaw's bedrockDiscovery registers
-        // in the provider's internal model registry. OpenClaw handles inference
-        // profile ID mapping (us. prefix) at the API call level.
+        // Static fallback — inference profile IDs (us. prefix).
+        // Used when discovery fails (e.g. base IAM user has no ListInferenceProfiles permission).
         const staticFallback = [
-            { id: 'anthropic.claude-sonnet-4-6', alias: 'Bedrock Sonnet 4.6' },
-            { id: 'anthropic.claude-opus-4-6-v1', alias: 'Bedrock Opus 4.6' },
-            { id: 'anthropic.claude-haiku-4-5-20251001-v1:0', alias: 'Bedrock Haiku 4.5' },
-            { id: 'deepseek.r1-v1:0', alias: 'DeepSeek R1' },
-            { id: 'qwen.qwen3-coder-next', alias: 'Qwen3 Coder' },
-            { id: 'deepseek.v3.2', alias: 'DeepSeek V3' },
+            { id: 'us.anthropic.claude-sonnet-4-6', match: 'claude-sonnet-4-6' },
+            { id: 'us.anthropic.claude-opus-4-6-v1', match: 'claude-opus-4-6' },
+            { id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', match: 'claude-haiku-4-5' },
+            { id: 'us.deepseek.r1-v1:0', match: 'deepseek.r1' },
         ];
 
-        config.agents = config.agents || {};
-        config.agents.defaults = config.agents.defaults || {};
-        config.agents.defaults.models = config.agents.defaults.models || {};
-
-        // Remove stale us. prefix entries from previous deploys
-        Object.keys(config.agents.defaults.models).forEach(function(key) {
-            if (key.startsWith('amazon-bedrock/us.')) {
-                delete config.agents.defaults.models[key];
-            }
-        });
-
-        let added = 0;
+        // Resolve models: discovery → curated intersection, or static fallback
+        const resolvedModels = [];
         if (discovered.length > 0) {
-            // Intersection: for each curated pattern, find matching discovered model.
-            // Use base model IDs (matching bedrockDiscovery's internal registry).
             for (const c of curated) {
-                const matches = discovered.filter(function(m) { return m.includes(c.match); });
-                // Prefer non-us. prefix (base model IDs) since that's what bedrockDiscovery registers
-                const preferred = matches.find(function(m) { return !m.startsWith('us.'); });
-                const found = preferred || matches[0] || null;
+                const found = discovered.find(function(id) { return id.includes(c.match); });
                 if (found) {
-                    const key = 'amazon-bedrock/' + found;
-                    config.agents.defaults.models[key] = { alias: c.alias };
-                    added++;
+                    resolvedModels.push({ id: found, curated: c });
                 }
             }
-            console.log('Bedrock allowlist: ' + added + ' models (filtered from ' + discovered.length + ' discovered)');
+            console.log('Bedrock: ' + resolvedModels.length + ' models (from ' + discovered.length + ' inference profiles)');
         } else {
-            // Fallback: use static IDs
             for (const s of staticFallback) {
-                config.agents.defaults.models['amazon-bedrock/' + s.id] = { alias: s.alias };
-                added++;
+                const c = curated.find(function(c) { return c.match === s.match; });
+                if (c) {
+                    resolvedModels.push({ id: s.id, curated: c });
+                }
             }
-            console.log('Bedrock allowlist: ' + added + ' models (static fallback)');
+            console.log('Bedrock: ' + resolvedModels.length + ' models (static fallback)');
+        }
+
+        if (resolvedModels.length > 0) {
+            // 1. Disable bedrockDiscovery — it uses ListFoundationModels which returns
+            //    base model IDs that can't be used for on-demand invocation of newer models.
+            config.models = config.models || {};
+            config.models.bedrockDiscovery = { enabled: false };
+
+            // 2. Set up manual amazon-bedrock provider with inference profile IDs.
+            //    Schema: { baseUrl, api: 'bedrock-converse-stream', auth: 'aws-sdk', models: [...] }
+            //    auth: 'aws-sdk' uses the AWS SDK credential chain (no apiKey needed).
+            config.models.providers = config.models.providers || {};
+            config.models.providers['amazon-bedrock'] = {
+                baseUrl: 'https://bedrock-runtime.' + brRegion + '.amazonaws.com',
+                api: 'bedrock-converse-stream',
+                auth: 'aws-sdk',
+                models: resolvedModels.map(function(m) {
+                    return {
+                        id: m.id,
+                        name: m.curated.name,
+                        reasoning: m.curated.reasoning,
+                        input: m.curated.input,
+                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                        contextWindow: m.curated.contextWindow,
+                        maxTokens: m.curated.maxTokens
+                    };
+                })
+            };
+            console.log('Bedrock provider: manual config with inference profile IDs');
+            console.log('bedrockDiscovery: disabled');
+
+            // 3. Update allowlist (for /model menu) with inference profile IDs.
+            config.agents = config.agents || {};
+            config.agents.defaults = config.agents.defaults || {};
+            config.agents.defaults.models = config.agents.defaults.models || {};
+
+            // Remove all old amazon-bedrock entries (base IDs and us. prefix from previous deploys)
+            Object.keys(config.agents.defaults.models).forEach(function(key) {
+                if (key.startsWith('amazon-bedrock/')) {
+                    delete config.agents.defaults.models[key];
+                }
+            });
+
+            // Add new entries with inference profile IDs
+            for (const m of resolvedModels) {
+                config.agents.defaults.models['amazon-bedrock/' + m.id] = { alias: m.curated.alias };
+            }
+            console.log('Bedrock allowlist: ' + resolvedModels.map(function(m) { return m.curated.alias; }).join(', '));
         }
 
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     } catch(e) {
-        console.error('Bedrock allowlist patch failed: ' + e.message);
+        console.error('Bedrock setup failed: ' + e.message);
     }
     " 2>&1
 fi

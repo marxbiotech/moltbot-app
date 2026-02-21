@@ -90,7 +90,7 @@ echo "[PASS] Session credentials written (SDK will auto-refresh)"
 # 3. Switch default model to bedrock if configured
 # BEDROCK_DEFAULT_MODEL is a pattern (e.g. "claude-sonnet-4-6"), not a full model ID.
 # Resolve it against the allowlist in config to get the correct full model ID
-# (e.g. "amazon-bedrock/anthropic.claude-sonnet-4-6-v1").
+# (e.g. "amazon-bedrock/us.anthropic.claude-sonnet-4-6").
 if [ -n "$BEDROCK_DEFAULT_MODEL" ]; then
     BEDROCK_DEFAULT_MODEL="$BEDROCK_DEFAULT_MODEL" node -e "
     const fs = require('fs');
