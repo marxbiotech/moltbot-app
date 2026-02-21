@@ -38,6 +38,7 @@ export interface MoltbotEnv {
   AWS_MFA_SERIAL?: string; // MFA device ARN
   AWS_ROLE_ARN?: string; // Role to assume for Bedrock access
   BEDROCK_DEFAULT_MODEL?: string; // Default model pattern after bedrock auth e.g. "claude-sonnet-4-6"
+  SUBSCRIPTION_AUTH?: string; // Set to 'true' to allow startup without API keys (use /claude_auth or /openai_auth)
   MOLTBOT_EMAIL?: string; // Owner email for SSH key comment and git config
   // Cloudflare Access configuration for admin routes
   CF_ACCESS_TEAM_DOMAIN?: string; // e.g., 'myteam.cloudflareaccess.com'
