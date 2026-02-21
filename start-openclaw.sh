@@ -89,6 +89,28 @@ if r2_configured; then
         echo "Workspace restored"
     fi
 
+    # Restore AWS session credentials (from /aws_auth MFA)
+    # If session.json exists in R2 and hasn't expired, restore it so Bedrock works
+    # immediately without re-running /aws_auth after container restart.
+    if rclone ls "r2:${R2_BUCKET}/aws/session.json" $RCLONE_FLAGS 2>/dev/null | grep -q session.json; then
+        mkdir -p /root/.aws
+        rclone copy "r2:${R2_BUCKET}/aws/" /root/.aws/ $RCLONE_FLAGS --include='session.json' 2>&1 || true
+        if [ -f /root/.aws/session.json ]; then
+            EXPIRED=$(node -e "
+                try {
+                    const s = JSON.parse(require('fs').readFileSync('/root/.aws/session.json','utf8'));
+                    console.log(new Date(s.Expiration) < new Date() ? 'yes' : 'no');
+                } catch(e) { console.log('yes'); }
+            " 2>/dev/null)
+            if [ "$EXPIRED" = "yes" ]; then
+                echo "AWS session expired, removing stale credentials"
+                rm -f /root/.aws/session.json
+            else
+                echo "AWS session restored from R2 (still valid)"
+            fi
+        fi
+    fi
+
     # Symlink SSH keys from workspace (persisted via workspace R2 sync)
     # See: docs/onboarding/SSH-Keys.md
     WORKSPACE_SSH="$WORKSPACE_DIR/.ssh"
@@ -618,6 +640,11 @@ if r2_configured; then
 
             COUNT=$(wc -l < "$CHANGED" 2>/dev/null || echo 0)
 
+            # Also check for AWS session credential changes
+            if [ -f /root/.aws/session.json ] && [ /root/.aws/session.json -nt "$MARKER" ]; then
+                COUNT=$((COUNT + 1))
+            fi
+
             if [ "$COUNT" -gt 0 ]; then
                 echo "[sync] Uploading changes ($COUNT files) at $(date)" >> "$LOGFILE"
                 rclone sync "$CONFIG_DIR/" "r2:${R2_BUCKET}/openclaw/" \
@@ -626,6 +653,10 @@ if r2_configured; then
                 if [ -d "$WORKSPACE_DIR" ]; then
                     rclone sync "$WORKSPACE_DIR/" "r2:${R2_BUCKET}/workspace/" \
                         $RCLONE_FLAGS --exclude='skills/**' --exclude='skills-bundled/**' --exclude='repos/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
+                fi
+                # Sync AWS session credentials (from /aws_auth MFA)
+                if [ -f /root/.aws/session.json ]; then
+                    rclone copy /root/.aws/session.json "r2:${R2_BUCKET}/aws/" $RCLONE_FLAGS 2>> "$LOGFILE"
                 fi
                 date -Iseconds > "$LAST_SYNC_FILE"
                 touch "$MARKER"
