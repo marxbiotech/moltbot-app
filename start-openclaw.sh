@@ -451,6 +451,14 @@ if (process.env.DEFAULT_MODEL) {
     }
 }
 
+// Clean up invalid manual amazon-bedrock provider from previous deploys.
+// A prior deploy wrote { enabled, region } which is not a valid provider format
+// (providers need baseUrl, apiKey, api, models). bedrockDiscovery handles this natively.
+if (config.models && config.models.providers && config.models.providers['amazon-bedrock']) {
+    delete config.models.providers['amazon-bedrock'];
+    console.log('Removed invalid manual amazon-bedrock provider config (stale R2 data)');
+}
+
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
 // that would fail OpenClaw's strict config validation (see #47)
@@ -706,10 +714,9 @@ AWSCONF
         aws bedrock list-foundation-models \
         --region "$BR_REGION" \
         --query 'modelSummaries[?responseStreamingSupported==`true`].modelId' \
-        --output json 2>&1)
-    BEDROCK_EXIT=$?
+        --output json 2>&1) || true
 
-    if [ $BEDROCK_EXIT -ne 0 ]; then
+    if ! echo "$BEDROCK_MODELS" | head -1 | grep -q '^\['; then
         echo "WARNING: Bedrock model discovery failed: $BEDROCK_MODELS"
         BEDROCK_MODELS="[]"
     fi
