@@ -33,6 +33,22 @@ import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
 /**
+ * Sanitize a WebSocket close reason to be a valid ByteString (chars <= 255)
+ * and at most 123 bytes (WebSocket spec limit).
+ */
+function sanitizeCloseReason(reason: string): string {
+  // Replace characters outside ByteString range (> 255) with '?'
+  let sanitized = '';
+  for (const ch of reason) {
+    sanitized += ch.charCodeAt(0) > 255 ? '?' : ch;
+  }
+  if (sanitized.length > 123) {
+    sanitized = sanitized.slice(0, 120) + '...';
+  }
+  return sanitized;
+}
+
+/**
  * Transform error messages from the gateway to be more user-friendly.
  */
 function transformErrorMessage(message: string, host: string): string {
@@ -393,7 +409,7 @@ app.all('*', async (c) => {
       if (debugLogs) {
         console.log('[WS] Client closed:', event.code, event.reason);
       }
-      containerWs.close(event.code, event.reason);
+      containerWs.close(event.code, sanitizeCloseReason(event.reason));
     });
 
     containerWs.addEventListener('close', (event) => {
@@ -402,9 +418,7 @@ app.all('*', async (c) => {
       }
       // Transform the close reason (truncate to 123 bytes max for WebSocket spec)
       let reason = transformErrorMessage(event.reason, url.host);
-      if (reason.length > 123) {
-        reason = reason.slice(0, 120) + '...';
-      }
+      reason = sanitizeCloseReason(reason);
       if (debugLogs) {
         console.log('[WS] Transformed close reason:', reason);
       }
