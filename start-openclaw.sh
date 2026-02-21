@@ -169,16 +169,22 @@ if [ ! -f "$CONFIG_FILE" ]; then
         AUTH_ARGS="--auth-choice openai-api-key --openai-api-key $OPENAI_API_KEY"
     fi
 
-    openclaw onboard --non-interactive --accept-risk \
-        --mode local \
-        $AUTH_ARGS \
-        --gateway-port 18789 \
-        --gateway-bind lan \
-        --skip-channels \
-        --skip-skills \
-        --skip-health
+    if [ -z "$AUTH_ARGS" ]; then
+        # No direct API key provider (e.g. Bedrock-only) — onboard has no --auth-choice
+        # for Bedrock. Skip onboard; the config patch section below creates a working config.
+        echo "No onboard-compatible auth provider, skipping onboard (config patch will handle setup)"
+    else
+        openclaw onboard --non-interactive --accept-risk \
+            --mode local \
+            $AUTH_ARGS \
+            --gateway-port 18789 \
+            --gateway-bind lan \
+            --skip-channels \
+            --skip-skills \
+            --skip-health
 
-    echo "Onboard completed"
+        echo "Onboard completed"
+    fi
 else
     echo "Using existing config"
 fi
@@ -443,20 +449,6 @@ if (process.env.DEFAULT_MODEL) {
             console.log('Model fallbacks:', fallbacks.join(', '));
         }
     }
-}
-
-// Manually configure amazon-bedrock provider (instead of bedrockDiscovery which
-// uses base model IDs that AWS rejects for on-demand invocation — inference
-// profile IDs with us. prefix are required).
-if (process.env.AWS_BASE_ACCESS_KEY_ID) {
-    const brRegion = process.env.AWS_REGION || 'us-east-1';
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    config.models.providers['amazon-bedrock'] = { enabled: true, region: brRegion };
-    // Disable bedrockDiscovery — it creates entries with base model IDs
-    // (e.g. anthropic.claude-sonnet-4-6) that fail on-demand invocation.
-    delete config.models.bedrockDiscovery;
-    console.log('Bedrock provider configured (region: ' + brRegion + ')');
 }
 
 // Telegram configuration
