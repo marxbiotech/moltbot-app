@@ -170,6 +170,15 @@ if [ -d "$PLUGIN_STAGING" ]; then
             done
         fi
     done
+    # Remove stale plugins not in staging (handles renames like telegram-webhook → telegram-tools)
+    for local_dir in "$CONFIG_DIR/extensions"/*/; do
+        [ -d "$local_dir" ] || continue
+        local_name=$(basename "$local_dir")
+        if [ ! -d "$PLUGIN_STAGING/$local_name" ]; then
+            echo "Removing stale plugin: $local_name"
+            rm -rf "$local_dir"
+        fi
+    done
     echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
 fi
 
