@@ -503,6 +503,12 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     } else if (dmPolicy === 'open') {
         config.channels.telegram.allowFrom = ['*'];
     }
+    if (process.env.WORKER_URL && process.env.TELEGRAM_WEBHOOK_SECRET) {
+        const webhookUrl = process.env.WORKER_URL.replace(/\/+$/, '') + '/telegram/webhook';
+        config.channels.telegram.webhookUrl = webhookUrl;
+        config.channels.telegram.webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+        console.log('Telegram webhook configured:', webhookUrl);
+    }
 }
 
 // Discord configuration

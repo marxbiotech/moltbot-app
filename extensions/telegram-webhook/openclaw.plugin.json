@@ -1,0 +1,10 @@
+{
+  "id": "telegram-webhook",
+  "name": "Telegram Webhook",
+  "description": "Manage Telegram webhook mode. /telegram_webhook status|on|off|verify",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

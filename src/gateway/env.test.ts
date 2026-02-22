@@ -121,6 +121,18 @@ describe('buildEnvVars', () => {
     expect(result.SLACK_APP_TOKEN).toBe('slack-app');
   });
 
+  it('passes TELEGRAM_WEBHOOK_SECRET to container', () => {
+    const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
+    const result = buildEnvVars(env);
+    expect(result.TELEGRAM_WEBHOOK_SECRET).toBe('my-secret');
+  });
+
+  it('does not include TELEGRAM_WEBHOOK_SECRET when not set', () => {
+    const env = createMockEnv();
+    const result = buildEnvVars(env);
+    expect(result.TELEGRAM_WEBHOOK_SECRET).toBeUndefined();
+  });
+
   it('maps DEV_MODE to OPENCLAW_DEV_MODE for container', () => {
     const env = createMockEnv({
       DEV_MODE: 'true',

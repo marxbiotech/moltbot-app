@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv, MoltbotEnv } from '../types';
+import { timingSafeEqual } from '../utils/crypto';
 import puppeteer, { type Browser, type Page } from '@cloudflare/puppeteer';
 
 /**
@@ -1899,21 +1900,6 @@ function sendError(ws: WebSocket, id: number, code: number, message: string): vo
 function sendEvent(ws: WebSocket, method: string, params?: Record<string, unknown>): void {
   const event: CDPEvent = { method, params };
   ws.send(JSON.stringify(event));
-}
-
-/**
- * Constant-time string comparison to prevent timing attacks
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
 }
 
 export { cdp };
