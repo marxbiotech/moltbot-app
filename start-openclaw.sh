@@ -529,6 +529,8 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
         const webhookUrl = process.env.WORKER_URL.replace(/\/+$/, '') + '/telegram/webhook';
         config.channels.telegram.webhookUrl = webhookUrl;
         config.channels.telegram.webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+        // Bind webhook server to 0.0.0.0 so containerFetch can reach it from outside
+        config.channels.telegram.webhookHost = '0.0.0.0';
         console.log('Telegram webhook configured:', webhookUrl);
     }
 }
