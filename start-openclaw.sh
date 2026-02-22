@@ -17,12 +17,25 @@ RCLONE_CONF="/root/.config/rclone/rclone.conf"
 LAST_SYNC_FILE="/tmp/.last-sync"
 
 # Stop any leftover gateway from a previous invocation.
-# When this script uses `exec openclaw gateway`, the sandbox loses track of the
-# process (marks start-openclaw.sh as "killed"), but the gateway keeps running.
-# On the next invocation the sandbox thinks no gateway exists and re-runs us,
-# so we must explicitly stop the old gateway to free port 18789 and the lock file.
+# `openclaw gateway` starts openclaw-gateway as a daemon child — when the sandbox
+# kills the tracked start-openclaw.sh process, the gateway binary survives as an
+# orphan. On re-invocation we must explicitly stop it to free port 18789.
 openclaw gateway stop 2>/dev/null || true
+# Belt-and-suspenders: directly kill the binary if `gateway stop` didn't work
+pkill -f openclaw-gateway 2>/dev/null || true
 rm -f /tmp/openclaw-gateway.lock "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+
+# Kill orphaned background sync loops from previous invocations.
+# Each start-openclaw.sh spawns a background R2 sync subshell; without cleanup
+# they accumulate on repeated restarts, exhausting container resources.
+if [ -f /tmp/.r2-sync-pid ]; then
+    OLD_SYNC_PID=$(cat /tmp/.r2-sync-pid 2>/dev/null)
+    if [ -n "$OLD_SYNC_PID" ] && kill -0 "$OLD_SYNC_PID" 2>/dev/null; then
+        kill "$OLD_SYNC_PID" 2>/dev/null || true
+        # Also kill any rclone children of the old sync loop
+        pkill -P "$OLD_SYNC_PID" 2>/dev/null || true
+    fi
+fi
 
 echo "Config directory: $CONFIG_DIR"
 
@@ -685,7 +698,9 @@ if r2_configured; then
             fi
         done
     ) &
-    echo "Background sync loop started (PID: $!)"
+    SYNC_PID=$!
+    echo "$SYNC_PID" > /tmp/.r2-sync-pid
+    echo "Background sync loop started (PID: $SYNC_PID)"
 fi
 
 # ============================================================
