@@ -908,6 +908,39 @@ AWSCONF
 fi
 
 # ============================================================
+# PATCH: Telegram webhook EADDRINUSE fix (openclaw/openclaw#19831)
+# monitorTelegramProvider returns immediately in webhook mode,
+# causing auto-restart to bind the same port → crash loop.
+# Fix: await abortSignal before returning (matches PR #20309).
+# Remove this patch once OpenClaw ships the fix upstream.
+# ============================================================
+OPENCLAW_DIST="/usr/local/lib/node_modules/openclaw/dist"
+WEBHOOK_PATCH_TARGET=$(grep -rl 'useWebhook.*startTelegramWebhook\|startTelegramWebhook.*useWebhook' "$OPENCLAW_DIST"/*.js 2>/dev/null | head -1)
+if [ -n "$WEBHOOK_PATCH_TARGET" ]; then
+    # The compiled code has:
+    #   });
+    #   return;
+    # right after the startTelegramWebhook() call. We insert an await before the return.
+    if grep -q 'startTelegramWebhook' "$WEBHOOK_PATCH_TARGET" && \
+       ! grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
+        sed -i '/await startTelegramWebhook({/,/^[[:space:]]*return;/{
+            /^[[:space:]]*return;/{
+                i\			if(opts.abortSignal&&!opts.abortSignal.aborted){await new Promise(r=>{opts.abortSignal.addEventListener("abort",r,{once:true})})}/*PATCHED_WEBHOOK_AWAIT*/
+            }
+        }' "$WEBHOOK_PATCH_TARGET"
+        if grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
+            echo "Telegram webhook patch applied: $(basename "$WEBHOOK_PATCH_TARGET")"
+        else
+            echo "WARNING: Telegram webhook patch failed to apply"
+        fi
+    else
+        echo "Telegram webhook patch: already applied or code structure changed, skipping"
+    fi
+else
+    echo "Telegram webhook patch: target file not found (may be fixed upstream), skipping"
+fi
+
+# ============================================================
 # START GATEWAY
 # ============================================================
 echo "Starting OpenClaw Gateway..."
