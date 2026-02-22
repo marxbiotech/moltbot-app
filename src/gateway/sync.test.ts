@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { Mock } from 'vitest';
 import { syncToR2 } from './sync';
 import type { SyncResult } from './sync';
 import {
@@ -9,10 +8,11 @@ import {
   createMockSandbox,
   suppressConsole,
 } from '../test-utils';
+import type { MockSandbox } from '../test-utils';
 import type { MoltbotEnv } from '../types';
 
 /** Standard exec mock sequence for a successful sync through openclaw config dir. */
-function mockSuccessSequence(execMock: Mock, configDir = 'openclaw', timestamp = '2026-01-27') {
+function mockSuccessSequence(execMock: MockSandbox['execMock'], configDir = 'openclaw', timestamp = '2026-01-27') {
   execMock
     .mockResolvedValueOnce(createMockExecResult('yes')) // rclone configured
     .mockResolvedValueOnce(createMockExecResult(configDir)) // config detect
@@ -31,7 +31,7 @@ describe('syncToR2', () => {
 
   const resultCases: {
     name: string;
-    setup: () => { sandbox: ReturnType<typeof createMockSandbox>['sandbox']; env: MoltbotEnv; execMock: Mock };
+    setup: () => { sandbox: MockSandbox['sandbox']; env: MoltbotEnv; execMock: MockSandbox['execMock'] };
     expected: Partial<SyncResult>;
   }[] = [
     {

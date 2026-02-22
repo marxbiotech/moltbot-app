@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
-import { MOLTBOT_PORT } from '../config';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from '../config';
 import { timingSafeEqual } from '../utils/crypto';
 import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
@@ -85,12 +85,12 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   try {
     await ensureMoltbotGateway(sandbox, c.env);
     const response = await sandbox.containerFetch(
-      new Request(`http://localhost:${MOLTBOT_PORT}/telegram/webhook`, {
+      new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram/webhook`, {
         method: 'POST',
         headers: c.req.raw.headers,
         body: c.req.raw.body,
       }),
-      MOLTBOT_PORT,
+      TELEGRAM_WEBHOOK_PORT,
     );
     return new Response(response.body, {
       status: response.status,
