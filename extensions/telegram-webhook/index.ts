@@ -37,8 +37,21 @@ async function telegramApi(
       }
     : { method: "GET" };
 
-  const resp = await fetch(url, opts);
-  const data = await resp.json();
+  let resp: Response;
+  try {
+    resp = await fetch(url, opts);
+  } catch (e: any) {
+    throw new Error(`Telegram API ${method}: network error: ${e.message}`);
+  }
+
+  let data: any;
+  try {
+    data = await resp.json();
+  } catch {
+    const text = await resp.text().catch(() => "(unreadable)");
+    throw new Error(`Telegram API ${method}: invalid JSON (HTTP ${resp.status}): ${text.slice(0, 200)}`);
+  }
+
   if (!data.ok) {
     throw new Error(`Telegram API ${method}: ${data.description || "unknown error"}`);
   }
@@ -224,36 +237,40 @@ export default function register(api: any) {
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: any) => {
-      const args = ctx.args?.trim() ?? "";
-      const subcommand = args.split(/\s+/)[0] || "status";
+      try {
+        const args = ctx.args?.trim() ?? "";
+        const subcommand = args.split(/\s+/)[0] || "status";
 
-      let text: string;
-      switch (subcommand) {
-        case "status":
-          text = await handleStatus();
-          break;
-        case "on":
-          text = await handleOn();
-          break;
-        case "off":
-          text = await handleOff();
-          break;
-        case "verify":
-          text = await handleVerify();
-          break;
-        default:
-          text = [
-            `Unknown subcommand: ${subcommand}`,
-            "",
-            "Usage: /telegram_webhook [status|on|off|verify]",
-            "  status  — Show current webhook configuration (default)",
-            "  on      — Enable webhook mode",
-            "  off     — Disable webhook mode (revert to polling)",
-            "  verify  — Show detailed webhook info from Telegram",
-          ].join("\n");
+        let text: string;
+        switch (subcommand) {
+          case "status":
+            text = await handleStatus();
+            break;
+          case "on":
+            text = await handleOn();
+            break;
+          case "off":
+            text = await handleOff();
+            break;
+          case "verify":
+            text = await handleVerify();
+            break;
+          default:
+            text = [
+              `Unknown subcommand: ${subcommand}`,
+              "",
+              "Usage: /telegram_webhook [status|on|off|verify]",
+              "  status  — Show current webhook configuration (default)",
+              "  on      — Enable webhook mode",
+              "  off     — Disable webhook mode (revert to polling)",
+              "  verify  — Show detailed webhook info from Telegram",
+            ].join("\n");
+        }
+
+        return { text };
+      } catch (e: any) {
+        return { text: `[FAIL] Unexpected error: ${e.message}` };
       }
-
-      return { text };
     },
   });
 }
