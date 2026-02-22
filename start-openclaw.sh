@@ -939,14 +939,13 @@ fi
 # Remove this patch once OpenClaw ships the fix upstream.
 # ============================================================
 OPENCLAW_DIST="/usr/local/lib/node_modules/openclaw/dist"
-WEBHOOK_PATCH_TARGET=$(grep -rl --include='*.js' 'await startTelegramWebhook(' "$OPENCLAW_DIST" 2>/dev/null | head -1)
-if [ -n "$WEBHOOK_PATCH_TARGET" ]; then
-    # The compiled code has:
-    #   });
-    #   return;
-    # right after the startTelegramWebhook() call. We insert an await before the return.
-    if grep -q 'startTelegramWebhook' "$WEBHOOK_PATCH_TARGET" && \
-       ! grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
+WEBHOOK_PATCH_APPLIED=0
+WEBHOOK_PATCH_SKIPPED=0
+# Patch ALL .js files that contain the unpatched call (not just the first).
+# The gateway chunk graph can change between versions, so multiple files may embed
+# the same monitorTelegramProvider codepath.
+for WEBHOOK_PATCH_TARGET in $(grep -rl --include='*.js' 'await startTelegramWebhook(' "$OPENCLAW_DIST" 2>/dev/null); do
+    if ! grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
         sed -i '/await startTelegramWebhook({/,/^[[:space:]]*return;/{
             /^[[:space:]]*return;/{
                 i\			if(opts.abortSignal&&!opts.abortSignal.aborted){await new Promise(r=>{opts.abortSignal.addEventListener("abort",r,{once:true})})}/*PATCHED_WEBHOOK_AWAIT*/
@@ -954,14 +953,20 @@ if [ -n "$WEBHOOK_PATCH_TARGET" ]; then
         }' "$WEBHOOK_PATCH_TARGET"
         if grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
             echo "Telegram webhook patch applied: $(basename "$WEBHOOK_PATCH_TARGET")"
+            WEBHOOK_PATCH_APPLIED=$((WEBHOOK_PATCH_APPLIED + 1))
         else
-            echo "WARNING: Telegram webhook patch failed to apply"
+            echo "WARNING: Telegram webhook patch failed to apply to $(basename "$WEBHOOK_PATCH_TARGET")"
         fi
     else
-        echo "Telegram webhook patch: already applied or code structure changed, skipping"
+        WEBHOOK_PATCH_SKIPPED=$((WEBHOOK_PATCH_SKIPPED + 1))
     fi
+done
+if [ "$WEBHOOK_PATCH_APPLIED" -eq 0 ] && [ "$WEBHOOK_PATCH_SKIPPED" -eq 0 ]; then
+    echo "Telegram webhook patch: no target files found (may be fixed upstream), skipping"
+elif [ "$WEBHOOK_PATCH_APPLIED" -eq 0 ]; then
+    echo "Telegram webhook patch: all $WEBHOOK_PATCH_SKIPPED files already patched"
 else
-    echo "Telegram webhook patch: target file not found (may be fixed upstream), skipping"
+    echo "Telegram webhook patch: applied to $WEBHOOK_PATCH_APPLIED file(s), $WEBHOOK_PATCH_SKIPPED already patched"
 fi
 
 # ============================================================
