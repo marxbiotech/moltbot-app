@@ -915,7 +915,7 @@ fi
 # Remove this patch once OpenClaw ships the fix upstream.
 # ============================================================
 OPENCLAW_DIST="/usr/local/lib/node_modules/openclaw/dist"
-WEBHOOK_PATCH_TARGET=$(grep -rl 'await startTelegramWebhook(' "$OPENCLAW_DIST"/*.js 2>/dev/null | head -1)
+WEBHOOK_PATCH_TARGET=$(grep -rl --include='*.js' 'await startTelegramWebhook(' "$OPENCLAW_DIST" 2>/dev/null | head -1)
 if [ -n "$WEBHOOK_PATCH_TARGET" ]; then
     # The compiled code has:
     #   });
