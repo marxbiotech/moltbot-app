@@ -135,7 +135,7 @@ function handleOpenaiAuth(): string {
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(16).toString("hex");
 
-  // Build authorize URL
+  // Build authorize URL (matches codex-rs/login/src/server.rs)
   const params = new URLSearchParams({
     response_type: "code",
     client_id: OPENAI_CLIENT_ID,
@@ -143,6 +143,8 @@ function handleOpenaiAuth(): string {
     scope: OPENAI_SCOPE,
     code_challenge: challenge,
     code_challenge_method: "S256",
+    id_token_add_organizations: "true",
+    codex_cli_simplified_flow: "true",
     state: state,
   });
   const url = `${OPENAI_ISSUER}/oauth/authorize?${params.toString()}`;
