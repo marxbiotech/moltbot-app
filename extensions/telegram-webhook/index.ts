@@ -29,33 +29,46 @@ async function telegramApi(
   body?: Record<string, unknown>,
 ): Promise<any> {
   const url = `https://api.telegram.org/bot${token}/${method}`;
-  const opts: RequestInit = body
-    ? {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const opts: RequestInit = {
+      signal: controller.signal,
+      ...(body
+        ? {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }
+        : { method: "GET" }),
+    };
+
+    let resp: Response;
+    try {
+      resp = await fetch(url, opts);
+    } catch (e: any) {
+      if (e.name === "AbortError") {
+        throw new Error(`Telegram API ${method}: request timed out (10s)`);
       }
-    : { method: "GET" };
+      throw new Error(`Telegram API ${method}: network error: ${e.message}`);
+    }
 
-  let resp: Response;
-  try {
-    resp = await fetch(url, opts);
-  } catch (e: any) {
-    throw new Error(`Telegram API ${method}: network error: ${e.message}`);
-  }
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch {
+      const text = await resp.text().catch(() => "(unreadable)");
+      throw new Error(`Telegram API ${method}: invalid JSON (HTTP ${resp.status}): ${text.slice(0, 200)}`);
+    }
 
-  let data: any;
-  try {
-    data = await resp.json();
-  } catch {
-    const text = await resp.text().catch(() => "(unreadable)");
-    throw new Error(`Telegram API ${method}: invalid JSON (HTTP ${resp.status}): ${text.slice(0, 200)}`);
+    if (!data.ok) {
+      throw new Error(`Telegram API ${method}: ${data.description || "unknown error"}`);
+    }
+    return data.result;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  if (!data.ok) {
-    throw new Error(`Telegram API ${method}: ${data.description || "unknown error"}`);
-  }
-  return data.result;
 }
 
 // ── Subcommands ──────────────────────────────────────────────
