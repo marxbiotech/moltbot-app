@@ -73,42 +73,27 @@ async function telegramApi(
 
 // ── Subcommands ──────────────────────────────────────────────
 
-async function handleStatus(): Promise<string> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
-    return "[FAIL] TELEGRAM_BOT_TOKEN is not set";
-  }
-
+function handleStatus(): string {
   const lines: string[] = [];
+
+  // Env vars
+  lines.push(`TELEGRAM_BOT_TOKEN: ${process.env.TELEGRAM_BOT_TOKEN ? "set" : "NOT SET"}`);
+  lines.push(`WORKER_URL: ${process.env.WORKER_URL || "NOT SET"}`);
+  lines.push(`TELEGRAM_WEBHOOK_SECRET: ${process.env.TELEGRAM_WEBHOOK_SECRET ? "set" : "NOT SET"}`);
 
   // Read local config
   const config = readConfig();
   const tg = config.channels?.telegram;
   const hasWebhookConfig = !!(tg?.webhookUrl && tg?.webhookSecret);
+  lines.push("");
   lines.push(`Local config: ${hasWebhookConfig ? "webhook" : "polling"} mode`);
   if (tg?.webhookUrl) {
     lines.push(`  URL: ${tg.webhookUrl}`);
   }
   lines.push(`  Secret configured: ${tg?.webhookSecret ? "yes" : "no"}`);
 
-  // Get live status from Telegram
-  try {
-    const info = await telegramApi(token, "getWebhookInfo");
-    lines.push("");
-    lines.push(`Telegram API: ${info.url ? "webhook" : "polling"} mode`);
-    if (info.url) {
-      lines.push(`  URL: ${info.url}`);
-    }
-    lines.push(`  Pending updates: ${info.pending_update_count ?? 0}`);
-    if (info.last_error_message) {
-      const errorDate = info.last_error_date
-        ? new Date(info.last_error_date * 1000).toISOString()
-        : "unknown";
-      lines.push(`  Last error (${errorDate}): ${info.last_error_message}`);
-    }
-  } catch (e: any) {
-    lines.push(`[WARN] Could not query Telegram API: ${e.message}`);
-  }
+  lines.push("");
+  lines.push("Use /telegram_webhook verify to query Telegram API status.");
 
   return lines.join("\n");
 }
@@ -257,7 +242,7 @@ export default function register(api: any) {
         let text: string;
         switch (subcommand) {
           case "status":
-            text = await handleStatus();
+            text = handleStatus();
             break;
           case "on":
             text = await handleOn();
