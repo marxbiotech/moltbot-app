@@ -256,6 +256,14 @@ async function handleOpenaiCallback(redirectUrl: string): Promise<string> {
       "openai-codex/gpt-5.1-codex-max": { alias: "GPT-5.1 Codex Max" },
       "openai-codex/gpt-5-codex-mini": { alias: "GPT-5 Codex Mini" },
     });
+
+    // Set default model to openai-codex
+    config.agents ??= {};
+    config.agents.defaults ??= {};
+    config.agents.defaults.model ??= {};
+    config.agents.defaults.model.primary = "openai-codex/gpt-5.3-codex";
+    lines.push("[PASS] Default model set to: openai-codex/gpt-5.3-codex");
+
     writeConfig(config);
     lines.push("[PASS] OpenAI Codex models added to allowlist");
   } catch (e: any) {
