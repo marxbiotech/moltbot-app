@@ -18,7 +18,7 @@ const CONFIG_FILE = "/root/.openclaw/openclaw.json";
 // OpenAI Codex OAuth constants (from openai/codex source: codex-rs/core/src/auth.rs)
 const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_ISSUER = "https://auth.openai.com";
-const OPENAI_REDIRECT_URI = "http://127.0.0.1:1455/auth/callback";
+const OPENAI_REDIRECT_URI = "http://localhost:1455/auth/callback";
 const OPENAI_SCOPE = "openid profile email offline_access";
 
 const PKCE_STATE_FILE = "/tmp/.codex-pkce-state";
@@ -135,19 +135,22 @@ function handleOpenaiAuth(): string {
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(16).toString("hex");
 
-  // Build authorize URL (matches codex-rs/login/src/server.rs)
-  const params = new URLSearchParams({
-    response_type: "code",
-    client_id: OPENAI_CLIENT_ID,
-    redirect_uri: OPENAI_REDIRECT_URI,
-    scope: OPENAI_SCOPE,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    id_token_add_organizations: "true",
-    codex_cli_simplified_flow: "true",
-    state: state,
-  });
-  const url = `${OPENAI_ISSUER}/oauth/authorize?${params.toString()}`;
+  // Build authorize URL — use encodeURIComponent (produces %20) instead of
+  // URLSearchParams (produces +) because OpenAI's OAuth server rejects +.
+  const qsParts = [
+    ["response_type", "code"],
+    ["client_id", OPENAI_CLIENT_ID],
+    ["redirect_uri", OPENAI_REDIRECT_URI],
+    ["scope", OPENAI_SCOPE],
+    ["code_challenge", challenge],
+    ["code_challenge_method", "S256"],
+    ["id_token_add_organizations", "true"],
+    ["codex_cli_simplified_flow", "true"],
+    ["state", state],
+    ["originator", "codex_cli_rs"],
+  ] as const;
+  const qs = qsParts.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  const url = `${OPENAI_ISSUER}/oauth/authorize?${qs}`;
 
   // Save state for callback
   writeFileSync(
