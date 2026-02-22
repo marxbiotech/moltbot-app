@@ -107,13 +107,12 @@ function handleClaudeAuth(token: string): string {
       "anthropic/claude-haiku-4-5": { alias: "Claude Haiku 4.5" },
     });
 
-    // Set default model to anthropic if not already set to anthropic
-    const currentDefault = config.agents?.defaults?.model?.primary;
-    if (!currentDefault || !currentDefault.startsWith("anthropic/")) {
-      config.agents.defaults.model ??= {};
-      config.agents.defaults.model.primary = "anthropic/claude-sonnet-4-6";
-      lines.push("[PASS] Default model set to: anthropic/claude-sonnet-4-6");
-    }
+    // Set default model to anthropic
+    config.agents ??= {};
+    config.agents.defaults ??= {};
+    config.agents.defaults.model ??= {};
+    config.agents.defaults.model.primary = "anthropic/claude-sonnet-4-6";
+    lines.push("[PASS] Default model set to: anthropic/claude-sonnet-4-6");
 
     writeConfig(config);
     lines.push("[PASS] Anthropic models added to allowlist");
