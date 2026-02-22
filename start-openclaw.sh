@@ -410,13 +410,19 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     }
 }
 
-// Default model override (for direct API key users, not using AI Gateway)
+// Default model fallback (for direct API key users, not using AI Gateway)
+// Only applies when no model is already configured (e.g. by a plugin like subscription-auth)
 // e.g. DEFAULT_MODEL=google/gemini-3-pro-preview
 if (process.env.DEFAULT_MODEL) {
     config.agents = config.agents || {};
     config.agents.defaults = config.agents.defaults || {};
-    config.agents.defaults.model = { primary: process.env.DEFAULT_MODEL };
-    console.log('Default model override:', process.env.DEFAULT_MODEL);
+    var currentModel = config.agents.defaults.model && config.agents.defaults.model.primary;
+    if (!currentModel) {
+        config.agents.defaults.model = { primary: process.env.DEFAULT_MODEL };
+        console.log('Default model set:', process.env.DEFAULT_MODEL);
+    } else {
+        console.log('Default model skipped (already configured):', currentModel);
+    }
 }
 
 // Model allowlist + fallbacks for /model command
