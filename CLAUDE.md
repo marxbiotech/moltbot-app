@@ -74,6 +74,7 @@ Three-layer flow: `wrangler.jsonc`/secrets → `env.ts:buildEnvVars()` → `star
 - `openclaw onboard` only runs when `openclaw.json` doesn't exist (line 104). After R2 restore, config already exists so onboard is skipped.
 - Config patch section runs every startup regardless, so changing env vars + restart always takes effect.
 - `validateRequiredEnv()` in `src/index.ts` checks for at least one of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or full CF AI Gateway set.
+- **Subscription/OAuth providers** (e.g. `openai-codex` via `/openai_auth`) register dynamically at runtime. Their model config and OAuth tokens (in auth-profiles.json) are persisted to R2 and restored on restart. OpenClaw's model registry reads `auth.json` (pi-coding-agent format), not `auth-profiles.json` directly. `start-openclaw.sh` syncs auth-profiles → auth.json on every startup so OAuth providers are discoverable on the first request.
 
 **API key rotation:** OpenClaw caches API keys in `~/.openclaw/agents/*/agent/auth-profiles.json`. These files are persisted to R2. When a key is rotated via `wrangler secret put`, the cached key in auth-profiles becomes stale. `start-openclaw.sh` patches auth-profiles on every startup to overwrite cached keys with current env var values and clear error/cooldown stats. Without this patch, a rotated key won't take effect even after gateway restart.
 

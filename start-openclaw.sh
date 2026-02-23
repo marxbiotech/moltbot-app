@@ -574,10 +574,10 @@ console.log('agents.defaults.sandbox:', JSON.stringify(config.agents.defaults.sa
 console.log('agents.defaults.tools:', config.agents.defaults.tools ? JSON.stringify(config.agents.defaults.tools) : 'none');
 console.log('=== END TOOL POLICY DUMP ===');
 
-// Patch auth-profiles.json to ensure API keys from env vars override cached keys.
-// OpenClaw caches API keys in per-agent auth-profiles.json files, which get
-// persisted to R2. When a key is rotated via wrangler secret, the cached key
-// becomes stale. This patch overwrites cached keys with current env var values.
+// Patch auth-profiles.json:
+// 1. Override cached API keys with current env var values (handles key rotation)
+// 2. Clear error/cooldown stats for ALL profiles on restart (including OAuth/subscription
+//    profiles like openai-codex) so OpenClaw gives them a fresh chance
 const glob = require('path');
 const agentsDir = '/root/.openclaw/agents';
 try {
@@ -590,67 +590,165 @@ try {
     if (process.env.GOOGLE_API_KEY) envKeys['google'] = process.env.GOOGLE_API_KEY;
     if (process.env.OPENAI_API_KEY) envKeys['openai'] = process.env.OPENAI_API_KEY;
 
-    if (Object.keys(envKeys).length === 0) {
-        console.log('No API keys in env, skipping auth-profiles patch');
-    } else {
-        // Find all auth-profiles.json files under agents/
-        function findAuthProfiles(dir) {
-            var results = [];
-            try {
-                var entries = fs2.readdirSync(dir, { withFileTypes: true });
-                for (var i = 0; i < entries.length; i++) {
-                    var entry = entries[i];
-                    var full = path.join(dir, entry.name);
-                    if (entry.isDirectory()) {
-                        results = results.concat(findAuthProfiles(full));
-                    } else if (entry.name === 'auth-profiles.json') {
-                        results.push(full);
-                    }
+    // Find all auth-profiles.json files under agents/
+    function findAuthProfiles(dir) {
+        var results = [];
+        try {
+            var entries = fs2.readdirSync(dir, { withFileTypes: true });
+            for (var i = 0; i < entries.length; i++) {
+                var entry = entries[i];
+                var full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    results = results.concat(findAuthProfiles(full));
+                } else if (entry.name === 'auth-profiles.json') {
+                    results.push(full);
                 }
-            } catch (e) {}
-            return results;
-        }
-
-        var files = findAuthProfiles(agentsDir);
-        files.forEach(function(filePath) {
-            try {
-                var data = JSON.parse(fs2.readFileSync(filePath, 'utf8'));
-                var patched = false;
-                if (data.profiles) {
-                    Object.keys(data.profiles).forEach(function(profileId) {
-                        var profile = data.profiles[profileId];
-                        var provider = profile.provider;
-                        if (provider && envKeys[provider] && profile.key !== envKeys[provider]) {
-                            console.log('Patching auth profile ' + profileId + ' key in ' + filePath);
-                            profile.key = envKeys[provider];
-                            patched = true;
-                        }
-                    });
-                }
-                // Clear error stats for patched profiles so OpenClaw doesn't keep them in cooldown
-                if (patched && data.usageStats) {
-                    Object.keys(data.profiles).forEach(function(profileId) {
-                        if (data.usageStats[profileId]) {
-                            data.usageStats[profileId].errorCount = 0;
-                            delete data.usageStats[profileId].failureCounts;
-                            delete data.usageStats[profileId].cooldownUntil;
-                        }
-                    });
-                    fs2.writeFileSync(filePath, JSON.stringify(data, null, 2));
-                    console.log('Auth profiles patched and error stats cleared');
-                } else if (patched) {
-                    fs2.writeFileSync(filePath, JSON.stringify(data, null, 2));
-                    console.log('Auth profiles patched');
-                }
-            } catch (e) {
-                console.log('Could not patch ' + filePath + ': ' + e.message);
             }
-        });
+        } catch (e) {}
+        return results;
     }
+
+    var files = findAuthProfiles(agentsDir);
+    if (files.length === 0) {
+        console.log('No auth-profiles.json files found, skipping patch');
+    }
+    files.forEach(function(filePath) {
+        try {
+            var data = JSON.parse(fs2.readFileSync(filePath, 'utf8'));
+            var keyPatched = false;
+            var statsCleared = false;
+            if (data.profiles) {
+                Object.keys(data.profiles).forEach(function(profileId) {
+                    var profile = data.profiles[profileId];
+                    var provider = profile.provider;
+                    // Patch API key if env var overrides it
+                    if (provider && envKeys[provider] && profile.key !== envKeys[provider]) {
+                        console.log('Patching auth profile ' + profileId + ' key in ' + filePath);
+                        profile.key = envKeys[provider];
+                        keyPatched = true;
+                    }
+                });
+            }
+            // Clear error stats for ALL profiles on restart — gives OAuth/subscription
+            // profiles (openai-codex, etc.) a fresh chance after container restart
+            if (data.usageStats) {
+                Object.keys(data.usageStats).forEach(function(profileId) {
+                    var stats = data.usageStats[profileId];
+                    if (stats.errorCount > 0 || stats.failureCounts || stats.cooldownUntil) {
+                        stats.errorCount = 0;
+                        delete stats.failureCounts;
+                        delete stats.cooldownUntil;
+                        statsCleared = true;
+                    }
+                });
+            }
+            if (keyPatched || statsCleared) {
+                fs2.writeFileSync(filePath, JSON.stringify(data, null, 2));
+                var actions = [];
+                if (keyPatched) actions.push('keys patched');
+                if (statsCleared) actions.push('error stats cleared');
+                console.log('Auth profiles updated (' + actions.join(', ') + '): ' + filePath);
+            }
+        } catch (e) {
+            console.log('Could not patch ' + filePath + ': ' + e.message);
+        }
+    });
 } catch (e) {
     console.log('Auth-profiles patch skipped:', e.message);
 }
 EOFPATCH
+
+# ============================================================
+# SYNC auth-profiles.json → auth.json
+# ============================================================
+# OpenClaw's model resolution reads auth.json (pi-coding-agent format), NOT
+# auth-profiles.json. The ensurePiAuthJsonFromAuthProfiles() function bridges
+# them, but it's only called during model catalog loading — if the gateway
+# receives a message before the catalog loads, the model registry won't find
+# OAuth providers like openai-codex.
+#
+# After R2 restore, auth.json may be missing or stale (e.g. the OAuth flow
+# completed and auth-profiles.json synced to R2 but auth.json didn't, or
+# auth.json was never synced because it lives under agents/main/agent/ and
+# changes rapidly).
+#
+# This script replicates ensurePiAuthJsonFromAuthProfiles() logic: convert
+# all auth-profiles credentials → auth.json so the model registry discovers
+# OAuth providers on the very first request.
+node << 'EOF_AUTH_SYNC'
+const fs = require('fs');
+const path = require('path');
+
+const agentsDir = '/root/.openclaw/agents';
+try {
+    const agentEntries = fs.readdirSync(agentsDir, { withFileTypes: true });
+    for (const agentEntry of agentEntries) {
+        if (!agentEntry.isDirectory()) continue;
+        const agentDir = path.join(agentsDir, agentEntry.name, 'agent');
+        const profilesPath = path.join(agentDir, 'auth-profiles.json');
+        const authJsonPath = path.join(agentDir, 'auth.json');
+
+        let profiles;
+        try {
+            profiles = JSON.parse(fs.readFileSync(profilesPath, 'utf8'));
+        } catch { continue; }
+
+        if (!profiles || !profiles.profiles) continue;
+
+        // Read existing auth.json (may not exist)
+        let authJson = {};
+        try {
+            authJson = JSON.parse(fs.readFileSync(authJsonPath, 'utf8'));
+        } catch {}
+
+        let changed = false;
+        for (const [, cred] of Object.entries(profiles.profiles)) {
+            const provider = (cred.provider || '').trim().toLowerCase();
+            if (!provider) continue;
+
+            let converted = null;
+            if (cred.type === 'api_key') {
+                const key = (cred.key || '').trim();
+                if (key) converted = { type: 'api_key', key };
+            } else if (cred.type === 'token') {
+                const token = (cred.token || '').trim();
+                if (token) converted = { type: 'api_key', key: token };
+            } else if (cred.type === 'oauth') {
+                const access = (cred.access || '').trim();
+                const refresh = (cred.refresh || '').trim();
+                const expires = typeof cred.expires === 'number' ? cred.expires : NaN;
+                if (access && refresh && isFinite(expires) && expires > 0) {
+                    converted = { type: 'oauth', access, refresh, expires };
+                }
+            }
+
+            if (!converted) continue;
+
+            // Check if auth.json already has equivalent credential
+            const existing = authJson[provider];
+            if (existing && existing.type === converted.type) {
+                if (converted.type === 'api_key' && existing.key === converted.key) continue;
+                if (converted.type === 'oauth' &&
+                    existing.access === converted.access &&
+                    existing.refresh === converted.refresh &&
+                    existing.expires === converted.expires) continue;
+            }
+
+            authJson[provider] = converted;
+            changed = true;
+            console.log('Synced auth credential: ' + provider + ' (' + converted.type + ')');
+        }
+
+        if (changed) {
+            fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+            fs.writeFileSync(authJsonPath, JSON.stringify(authJson, null, 2) + '\n', { mode: 0o600 });
+            console.log('auth.json updated: ' + authJsonPath);
+        }
+    }
+} catch (e) {
+    console.log('auth.json sync skipped:', e.message);
+}
+EOF_AUTH_SYNC
 
 # ============================================================
 # BACKGROUND SYNC LOOP
