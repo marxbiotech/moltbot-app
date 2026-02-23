@@ -86,6 +86,23 @@ Three-layer flow: `wrangler.jsonc`/secrets → `env.ts:buildEnvVars()` → `star
 
 **To rotate an API key:** `wrangler secret put <KEY_NAME>` → `npm run deploy` (to rebuild container image with updated `start-openclaw.sh`) → wait for container to be recreated (10 min idle timeout via `SANDBOX_SLEEP_AFTER`) or POST restart. The auth-profiles patch in `start-openclaw.sh` will overwrite the stale cached key.
 
+### Telegram Webhook
+
+```
+Telegram → CF Worker (POST /telegram/webhook) → Container (port 8787, /telegram-webhook)
+```
+
+**Flow:** Telegram sends updates to the Worker's public endpoint. The Worker validates `X-Telegram-Bot-Api-Secret-Token` against `TELEGRAM_WEBHOOK_SECRET` using `timingSafeEqual`, then proxies to the container's OpenClaw telegram-tools extension on port 8787. This route sits outside CF Access (public), so the secret token is the sole auth layer.
+
+**Env vars:**
+- `TELEGRAM_BOT_TOKEN` — Bot token, passed to container for Telegram API calls
+- `TELEGRAM_WEBHOOK_SECRET` — Shared secret for webhook validation (Worker + container). Set via `wrangler secret put`
+- `WORKER_URL` — Public URL of the Worker (used by CDP endpoint; also needed by `telegram-tools` to register webhook URL with Telegram)
+
+**EADDRINUSE patch:** `start-openclaw.sh` patches OpenClaw's `monitorTelegramProvider` in webhook mode (openclaw/openclaw#19831). The upstream bug causes an immediate return → auto-restart → port conflict crash loop. The patch adds an `abortSignal` await before the return. Applies to all matching `.js` files in `dist/` since chunk boundaries vary between versions. Remove once OpenClaw ships PR #20309.
+
+**Extension:** `extensions/telegram-tools/` is an OpenClaw extension (not Worker code) that runs inside the container. It handles `/telegram` slash commands (webhook on/off, pair, approve) and manages `openclaw.json` webhook config + `allow-from.json` for DM access control.
+
 ## Patterns & Conventions
 
 - **Hono routing:** Subrouters mounted with `app.route()`, context variables via `c.set()`/`c.get()`, responses via `c.json()`/`c.html()`

@@ -39,6 +39,7 @@ MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
 # === Chat channels (optional) ===
 # TELEGRAM_BOT_TOKEN=optional
 # TELEGRAM_DM_POLICY=optional
+# TELEGRAM_WEBHOOK_SECRET=your-random-secret
 # DISCORD_BOT_TOKEN=optional
 # DISCORD_DM_POLICY=optional
 # SLACK_BOT_TOKEN=xoxb-...

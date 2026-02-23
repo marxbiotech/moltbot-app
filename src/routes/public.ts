@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
-import { MOLTBOT_PORT } from '../config';
-import { findExistingMoltbotProcess } from '../gateway';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from '../config';
+import { timingSafeEqual } from '../utils/crypto';
+import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
 /**
  * Public routes - NO Cloudflare Access authentication required
@@ -65,6 +66,45 @@ publicRoutes.get('/_admin/assets/*', async (c) => {
   const assetPath = url.pathname.replace('/_admin/assets/', '/assets/');
   const assetUrl = new URL(assetPath, url.origin);
   return c.env.ASSETS.fetch(new Request(assetUrl.toString(), c.req.raw));
+});
+
+// POST /telegram/webhook - Telegram webhook endpoint (secret-validated, no CF Access)
+publicRoutes.post('/telegram/webhook', async (c) => {
+  const secret = c.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!secret) {
+    console.error('[TELEGRAM] TELEGRAM_WEBHOOK_SECRET not configured');
+    return c.json({ error: 'Webhook not configured' }, 500);
+  }
+
+  const provided = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+  if (!provided || !timingSafeEqual(provided, secret)) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  const sandbox = c.get('sandbox');
+  try {
+    await ensureMoltbotGateway(sandbox, c.env);
+  } catch (err) {
+    console.error('[TELEGRAM] Gateway startup failed:', err);
+    return c.json({ error: 'Bad gateway' }, 502);
+  }
+  try {
+    const response = await sandbox.containerFetch(
+      new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+        method: 'POST',
+        headers: c.req.raw.headers,
+        body: c.req.raw.body,
+      }),
+      TELEGRAM_WEBHOOK_PORT,
+    );
+    return new Response(response.body, {
+      status: response.status,
+      headers: response.headers,
+    });
+  } catch (err) {
+    console.error('[TELEGRAM] Webhook proxy failed:', err);
+    return c.json({ error: 'Service unavailable' }, 503);
+  }
 });
 
 export { publicRoutes };

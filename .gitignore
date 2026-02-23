@@ -65,3 +65,4 @@ test/e2e/.dev.vars
 # Only project-specific skills (e.g. cloudflare_browser/) are tracked in git.
 skills/*
 !skills/cloudflare_browser/
+.pr-review-cache/

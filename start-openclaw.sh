@@ -17,12 +17,25 @@ RCLONE_CONF="/root/.config/rclone/rclone.conf"
 LAST_SYNC_FILE="/tmp/.last-sync"
 
 # Stop any leftover gateway from a previous invocation.
-# When this script uses `exec openclaw gateway`, the sandbox loses track of the
-# process (marks start-openclaw.sh as "killed"), but the gateway keeps running.
-# On the next invocation the sandbox thinks no gateway exists and re-runs us,
-# so we must explicitly stop the old gateway to free port 18789 and the lock file.
+# `openclaw gateway` starts openclaw-gateway as a daemon child — when the sandbox
+# kills the tracked start-openclaw.sh process, the gateway binary survives as an
+# orphan. On re-invocation we must explicitly stop it to free port 18789.
 openclaw gateway stop 2>/dev/null || true
+# Belt-and-suspenders: directly kill the binary if `gateway stop` didn't work
+pkill -f openclaw-gateway 2>/dev/null || true
 rm -f /tmp/openclaw-gateway.lock "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
+
+# Kill orphaned background sync loops from previous invocations.
+# Each start-openclaw.sh spawns a background R2 sync subshell; without cleanup
+# they accumulate on repeated restarts, exhausting container resources.
+if [ -f /tmp/.r2-sync-pid ]; then
+    OLD_SYNC_PID=$(cat /tmp/.r2-sync-pid 2>/dev/null)
+    if [ -n "$OLD_SYNC_PID" ] && kill -0 "$OLD_SYNC_PID" 2>/dev/null; then
+        kill "$OLD_SYNC_PID" 2>/dev/null || true
+        # Also kill any rclone children of the old sync loop
+        pkill -P "$OLD_SYNC_PID" 2>/dev/null || true
+    fi
+fi
 
 echo "Config directory: $CONFIG_DIR"
 
@@ -168,6 +181,15 @@ if [ -d "$PLUGIN_STAGING" ]; then
                 cp "$script" "/usr/local/bin/$cmd_name"
                 chmod +x "/usr/local/bin/$cmd_name"
             done
+        fi
+    done
+    # Remove stale plugins not in staging (handles renames like telegram-webhook → telegram-tools)
+    for local_dir in "$CONFIG_DIR/extensions"/*/; do
+        [ -d "$local_dir" ] || continue
+        local_name=$(basename "$local_dir")
+        if [ ! -d "$PLUGIN_STAGING/$local_name" ]; then
+            echo "Removing stale plugin: $local_name"
+            rm -rf "$local_dir"
         fi
     done
     echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
@@ -503,6 +525,14 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     } else if (dmPolicy === 'open') {
         config.channels.telegram.allowFrom = ['*'];
     }
+    if (process.env.WORKER_URL && process.env.TELEGRAM_WEBHOOK_SECRET) {
+        const webhookUrl = process.env.WORKER_URL.replace(/\/+$/, '') + '/telegram/webhook';
+        config.channels.telegram.webhookUrl = webhookUrl;
+        config.channels.telegram.webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+        // Bind webhook server to 0.0.0.0 so containerFetch can reach it from outside
+        config.channels.telegram.webhookHost = '0.0.0.0';
+        console.log('Telegram webhook configured:', webhookUrl);
+    }
 }
 
 // Discord configuration
@@ -670,7 +700,9 @@ if r2_configured; then
             fi
         done
     ) &
-    echo "Background sync loop started (PID: $!)"
+    SYNC_PID=$!
+    echo "$SYNC_PID" > /tmp/.r2-sync-pid
+    echo "Background sync loop started (PID: $SYNC_PID)"
 fi
 
 # ============================================================
@@ -899,6 +931,44 @@ AWSCONF
         console.error('Bedrock setup failed: ' + e.message);
     }
     " 2>&1
+fi
+
+# ============================================================
+# PATCH: Telegram webhook EADDRINUSE fix (openclaw/openclaw#19831)
+# monitorTelegramProvider returns immediately in webhook mode,
+# causing auto-restart to bind the same port → crash loop.
+# Fix: await abortSignal before returning (matches PR #20309).
+# Remove this patch once OpenClaw ships the fix upstream.
+# ============================================================
+OPENCLAW_DIST="/usr/local/lib/node_modules/openclaw/dist"
+WEBHOOK_PATCH_APPLIED=0
+WEBHOOK_PATCH_SKIPPED=0
+# Patch ALL .js files that contain the unpatched call (not just the first).
+# The gateway chunk graph can change between versions, so multiple files may embed
+# the same monitorTelegramProvider codepath.
+for WEBHOOK_PATCH_TARGET in $(grep -rl --include='*.js' 'await startTelegramWebhook(' "$OPENCLAW_DIST" 2>/dev/null); do
+    if ! grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
+        sed -i '/await startTelegramWebhook({/,/^[[:space:]]*return;/{
+            /^[[:space:]]*return;/{
+                i\			if(opts.abortSignal&&!opts.abortSignal.aborted){await new Promise(r=>{opts.abortSignal.addEventListener("abort",r,{once:true})})}/*PATCHED_WEBHOOK_AWAIT*/
+            }
+        }' "$WEBHOOK_PATCH_TARGET"
+        if grep -q 'PATCHED_WEBHOOK_AWAIT' "$WEBHOOK_PATCH_TARGET"; then
+            echo "Telegram webhook patch applied: $(basename "$WEBHOOK_PATCH_TARGET")"
+            WEBHOOK_PATCH_APPLIED=$((WEBHOOK_PATCH_APPLIED + 1))
+        else
+            echo "WARNING: Telegram webhook patch failed to apply to $(basename "$WEBHOOK_PATCH_TARGET")"
+        fi
+    else
+        WEBHOOK_PATCH_SKIPPED=$((WEBHOOK_PATCH_SKIPPED + 1))
+    fi
+done
+if [ "$WEBHOOK_PATCH_APPLIED" -eq 0 ] && [ "$WEBHOOK_PATCH_SKIPPED" -eq 0 ]; then
+    echo "Telegram webhook patch: no target files found (may be fixed upstream), skipping"
+elif [ "$WEBHOOK_PATCH_APPLIED" -eq 0 ]; then
+    echo "Telegram webhook patch: all $WEBHOOK_PATCH_SKIPPED files already patched"
+else
+    echo "Telegram webhook patch: applied to $WEBHOOK_PATCH_APPLIED file(s), $WEBHOOK_PATCH_SKIPPED already patched"
 fi
 
 # ============================================================
