@@ -1,0 +1,10 @@
+{
+  "id": "bedrock-auth",
+  "name": "AWS Bedrock Auth",
+  "description": "MFA-based authentication for AWS Bedrock. Provides /aws_auth slash command.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,63 @@
+# Copy this to .dev.vars and fill in your values
+# .dev.vars is gitignored and used by wrangler dev
+
+# === Worker vars (moved from wrangler.jsonc for GitOps) ===
+# These are set in the env repo's wrangler.jsonc for production.
+# For local dev, uncomment and set below.
+SANDBOX_SLEEP_AFTER=10m
+# DEBUG_ROUTES=true
+# CF_ACCESS_TEAM_DOMAIN=myteam.cloudflareaccess.com
+# CF_ACCESS_AUD=your-application-audience-tag
+# CF_ACCOUNT_ID=your-cloudflare-account-id
+# R2_BUCKET_NAME=moltbot-dev-data
+# DEFAULT_MODEL=google/gemini-3-flash-preview
+# BEDROCK_DEFAULT_MODEL=claude-sonnet-4-6
+
+# === AI Provider (at least one required) ===
+ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
+# GOOGLE_API_KEY=your-google-api-key
+
+# Cloudflare AI Gateway (alternative to direct provider keys)
+# CLOUDFLARE_AI_GATEWAY_API_KEY=your-provider-api-key
+# CF_AI_GATEWAY_ACCOUNT_ID=your-account-id
+# CF_AI_GATEWAY_GATEWAY_ID=your-gateway-id
+# CF_AI_GATEWAY_MODEL=workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
+
+# Legacy AI Gateway (still supported)
+# AI_GATEWAY_API_KEY=your-key
+# AI_GATEWAY_BASE_URL=https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
+
+# === Local development mode ===
+# DEV_MODE=true — skips Cloudflare Access auth and bypasses device pairing
+# E2E_TEST_MODE=true — skips CF Access auth but keeps device pairing enabled
+
+# === Gateway token ===
+# Optional - set a fixed token instead of auto-generated
+MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
+
+# === Chat channels (optional) ===
+# TELEGRAM_BOT_TOKEN=optional
+# TELEGRAM_DM_POLICY=optional
+# TELEGRAM_WEBHOOK_SECRET=your-random-secret
+# DISCORD_BOT_TOKEN=optional
+# DISCORD_DM_POLICY=optional
+# SLACK_BOT_TOKEN=xoxb-...
+# SLACK_APP_TOKEN=xapp-...
+
+# === AWS Bedrock MFA auth (optional) ===
+# AWS_ACCESS_KEY_ID=your-access-key
+# AWS_SECRET_ACCESS_KEY=your-secret-key
+# AWS_MFA_SERIAL=arn:aws:iam::123456789012:mfa/user
+# AWS_ROLE_ARN=arn:aws:iam::123456789012:role/bedrock-role
+
+# === R2 persistent storage (optional) ===
+# R2_ACCESS_KEY_ID=your-r2-access-key
+# R2_SECRET_ACCESS_KEY=your-r2-secret-key
+
+# === Browser automation / CDP (optional) ===
+# CDP_SECRET=shared-secret-for-cdp-auth
+# WORKER_URL=https://your-worker.example.com
+
+# === Owner identity (optional) ===
+# MOLTBOT_EMAIL=you@example.com
