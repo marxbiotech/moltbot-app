@@ -17,7 +17,8 @@
 - [Reaction 設定](#reaction-設定)
 - [Bot 對 Bot 自動對談](#bot-對-bot-自動對談)
   - [Telegram Bot API 限制](#telegram-bot-api-限制)
-  - [解法：使用 Telegram Channel](#解法使用-telegram-channel)
+  - [群組內 Bot-to-Bot 的可能替代方案](#群組內-bot-to-bot-的可能替代方案)
+  - [解法 A：使用 Telegram Channel（最簡單）](#解法-a使用-telegram-channel最簡單)
   - [防止無限循環](#防止無限循環)
   - [進階：同一 OpenClaw 實例跑多個 Bot](#進階同一-openclaw-實例跑多個-bot)
   - [替代方案](#替代方案)
@@ -376,16 +377,89 @@ Telegram 的 Forum 群組支援以主題分隔對話，OpenClaw 會為每個 top
 
 ### Telegram Bot API 限制
 
-**關鍵限制：Telegram Bot 在群組中看不到其他 Bot 的訊息。** 這是 Telegram Bot API 的基本限制，不是 OpenClaw 的問題。
+**關鍵限制：Telegram Bot 在群組中看不到其他 Bot 的訊息。** 這是 Telegram Bot API 的刻意設計，不是 OpenClaw 的問題。
 
-| 場景 | Bot A 能否看到 Bot B 的訊息？ |
-|---|---|
-| 一般群組（group） | 否 |
-| 超級群組（supergroup） | 否 |
-| 頻道（channel） | **是** — 透過 `channel_post` 事件 |
-| DM | 不適用 — Bot 之間無法互發 DM |
+Telegram 官方 FAQ 明確指出：
 
-### 解法：使用 Telegram Channel
+> "Bot admins and bots with privacy mode disabled will receive all messages **except messages sent by other bots**."
+>
+> "Bots talking to each other could potentially get stuck in unwelcome loops."
+
+| 場景 | Bot A 能否看到 Bot B 的訊息？ | 原因 |
+|---|---|---|
+| 一般群組（group） | **否** | Bot API server-side 過濾 |
+| 超級群組（supergroup） | **否** | 同上，即使是管理員也一樣 |
+| 頻道（channel） | **是** | 透過 `channel_post` 事件（不同的 update type） |
+| DM | **不適用** | Bot 之間無法互發 DM |
+
+#### 為什麼 Privacy Mode 和管理員權限都無法繞過？
+
+這個限制是 Telegram **server-side** 的行為，不是 client-side 的過濾：
+
+- **Privacy Mode Disabled**：bot 可以收到群組中所有**人類使用者**的訊息，但仍然收不到其他 bot 的訊息
+- **Bot 是管理員**：管理員權限影響的是 bot 能執行的操作（刪除訊息、踢人等），不影響它能「看到」什麼訊息
+- **`getUpdates` / webhook**：Telegram API 在 server-side 就不會將 bot-to-bot 的 `message` update 送出，所以無論你怎麼設定 `allowed_updates`，都收不到
+- **OpenClaw 的 message handler 沒有過濾 `is_bot`**：如果 Telegram 有送出 bot 的訊息，OpenClaw 會正常處理。問題是 Telegram 根本不送
+
+#### 群組內 Bot-to-Bot 的可能替代方案
+
+雖然 Bot API 無法直接實現群組內的 bot-to-bot，但有以下進階方案：
+
+##### 方案 1：Channel + Linked Discussion Group（推薦）
+
+Telegram Channel 可以綁定一個 Discussion Group。在 Channel 中發送的訊息會自動轉發到 Discussion Group，反之亦然。
+
+```
+Bot A 發訊息到 Channel
+  → Telegram 自動轉發到 Linked Discussion Group（人類使用者可在此看到）
+  → Bot B 透過 channel_post 收到 Channel 中的訊息
+  → Bot B 回覆到 Channel
+  → 同樣自動轉發到 Discussion Group
+```
+
+**設定方式：**
+1. 建立一個 Channel，加入兩個 bot 為管理員
+2. 建立一個 Supergroup 作為 Discussion Group
+3. 在 Channel 設定 → Discussion → 連結到該 Supergroup
+4. 人類使用者加入 Discussion Group 即可看到對話
+5. 兩個 bot 的 OpenClaw config 設定 channel ID（不是 group ID）
+
+**優點：** 人類使用者在 Discussion Group 中可以看到完整對話，也可以參與；bot 之間透過 Channel 通訊
+**缺點：** 訊息會顯示為「從 Channel 轉發」而非直接發送
+
+##### 方案 2：Backend Relay（out-of-band）
+
+不依賴 Telegram 的訊息傳遞，在 OpenClaw 實例之間建立直接通訊：
+
+```
+人類使用者在群組中 @BotA "請問 BotB 怎麼看？"
+  → Bot A 的 OpenClaw 處理訊息
+  → Bot A 透過 HTTP/webhook 呼叫 Bot B 的 API
+  → Bot B 回覆 Bot A
+  → Bot A 將 Bot B 的回覆發送到群組
+```
+
+**實現方式：**
+- 在 OpenClaw 的 agent tool 中建立自訂 tool，呼叫另一個 OpenClaw 的 gateway API
+- 或使用共享的 message queue / pub-sub
+- 可搭配 system prompt 指示 agent 何時該轉達
+
+**優點：** 真正在群組中對話、延遲低、完全控制
+**缺點：** 需要自行開發 relay 邏輯
+
+##### 方案 3：MTProto Userbot（不推薦）
+
+使用 Telegram MTProto API（如 Telethon / GramJS / TDLib）以一般使用者帳號登入，而非 Bot API。使用者帳號可以看到群組中所有訊息，包括其他 bot 的。
+
+**風險：**
+- 違反 Telegram ToS，帳號可能被封鎖
+- 需要真實手機號碼
+- 維護成本高（session 管理、2FA 處理）
+- OpenClaw 目前不支援 MTProto（僅支援 Bot API via grammY）
+
+> **不推薦用於正式環境。** 如果需要此功能，建議使用方案 1 或方案 2。
+
+### 解法 A：使用 Telegram Channel（最簡單）
 
 OpenClaw 已實作 `channel_post` handler（`src/telegram/bot-handlers.ts`），專門用於 bot-to-bot 通訊。透過 Telegram **Channel**（而非 Group），兩個 bot 可以看到彼此的訊息。
 
