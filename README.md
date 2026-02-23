@@ -2,16 +2,22 @@
 
 Run [OpenClaw](https://github.com/openclaw/openclaw) (formerly Moltbot, formerly Clawdbot) personal AI assistant in a [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/).
 
-![moltworker architecture](./assets/logo.png)
+![moltbot-app architecture](./assets/logo.png)
 
 > **Experimental:** This is a proof of concept demonstrating that OpenClaw can run in Cloudflare Sandbox. It is not officially supported and may break without notice. Use at your own risk.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/moltworker)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/aehrt55/moltbot-app)
 
 ## Requirements
 
 - [Workers Paid plan](https://www.cloudflare.com/plans/developer-platform/) ($5 USD/month) — required for Cloudflare Sandbox containers
-- [Anthropic API key](https://console.anthropic.com/) — for Claude access, or you can use AI Gateway's [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
+- At least one AI provider:
+  - [Anthropic API key](https://console.anthropic.com/) — Claude models
+  - [OpenAI API key](https://platform.openai.com/) — GPT models
+  - [Google API key](https://aistudio.google.com/apikey) — Gemini models
+  - [AWS Bedrock](https://aws.amazon.com/bedrock/) — Claude, DeepSeek, Qwen, and more via AWS (MFA-gated)
+  - **Subscription auth** — use your Claude Pro/Max or ChatGPT Plus/Pro subscription without API keys (see [Subscription Auth](#subscription-auth))
+  - [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/) with [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/) — route through Cloudflare
 
 The following Cloudflare features used by this project have free tiers:
 - Cloudflare Access (authentication)
@@ -52,6 +58,22 @@ This project packages OpenClaw to run in a [Cloudflare Sandbox](https://develope
 
 ## Architecture
 
+```
+                    ┌─────────────────────────────────────────────────────┐
+                    │              Cloudflare Worker (Hono)               │
+                    │                                                     │
+Browser ──────────► │  CF Access auth ──► /_admin/* (React SPA)          │
+                    │                 ──► /api/*    (device mgmt)        │
+                    │                                                     │
+                    │  Catch-all proxy ──► Sandbox Container :18789      │
+                    │    HTTP (containerFetch)                            │
+                    │    WS  (wsConnect + WebSocketPair relay)           │
+                    │                                                     │
+Telegram ─────────► │  POST /telegram/webhook ──► Container :8787       │
+                    │    (secret token validation)   (telegram-tools)     │
+                    └─────────────────────────────────────────────────────┘
+```
+
 ![moltworker architecture](./assets/architecture.png)
 
 ## Quick Start
@@ -62,8 +84,14 @@ _Cloudflare Sandboxes are available on the [Workers Paid plan](https://dash.clou
 # Install dependencies
 npm install
 
-# Set your API key (direct Anthropic access)
-npx wrangler secret put ANTHROPIC_API_KEY
+# Set your AI provider key (pick one)
+npx wrangler secret put ANTHROPIC_API_KEY    # Anthropic (Claude)
+# npx wrangler secret put OPENAI_API_KEY     # OpenAI (GPT)
+# npx wrangler secret put GOOGLE_API_KEY     # Google (Gemini)
+
+# Or skip API keys entirely and use subscription auth after deploy:
+#   Set SUBSCRIPTION_AUTH=true in wrangler.jsonc vars, then use
+#   /claude_auth or /openai_auth in chat (see Subscription Auth below)
 
 # Or use Cloudflare AI Gateway instead (see "Optional: Cloudflare AI Gateway" below)
 # npx wrangler secret put CLOUDFLARE_AI_GATEWAY_API_KEY
@@ -221,7 +249,7 @@ R2 storage uses a backup/restore approach for simplicity:
 - OpenClaw uses its default paths (no special configuration needed)
 
 **During operation:**
-- A cron job runs every 5 minutes to sync the moltbot config to R2
+- A background sync loop watches for file changes every 30 seconds and uploads to R2
 - You can also trigger a manual backup from the admin UI at `/_admin/`
 
 **In the admin UI:**
@@ -254,6 +282,63 @@ Access the admin UI at `/_admin/` to:
 
 The admin UI requires Cloudflare Access authentication (or `DEV_MODE=true` for local development).
 
+## Multi-Provider Support & Model Switching
+
+moltbot supports multiple AI providers simultaneously. When two or more providers are configured, you can switch between models at runtime using the `/model` command in chat.
+
+### Supported Providers
+
+| Provider | Env Var(s) | Models |
+|----------|-----------|--------|
+| Anthropic | `ANTHROPIC_API_KEY` | Claude Haiku 4.5, Claude Sonnet 4.6, Claude Opus 4.6 |
+| OpenAI | `OPENAI_API_KEY` | GPT-4o |
+| Google | `GOOGLE_API_KEY` | Gemini 3 Flash, Gemini 3 Pro, Gemini 2.5 Flash, Gemini 2.5 Pro, Gemini 2.5 Flash Lite |
+| AWS Bedrock | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | Claude, DeepSeek R1/V3, Qwen3 Coder, GPT-OSS 120B (auto-discovered) |
+| Claude subscription | `/claude_auth` command | Same as Anthropic |
+| OpenAI subscription | `/openai_auth` command | GPT-5.3 Codex, GPT-5.1 Codex Max, GPT-5 Codex Mini |
+| CF AI Gateway | `CLOUDFLARE_AI_GATEWAY_API_KEY` + account/gateway IDs | Any [AI Gateway provider](https://developers.cloudflare.com/ai-gateway/usage/providers/) |
+
+### Runtime Model Switching
+
+Type `/model` in chat to see available models and `/model <number>` to switch. The model catalog is built automatically from your configured providers on each startup.
+
+To set the default model, use the `DEFAULT_MODEL` env var:
+
+```bash
+npx wrangler secret put DEFAULT_MODEL
+# Enter: google/gemini-3-pro-preview
+```
+
+Format is `provider/model-id`. The `DEFAULT_MODEL` setting takes effect on next container restart.
+
+### Subscription Auth
+
+Use your existing Claude Pro/Max or ChatGPT Plus/Pro subscription instead of API keys:
+
+1. Set `SUBSCRIPTION_AUTH=true` in `wrangler.jsonc` vars (this allows the worker to start without API keys)
+2. Deploy and connect to the Control UI
+3. Authenticate in chat:
+
+**Claude Pro/Max:**
+```
+# On any machine with Claude Code installed:
+claude setup-token
+
+# Paste the token in chat:
+/claude_auth sk-ant-oat01-...
+```
+
+**ChatGPT Plus/Pro (OAuth):**
+```
+# Start the OAuth flow:
+/openai_auth
+
+# Sign in via browser, copy the redirect URL, then:
+/openai_callback http://localhost:1455/auth/callback?code=...
+```
+
+Subscription credentials are persisted to R2 and auto-refreshed (OAuth tokens refresh automatically).
+
 ## Debug Endpoints
 
 Debug endpoints are available at `/debug/*` when enabled (requires `DEBUG_ROUTES=true` and Cloudflare Access):
@@ -266,10 +351,56 @@ Debug endpoints are available at `/debug/*` when enabled (requires `DEBUG_ROUTES
 
 ### Telegram
 
+Telegram supports two modes: **polling** (default) and **webhook**.
+
+**Polling mode** (simplest setup):
+
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npm run deploy
 ```
+
+**Webhook mode** (lower latency, required for sleep/wake containers):
+
+Webhook mode routes Telegram updates through the Cloudflare Worker, so the container doesn't need to maintain a persistent connection. This is required if you use `SANDBOX_SLEEP_AFTER` — a sleeping container can't poll, but an incoming webhook wakes it up.
+
+```
+Telegram API ──► CF Worker (POST /telegram/webhook) ──► Container :8787 (telegram-tools)
+                    │ validates X-Telegram-Bot-Api-Secret-Token
+                    │ against TELEGRAM_WEBHOOK_SECRET (timing-safe)
+```
+
+Setup:
+
+```bash
+# Required for both modes
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+
+# Additional secrets for webhook mode
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET   # Shared secret for webhook validation
+npx wrangler secret put WORKER_URL                 # e.g., https://moltbot.example.workers.dev
+
+npm run deploy
+```
+
+After deploying, register the webhook with Telegram via chat command:
+
+```
+/telegram webhook on
+```
+
+Manage webhooks with the `/telegram` command:
+
+| Command | Description |
+|---------|-------------|
+| `/telegram webhook` | Show webhook status |
+| `/telegram webhook on` | Register webhook with Telegram |
+| `/telegram webhook off` | Delete webhook, revert to polling |
+| `/telegram webhook verify` | Query Telegram API for current webhook info |
+| `/telegram pair` | List pending Telegram DM pairing requests |
+| `/telegram pair approve <code>` | Approve a pairing request |
+
+**DM access control:** By default, Telegram uses `pairing` mode — new users must be approved. Set `TELEGRAM_DM_POLICY=open` to allow all users.
 
 ### Discord
 
@@ -356,6 +487,8 @@ Commands registered via plugins execute WITHOUT the AI agent (LLM-free). Each pl
 | Plugin | Commands | Description |
 |--------|----------|-------------|
 | `bedrock-auth` | `/aws_auth` | AWS Bedrock MFA authentication |
+| `subscription-auth` | `/claude_auth`, `/openai_auth`, `/openai_callback` | Claude Pro/Max setup-token and OpenAI Codex OAuth sign-in |
+| `telegram-tools` | `/telegram` | Telegram webhook management and DM pairing |
 | `ssh-tools` | `/ssh_setup`, `/ssh_check` | SSH key management and GitHub connectivity |
 | `git-tools` | `/git_check`, `/git_sync`, `/git_repos` | Git operations and repo scanning |
 | `moltbot-utils` | `/ws_check`, `/sys_info`, `/net_check` | Workspace health, system info, network diagnostics |
@@ -421,36 +554,78 @@ With [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/uni
 
 The previous `AI_GATEWAY_API_KEY` + `AI_GATEWAY_BASE_URL` approach is still supported for backward compatibility but is deprecated in favor of the native configuration above.
 
+## Multi-Environment Deployment (GitOps)
+
+For a single environment, `wrangler secret put` is all you need. For managing multiple environments (staging, production, per-user), moltbot-app supports a GitOps workflow via a separate environment repository.
+
+[`@aehrt55/create-moltbot-env`](https://www.npmjs.com/package/@aehrt55/create-moltbot-env) scaffolds a GitOps repo with:
+
+- **Overlay pattern** — per-environment config directories (`overlays/<env>/`) with Wrangler config, pinned app version, and encrypted secrets
+- **SOPS + AGE** — secrets encrypted at rest in git, decrypted at deploy time
+- **Makefile orchestration** — `make deploy`, `make edit-secrets`, `make push-secrets`
+- **Claude Code commands** — `/create-env`, `/delete-env`, `/upgrade` for agent-assisted operations
+
+```bash
+npx @aehrt55/create-moltbot-env
+```
+
+The CLI walks you through account setup, generates the repo structure, and optionally creates an AGE key pair for secret encryption. See the [create-moltbot-env README](https://github.com/aehrt55/create-moltbot-env) for full documentation.
+
 ## All Secrets Reference
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `CLOUDFLARE_AI_GATEWAY_API_KEY` | Yes* | Your AI provider's API key, passed through the gateway (e.g., your Anthropic API key). Requires `CF_AI_GATEWAY_ACCOUNT_ID` and `CF_AI_GATEWAY_GATEWAY_ID` |
-| `CF_AI_GATEWAY_ACCOUNT_ID` | Yes* | Your Cloudflare account ID (used to construct the gateway URL) |
-| `CF_AI_GATEWAY_GATEWAY_ID` | Yes* | Your AI Gateway ID (used to construct the gateway URL) |
-| `CF_AI_GATEWAY_MODEL` | No | Override default model: `provider/model-id` (e.g. `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`). See [Choosing a Model](#choosing-a-model) |
-| `ANTHROPIC_API_KEY` | Yes* | Direct Anthropic API key (alternative to AI Gateway) |
-| `ANTHROPIC_BASE_URL` | No | Direct Anthropic API base URL |
-| `OPENAI_API_KEY` | No | OpenAI API key (alternative provider) |
-| `AI_GATEWAY_API_KEY` | No | Legacy AI Gateway API key (deprecated, use `CLOUDFLARE_AI_GATEWAY_API_KEY` instead) |
+| `ANTHROPIC_API_KEY` | Yes* | Direct Anthropic API key |
+| `OPENAI_API_KEY` | Yes* | OpenAI API key |
+| `GOOGLE_API_KEY` | Yes* | Google AI API key (Gemini models) |
+| `CLOUDFLARE_AI_GATEWAY_API_KEY` | Yes* | Your AI provider's API key, passed through the gateway. Requires `CF_AI_GATEWAY_ACCOUNT_ID` and `CF_AI_GATEWAY_GATEWAY_ID` |
+| `CF_AI_GATEWAY_ACCOUNT_ID` | Yes* | Cloudflare account ID for AI Gateway URL |
+| `CF_AI_GATEWAY_GATEWAY_ID` | Yes* | AI Gateway ID for AI Gateway URL |
+| `CF_AI_GATEWAY_MODEL` | No | Override AI Gateway model: `provider/model-id` (e.g. `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`). See [Choosing a Model](#choosing-a-model) |
+| `DEFAULT_MODEL` | No | Default model override: `provider/model-id` (e.g. `google/gemini-3-pro-preview`). Takes effect on container restart |
+| `SUBSCRIPTION_AUTH` | No | Set to `true` to allow startup without API keys (use `/claude_auth` or `/openai_auth` in chat) |
+| `ANTHROPIC_BASE_URL` | No | Direct Anthropic API base URL override |
+| `AI_GATEWAY_API_KEY` | No | Legacy AI Gateway API key (deprecated, use `CLOUDFLARE_AI_GATEWAY_API_KEY`) |
 | `AI_GATEWAY_BASE_URL` | No | Legacy AI Gateway endpoint URL (deprecated) |
+| `AWS_ACCESS_KEY_ID` | No | AWS IAM access key for Bedrock (used with MFA via `/aws_auth`) |
+| `AWS_SECRET_ACCESS_KEY` | No | AWS IAM secret key for Bedrock |
+| `AWS_MFA_SERIAL` | No | MFA device ARN for Bedrock authentication |
+| `AWS_ROLE_ARN` | No | IAM role to assume for Bedrock access |
+| `BEDROCK_DEFAULT_MODEL` | No | Default Bedrock model pattern after auth (e.g. `claude-sonnet-4-6`) |
+| `MOLTBOT_GATEWAY_TOKEN` | Yes | Gateway token for authentication (pass via `?token=` query param) |
 | `CF_ACCESS_TEAM_DOMAIN` | Yes* | Cloudflare Access team domain (required for admin UI) |
 | `CF_ACCESS_AUD` | Yes* | Cloudflare Access application audience (required for admin UI) |
-| `MOLTBOT_GATEWAY_TOKEN` | Yes | Gateway token for authentication (pass via `?token=` query param) |
+| `MOLTBOT_EMAIL` | No | Owner email for SSH key comment and git config |
 | `DEV_MODE` | No | Set to `true` to skip CF Access auth + device pairing (local dev only) |
 | `DEBUG_ROUTES` | No | Set to `true` to enable `/debug/*` routes |
 | `SANDBOX_SLEEP_AFTER` | No | Container sleep timeout: `never` (default) or duration like `10m`, `1h` |
 | `R2_ACCESS_KEY_ID` | No | R2 access key for persistent storage |
 | `R2_SECRET_ACCESS_KEY` | No | R2 secret key for persistent storage |
+| `R2_BUCKET_NAME` | No | Override R2 bucket name (default: `moltbot-data`) |
 | `CF_ACCOUNT_ID` | No | Cloudflare account ID (required for R2 storage) |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram bot token |
 | `TELEGRAM_DM_POLICY` | No | Telegram DM policy: `pairing` (default) or `open` |
+| `TELEGRAM_WEBHOOK_SECRET` | No | Shared secret for Telegram webhook validation (required for webhook mode) |
 | `DISCORD_BOT_TOKEN` | No | Discord bot token |
 | `DISCORD_DM_POLICY` | No | Discord DM policy: `pairing` (default) or `open` |
 | `SLACK_BOT_TOKEN` | No | Slack bot token |
 | `SLACK_APP_TOKEN` | No | Slack app token |
 | `CDP_SECRET` | No | Shared secret for CDP endpoint authentication (see [Browser Automation](#optional-browser-automation-cdp)) |
-| `WORKER_URL` | No | Public URL of the worker (required for CDP) |
+| `WORKER_URL` | No | Public URL of the worker (required for CDP and Telegram webhook) |
+
+\* At least one AI provider is required. Set one of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, the full CF AI Gateway set, AWS Bedrock keys, or `SUBSCRIPTION_AUTH=true`. CF Access secrets are required for the admin UI.
+
+## Design Principles
+
+- **Environment-agnostic app code** — All configuration flows through env vars and secrets. The app repo contains zero environment-specific values; deployment differences live in separate overlay repos (see [Multi-Environment Deployment](#multi-environment-deployment-gitops)).
+
+- **Container sleep/wake cost optimization** — `SANDBOX_SLEEP_AFTER` puts the container to sleep when idle. Incoming HTTP requests or Telegram webhooks wake it up. R2 backup/restore ensures no data loss across sleep cycles. A container running 4 hours/day costs ~$5-6/mo instead of ~$30/mo.
+
+- **Multi-layer authentication** — Cloudflare Access protects admin routes, gateway tokens gate the Control UI, and device pairing requires explicit approval for each new client. Each layer can be bypassed independently for development (`DEV_MODE=true`).
+
+- **R2 backup/restore persistence** — Rather than mounting networked storage, moltbot uses a simple backup/restore approach: restore from R2 on startup, sync changes back every 30 seconds. This avoids complexity with FUSE mounts in containers and works reliably with container sleep/wake cycles.
+
+- **Overlay-based GitOps** — For multi-environment deployments, each environment gets its own overlay directory with Wrangler config and SOPS-encrypted secrets. The app repo is cloned and overlaid at deploy time, keeping the app portable and environments reproducible.
 
 ## Security Considerations
 
@@ -482,15 +657,19 @@ OpenClaw in Cloudflare Sandbox uses multiple authentication layers:
 
 **WebSocket issues in local development:** `wrangler dev` has known limitations with WebSocket proxying through the sandbox. HTTP requests work but WebSocket connections may fail. Deploy to Cloudflare for full functionality.
 
+**API key rotation not taking effect:** OpenClaw caches API keys in `auth-profiles.json` (synced to R2). After rotating a key via `wrangler secret put`, you need to redeploy (`npm run deploy`) and restart the gateway. The startup script patches `auth-profiles.json` with current env var values on every boot.
+
 ## Known Issues
 
 ### Windows: Gateway fails to start with exit code 126 (permission denied)
 
-On Windows, Git may check out shell scripts with CRLF line endings instead of LF. This causes `start-openclaw.sh` to fail with exit code 126 inside the Linux container. Ensure your repository uses LF line endings — configure Git with `git config --global core.autocrlf input` or add a `.gitattributes` file with `* text=auto eol=lf`. See [#64](https://github.com/cloudflare/moltworker/issues/64) for details.
+On Windows, Git may check out shell scripts with CRLF line endings instead of LF. This causes `start-openclaw.sh` to fail with exit code 126 inside the Linux container. Ensure your repository uses LF line endings — configure Git with `git config --global core.autocrlf input` or add a `.gitattributes` file with `* text=auto eol=lf`.
 
 ## Links
 
 - [OpenClaw](https://github.com/openclaw/openclaw)
 - [OpenClaw Docs](https://docs.openclaw.ai/)
+- [create-moltbot-env](https://github.com/aehrt55/create-moltbot-env) — GitOps environment scaffold CLI
+- [@aehrt55/create-moltbot-env on npm](https://www.npmjs.com/package/@aehrt55/create-moltbot-env)
 - [Cloudflare Sandbox Docs](https://developers.cloudflare.com/sandbox/)
 - [Cloudflare Access Docs](https://developers.cloudflare.com/cloudflare-one/policies/access/)
