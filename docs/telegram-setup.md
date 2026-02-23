@@ -394,6 +394,51 @@ Telegram 官方 FAQ 明確指出：
 
 > **人類使用者 vs. Bot 的視角不同：** 在 Telegram 群組中，人類使用者可以看到所有 bot 的發言。但 bot 本身不會收到其他 bot 發言的 `message` update。如果你在群組中看到兩個 bot 都有發言，那是你（人類）的視角 — bot 並不知道對方說了什麼。
 
+#### 實驗驗證（2026-02-24）
+
+我們用 `getUpdates` API 對 MagataShikiBot（`can_read_all_group_messages: true`）進行了實測，在「火星生技效率部門」supergroup（forum 群組）中：
+
+1. 先 `deleteWebhook` 切換到手動拉取模式
+2. 清除舊 update（設定 offset）
+3. 在群組中分別發送：人類訊息、另一個 bot（GranCavalloBot）的訊息、另一個 bot tag @MagataShikiBot 的訊息
+
+**結果：`getUpdates` 只回傳了人類發送的訊息，所有 bot 發送的訊息（包含明確 @mention MagataShikiBot 的）完全未出現。**
+
+```
+收到的 update：
+  ✅ Xin: "@GranCavalloBot 說說話"                    ← 人類訊息，收到
+  ✅ Xin: "@GranCavalloBot 博士指的是真賀田四季博士..."   ← 人類訊息，收到
+  ❌ GranCavalloBot 的所有回覆                         ← bot 訊息，完全未收到
+  ❌ GranCavalloBot tag @MagataShikiBot 的訊息        ← bot 訊息，完全未收到
+```
+
+這證實 Telegram Bot API 確實在 **server 端過濾**掉其他 bot 的訊息，即使：
+- 接收方 bot 已關閉隱私模式（`can_read_all_group_messages: true`）
+- 發送方 bot 明確 @mention 接收方 bot
+- 群組類型是 supergroup + forum
+
+接著我們測試了 **Channel 的 `channel_post`**，在「徬徨海」Channel 中：
+
+1. 將 MagataShikiBot 和 GranCavalloBot 都加為 Channel 管理員
+2. 用 GranCavalloBot 的 Bot API `sendMessage` 發送訊息到 Channel
+3. 檢查 MagataShikiBot 的 `getUpdates`
+
+**結果：MagataShikiBot 成功透過 `channel_post` 收到了 GranCavalloBot 發送的訊息。**
+
+```
+收到的 channel_post update：
+  ✅ GranCavalloBot 在 Channel 中發送的訊息           ← channel_post，收到！
+```
+
+進一步測試 **Sign Messages** 設定的影響：
+
+| Channel 管理員設定 | `from` 欄位 | `sender_chat` 欄位 | `author_signature` |
+|---|---|---|---|
+| Sign Messages **OFF** | 無 | `{ id: channel_id, title: "徬徨海" }` | 無 |
+| Sign Messages **ON** | `{ id: bot_id, is_bot: true, username: "GranCavalloBot" }` | 無 | `"達·文西"` |
+
+**關鍵發現：必須啟用 Sign Messages，否則 `channel_post` 的 `from` 為空，接收方 bot 無法辨識發送者身份。** OpenClaw 的 `channel_post` handler 在 Sign Messages OFF 時會使用 `sender_chat`（channel info）建構 `syntheticFrom`，所有 bot 的訊息看起來都來自同一個 Channel。
+
 #### 為什麼 Privacy Mode 和管理員權限都無法繞過？
 
 這個限制是 Telegram **server-side** 的行為，不是 client-side 的過濾：
@@ -495,6 +540,7 @@ OpenClaw 已實作 `channel_post` handler（`src/telegram/bot-handlers.ts`），
 1. **建立 Telegram Channel**
    - 在 Telegram 建立一個新的 Channel（公開或私人皆可）
    - 將兩個 bot 都加為 Channel 的 **管理員**（需要「發送訊息」權限）
+   - **啟用 Sign Messages**：Channel 設定 → Administrators → 每個 bot → 開啟「Sign messages」。未啟用時 `channel_post` 的 `from` 為空，bot 無法辨識訊息發送者身份
 
 2. **取得 Channel ID**
    - 將 bot 加入 channel 後，在 channel 中發送一則訊息
