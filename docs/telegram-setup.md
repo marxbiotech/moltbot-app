@@ -16,6 +16,11 @@
 - [回覆模式與串流](#回覆模式與串流)
 - [Reaction 設定](#reaction-設定)
 - [Bot 對 Bot 自動對談](#bot-對-bot-自動對談)
+  - [Telegram Bot API 限制](#telegram-bot-api-限制)
+  - [解法：使用 Telegram Channel](#解法使用-telegram-channel)
+  - [防止無限循環](#防止無限循環)
+  - [進階：同一 OpenClaw 實例跑多個 Bot](#進階同一-openclaw-實例跑多個-bot)
+  - [替代方案](#替代方案)
 - [Troubleshooting](#troubleshooting)
 
 ## 模式選擇
@@ -382,28 +387,31 @@ Telegram 的 Forum 群組支援以主題分隔對話，OpenClaw 會為每個 top
 
 ### 解法：使用 Telegram Channel
 
-OpenClaw 已實作 `channel_post` handler，專門用於 bot-to-bot 通訊。透過 Telegram **Channel**（而非 Group），兩個 bot 可以看到彼此的訊息。
+OpenClaw 已實作 `channel_post` handler（`src/telegram/bot-handlers.ts`），專門用於 bot-to-bot 通訊。透過 Telegram **Channel**（而非 Group），兩個 bot 可以看到彼此的訊息。
 
 #### 設定步驟
 
 1. **建立 Telegram Channel**
    - 在 Telegram 建立一個新的 Channel（公開或私人皆可）
-   - 將兩個 bot 都加為 Channel 的 **管理員**（需要發送訊息權限）
+   - 將兩個 bot 都加為 Channel 的 **管理員**（需要「發送訊息」權限）
 
 2. **取得 Channel ID**
    - 將 bot 加入 channel 後，在 channel 中發送一則訊息
-   - 透過 Telegram API 取得 channel ID（通常格式為 `-100xxxxxxxxxx`）
+   - 透過 Telegram Bot API `getUpdates` 取得 channel ID（通常格式為 `-100xxxxxxxxxx`）
    - 或使用 [@userinfobot](https://t.me/userinfobot) 等工具
+   - 或在 Telegram Web 中打開 channel，URL 中的數字即為 ID
 
-3. **設定 Bot A 的 OpenClaw config**
+3. **設定兩個 Bot 的 OpenClaw config**
+
+   Bot A 和 Bot B 的 config 結構相同，只需替換 `<channel_id>`：
 
    ```json
    {
      "channels": {
        "telegram": {
-         "groupPolicy": "open",
          "groups": {
-           "<channel_id>": {
+           "-100xxxxxxxxxx": {
+             "enabled": true,
              "requireMention": false,
              "groupPolicy": "open"
            }
@@ -413,87 +421,282 @@ OpenClaw 已實作 `channel_post` handler，專門用於 bot-to-bot 通訊。透
    }
    ```
 
-4. **設定 Bot B 的 OpenClaw config**（同上，但使用 Bot B 的 config）
-
-   ```json
-   {
-     "channels": {
-       "telegram": {
-         "groupPolicy": "open",
-         "groups": {
-           "<channel_id>": {
-             "requireMention": false,
-             "groupPolicy": "open"
-           }
-         }
-       }
-     }
-   }
-   ```
-
-5. **兩個關鍵設定**
+4. **兩個關鍵設定**
    - `requireMention: false` — 不需要 @mention 就回應（否則 bot 不會互相 tag）
    - `groupPolicy: "open"` — 允許所有發送者（包括其他 bot）
+   - `enabled: true` — 啟用此 channel（`channel_post` handler 需要 `requireConfiguredGroup: true`）
 
-#### 運作原理
+#### channel_post 內部運作原理
+
+OpenClaw 收到 `channel_post` 時的處理流程：
 
 ```
-Bot A 發送訊息到 Channel
-  → Telegram 送出 channel_post update 給所有 channel 成員（包括 Bot B）
-  → Bot B 的 OpenClaw 收到 channel_post
-  → channel_post handler 將它轉換為標準訊息格式處理
-  → Bot B 回覆到 Channel
-  → Telegram 送出 channel_post update 給 Bot A
-  → Bot A 處理並回覆...（循環）
+Telegram 送出 channel_post update
+  │
+  ├─ 1. 建構 syntheticFrom（發送者身份）
+  │    ├─ 如果 post.from 存在 → 直接使用（通常是 bot 的真實 user info）
+  │    ├─ 如果有 sender_chat → 用 sender_chat.id + title，標記 is_bot: true
+  │    └─ 否則 → 用 channel 本身的 id + title，標記 is_bot: true
+  │
+  ├─ 2. 建構 syntheticMsg
+  │    ├─ 繼承 post 的所有欄位（text, entities, media 等）
+  │    ├─ from = post.from ?? syntheticFrom
+  │    └─ chat.type 強制設為 "supergroup"（進入群組處理 pipeline）
+  │
+  ├─ 3. 提取 senderId
+  │    ├─ 優先用 sender_chat.id（bot 透過 channel 發送時）
+  │    └─ 其次用 from.id
+  │
+  └─ 4. 進入標準 handleInboundMessageLike()
+       ├─ 走群組的 access control（groupPolicy + allowFrom）
+       ├─ 走 mention gating（requireMention 檢查）
+       ├─ 建立或恢復 session
+       ├─ 送給 AI agent 處理
+       └─ 回覆發送到同一個 channel（同一個 chatId）
+```
+
+#### 完整訊息流（兩個 Bot 對談）
+
+```
+┌─────────┐                    ┌─────────────────┐                    ┌─────────┐
+│  Bot A   │                    │  Telegram API   │                    │  Bot B   │
+│(OpenClaw)│                    │                 │                    │(OpenClaw)│
+└────┬─────┘                    └────────┬────────┘                    └────┬─────┘
+     │                                   │                                  │
+     │  sendMessage(channel, "Hello!")    │                                  │
+     │──────────────────────────────────>│                                  │
+     │                                   │                                  │
+     │                                   │  channel_post: from=BotA         │
+     │                                   │  text="Hello!"                   │
+     │                                   │─────────────────────────────────>│
+     │                                   │                                  │
+     │                                   │                 syntheticMsg 建構 │
+     │                                   │                 groupPolicy 檢查  │
+     │                                   │                 AI agent 推理     │
+     │                                   │                                  │
+     │                                   │  sendMessage(channel, "Hi!")     │
+     │                                   │<─────────────────────────────────│
+     │                                   │                                  │
+     │  channel_post: from=BotB          │                                  │
+     │  text="Hi!"                       │                                  │
+     │<──────────────────────────────────│                                  │
+     │                                   │                                  │
+     │  syntheticMsg 建構                 │                                  │
+     │  AI agent 推理                     │                                  │
+     │  ...                              │                                  │
 ```
 
 ### 防止無限循環
 
-兩個 bot 如果都設定 `requireMention: false`，它們會互相回覆形成無限循環。建議的防護措施：
+兩個 bot 如果都設定 `requireMention: false`，它們會互相回覆形成無限循環。**OpenClaw 目前沒有內建的 bot-to-bot 防循環機制**，需要靠設定來控制。
 
-1. **使用 mentionPatterns 作為觸發條件**：設定自訂 mention pattern，只在特定關鍵字出現時回應
+以下是可用的防護層，建議組合使用：
 
-   ```json
-   {
-     "channels": {
-       "telegram": {
-         "groups": {
-           "<channel_id>": {
-             "requireMention": true
-           }
-         }
-       }
-     }
-   }
-   ```
+#### 方法 1：mentionPatterns 觸發（推薦）
 
-   搭配 `agents.defaults.groupChat.mentionPatterns` 或 `messages.groupChat.mentionPatterns` 設定觸發 regex。
+設定 `requireMention: true`，搭配自訂 regex pattern 作為觸發條件。mentionPatterns 支援完整 regex，case-insensitive 匹配。
 
-2. **使用 system prompt 約束**：在 system prompt 中指示 bot 何時該回覆、何時不該
+```json
+{
+  "channels": {
+    "telegram": {
+      "groups": {
+        "-100xxxxxxxxxx": {
+          "requireMention": true
+        }
+      }
+    }
+  },
+  "messages": {
+    "groupChat": {
+      "mentionPatterns": ["\\bask\\s+BotA\\b", "\\b@bot_a_username\\b"]
+    }
+  }
+}
+```
 
-3. **設定 historyLimit**：限制 bot 能看到的歷史訊息量，避免 context 過長
+**mentionPatterns 運作方式：**
+- 每個 pattern 是一個 regex string，以 case-insensitive (`i` flag) 編譯
+- 訊息文字會先經過正規化（`normalizeMentionText`）再匹配
+- 如果任一 pattern match，視同被 mention
+- 無效的 regex 會被靜默跳過
 
-   ```json
-   {
-     "channels": {
-       "telegram": {
-         "groups": {
-           "<channel_id>": {
-             "historyLimit": 5
-           }
-         }
-       }
-     }
-   }
-   ```
+**Pattern 優先順序：**
+1. Agent-specific：`agents.list[].groupChat.mentionPatterns`
+2. Global：`messages.groupChat.mentionPatterns`
+3. 自動衍生：從 `agents.defaults.identity.name` 產生 `\b@?<name>\b`
 
-### 替代方案：手動 relay
+**實用 pattern 範例：**
 
-如果 Channel 模式不符合需求，可以考慮：
+| Pattern | 匹配 | 說明 |
+|---|---|---|
+| `\b@?Claude\b` | "Claude", "@Claude", "claude" | 名稱觸發 |
+| `\bask\s+BotA\b` | "ask BotA", "Ask BotA" | 動詞 + 名稱 |
+| `\b(help\|question)\b` | "help", "question" | 關鍵字觸發 |
+| `🤖` | 🤖 | Emoji 觸發 |
 
-1. **Relay Bot**：建立一個 user account（非 bot）作為中繼，轉發兩個 bot 的訊息
-2. **Telegram User Token**：使用 user token（`userbot`）模式，但有帳號風險且不推薦
-3. **外部橋接**：透過 webhook 或 API 在兩個 OpenClaw 實例間直接轉發訊息（不經 Telegram）
+**範例情境：** Bot A 設定 pattern `\b@?BotA\b`，Bot B 設定 pattern `\b@?BotB\b`。Bot B 回覆時如果文字中包含 "BotA"，Bot A 才會回應。
+
+#### 方法 2：system prompt 行為約束
+
+透過 per-group `systemPrompt` 指示 bot 何時該回覆、何時不該：
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "groups": {
+        "-100xxxxxxxxxx": {
+          "requireMention": false,
+          "groupPolicy": "open",
+          "systemPrompt": "You are Bot A (an AI coding assistant) in a shared channel with Bot B (an AI writing assistant).\n\nRules:\n1. Only respond when the message is directed at you or asks a coding question.\n2. If Bot B is answering a writing question, do NOT respond.\n3. If you are unsure whether to respond, stay silent.\n4. Never respond to a message that is clearly Bot B talking to a human.\n5. Keep responses concise to avoid triggering unnecessary back-and-forth."
+        }
+      }
+    }
+  }
+}
+```
+
+> system prompt 完全取代預設 prompt，請確保包含足夠的角色設定。
+
+#### 方法 3：historyLimit 限制 context
+
+限制 bot 能看到的歷史訊息量，避免 context window 膨脹和過度回應：
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "groups": {
+        "-100xxxxxxxxxx": {
+          "historyLimit": 3
+        }
+      }
+    }
+  }
+}
+```
+
+`historyLimit` 限制的是送給 AI model 的歷史 context 條數，不影響 bot 是否接收訊息。
+
+#### 方法 4：組合策略（推薦的完整設定）
+
+最穩健的做法是結合 mentionPatterns + systemPrompt + historyLimit：
+
+**Bot A（coding assistant）的 config：**
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "groups": {
+        "-100xxxxxxxxxx": {
+          "enabled": true,
+          "requireMention": true,
+          "groupPolicy": "open",
+          "historyLimit": 5,
+          "systemPrompt": "You are CodeBot, a coding assistant.\nYou share this channel with WriteBot (@write_bot).\nOnly respond to coding questions or when explicitly addressed.\nNever engage in back-and-forth conversation with WriteBot unless a human asks you to."
+        }
+      }
+    }
+  },
+  "messages": {
+    "groupChat": {
+      "mentionPatterns": ["\\b@?CodeBot\\b", "\\b@?code_bot\\b", "\\bcoding\\b"]
+    }
+  }
+}
+```
+
+**Bot B（writing assistant）的 config：**
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "groups": {
+        "-100xxxxxxxxxx": {
+          "enabled": true,
+          "requireMention": true,
+          "groupPolicy": "open",
+          "historyLimit": 5,
+          "systemPrompt": "You are WriteBot, a writing assistant.\nYou share this channel with CodeBot (@code_bot).\nOnly respond to writing questions or when explicitly addressed.\nNever engage in back-and-forth conversation with CodeBot unless a human asks you to."
+        }
+      }
+    }
+  },
+  "messages": {
+    "groupChat": {
+      "mentionPatterns": ["\\b@?WriteBot\\b", "\\b@?write_bot\\b", "\\bwriting\\b"]
+    }
+  }
+}
+```
+
+### 現有的內建防護
+
+OpenClaw 雖然沒有專門的 bot-to-bot 防循環，但有以下內建機制可間接幫助：
+
+| 機制 | 說明 | 對防循環的幫助 |
+|---|---|---|
+| Update deduplication | 5 分鐘內相同 `update_id` 不重複處理，cache 最多 2000 筆 | 防止同一訊息被處理兩次 |
+| Reaction `is_bot` filter | 來自 bot 的 reaction 事件會被忽略 | 防止 reaction 循環 |
+| Sent message cache | 追蹤 bot 自己發送的訊息（24 小時 TTL） | 用於判斷 reaction 的目標訊息 |
+| grammY apiThrottler | 自動限制 Telegram API 呼叫頻率 | 防止瞬間大量發送 |
+| Media group buffering | 多媒體訊息等待 500ms 合併處理 | 減少觸發次數 |
+| Text fragment coalescing | 分段文字等待 1500ms 合併 | 減少觸發次數 |
+
+> **注意：** 以上機制都不會阻止 bot 回覆其他 bot 的文字訊息。防循環必須靠 mentionPatterns 或 systemPrompt。
+
+### 進階：同一 OpenClaw 實例跑多個 Bot
+
+OpenClaw 支援 multi-account，可以在同一個實例中同時運行多個 Telegram bot：
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "accounts": {
+        "bot-a": {
+          "botToken": "111111:AAA...",
+          "groups": {
+            "-100xxxxxxxxxx": {
+              "requireMention": true,
+              "groupPolicy": "open"
+            }
+          }
+        },
+        "bot-b": {
+          "botToken": "222222:BBB...",
+          "groups": {
+            "-100xxxxxxxxxx": {
+              "requireMention": true,
+              "groupPolicy": "open"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+每個 account 有獨立的 token、config、session state 和 pairing store。但注意：
+
+- 目前 moltbot worker 的 `start-openclaw.sh` 只 patch 單一 bot token（`TELEGRAM_BOT_TOKEN`）
+- 若要使用 multi-account，需要擴充 config patch 或手動修改 container 內的 `openclaw.json`
+- 兩個 bot 在同一個 OpenClaw 實例中，它們會共享 AI model 和 agent 設定
+
+### 替代方案
+
+如果 Channel 模式不符合需求：
+
+| 方案 | 說明 | 優缺點 |
+|---|---|---|
+| **Relay User Account** | 建立一個 user account 作為中繼，轉發 bot 訊息到群組 | 需要維護額外帳號；可在群組中使用 |
+| **Telegram User Token（Userbot）** | 用 user token 而非 bot token，可看到所有訊息 | 有帳號封鎖風險；不推薦用於正式環境 |
+| **外部橋接** | 透過 webhook 或 API 在兩個 OpenClaw 之間直接轉發 | 不經 Telegram，延遲低；需自行開發 |
+| **Linked Chat** | Channel 綁定 Discussion Group，bot 訊息會轉發到 group | Telegram 原生功能；但轉發的訊息 `from` 會是 channel 而非 bot |
 
 ## Troubleshooting
 
