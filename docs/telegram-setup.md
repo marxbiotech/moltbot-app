@@ -377,7 +377,7 @@ Telegram 的 Forum 群組支援以主題分隔對話，OpenClaw 會為每個 top
 
 ### Telegram Bot API 限制
 
-**關鍵限制：Telegram Bot 在群組中看不到其他 Bot 的訊息。** 這是 Telegram Bot API 的刻意設計，不是 OpenClaw 的問題。
+**關鍵限制：Telegram Bot API 在群組中不會將其他 Bot 的訊息 update 傳送給 bot。** 這是 Telegram 的刻意設計，不是 OpenClaw 的問題。
 
 Telegram 官方 FAQ 明確指出：
 
@@ -385,21 +385,48 @@ Telegram 官方 FAQ 明確指出：
 >
 > "Bots talking to each other could potentially get stuck in unwelcome loops."
 
-| 場景 | Bot A 能否看到 Bot B 的訊息？ | 原因 |
+| 場景 | Bot A 能否收到 Bot B 的 message update？ | 原因 |
 |---|---|---|
-| 一般群組（group） | **否** | Bot API server-side 過濾 |
+| 一般群組（group） | **否** | Bot API server-side 不送出 |
 | 超級群組（supergroup） | **否** | 同上，即使是管理員也一樣 |
 | 頻道（channel） | **是** | 透過 `channel_post` 事件（不同的 update type） |
 | DM | **不適用** | Bot 之間無法互發 DM |
+
+> **人類使用者 vs. Bot 的視角不同：** 在 Telegram 群組中，人類使用者可以看到所有 bot 的發言。但 bot 本身不會收到其他 bot 發言的 `message` update。如果你在群組中看到兩個 bot 都有發言，那是你（人類）的視角 — bot 並不知道對方說了什麼。
 
 #### 為什麼 Privacy Mode 和管理員權限都無法繞過？
 
 這個限制是 Telegram **server-side** 的行為，不是 client-side 的過濾：
 
 - **Privacy Mode Disabled**：bot 可以收到群組中所有**人類使用者**的訊息，但仍然收不到其他 bot 的訊息
-- **Bot 是管理員**：管理員權限影響的是 bot 能執行的操作（刪除訊息、踢人等），不影響它能「看到」什麼訊息
-- **`getUpdates` / webhook**：Telegram API 在 server-side 就不會將 bot-to-bot 的 `message` update 送出，所以無論你怎麼設定 `allowed_updates`，都收不到
-- **OpenClaw 的 message handler 沒有過濾 `is_bot`**：如果 Telegram 有送出 bot 的訊息，OpenClaw 會正常處理。問題是 Telegram 根本不送
+- **Bot 是管理員**：管理員權限影響的是 bot 能執行的操作（刪除訊息、踢人等），不影響它能「收到」什麼 update
+- **`getUpdates` / webhook**：Telegram API 在 server-side 就不會將 bot-to-bot 的 `message` update 送出，無論你怎麼設定 `allowed_updates`，都收不到
+- **Bot API changelog 2024-2025 無相關變更**：此限制自始至終未改變
+- **OpenClaw 的 message handler 完全沒有 `is_bot` 過濾**：如果 Telegram 有送出 bot 的 message update，OpenClaw 會正常處理。問題是 Telegram 根本不送
+
+#### 為什麼 bot 看起來「看得到」但不回應？
+
+如果你觀察到兩個 bot 在群組中都有發言但不互相回應，最可能的原因是：
+
+1. **你看到的是人類視角**：人類使用者在群組中可以看到所有 bot 的訊息，但 bot 根本收不到對方的 message update
+2. **兩個 bot 各自在回應人類**：兩個 bot 可能各自在回應不同人類使用者的訊息，看起來像是在對話但其實不是
+3. **群組綁定了 Channel**：如果群組是某個 Channel 的 Discussion Group，bot 的部分訊息可能透過 `channel_post` 送達（而非 `message`），但行為會與一般群組不同
+
+如果你確實需要驗證 bot 有沒有收到 update，可以檢查 OpenClaw 的 container log，搜尋 `"skipping group message"` 或對方 bot 的 user ID。
+
+#### 如果 bot 真的收到了對方的 message update
+
+OpenClaw 的 message handler **不會過濾 `is_bot`**，但有多層其他過濾會導致不回應：
+
+| 過濾層 | 預設行為 | 效果 |
+|---|---|---|
+| `requireMention: true`（預設） | 群組訊息需要 @mention bot 才處理 | Bot A 的訊息不會包含 @BotB，被跳過 |
+| `groupPolicy: "allowlist"`（預設） | 只允許 allowFrom 中的 sender ID | Bot A 的 user ID 不在 allowlist 中，被拒絕 |
+| `shouldSkipUpdate` watermark | 跳過 update_id <= 已處理 offset 的訊息 | 如果 bot 重啟過，可能跳過舊訊息 |
+
+要讓 bot 回應對方（假設真的收到 update），需要同時設定：
+- `requireMention: false`
+- `groupPolicy: "open"`（或在 `groupAllowFrom` 加入對方 bot 的 user ID）
 
 #### 群組內 Bot-to-Bot 的可能替代方案
 
