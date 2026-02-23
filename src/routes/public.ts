@@ -84,6 +84,11 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   const sandbox = c.get('sandbox');
   try {
     await ensureMoltbotGateway(sandbox, c.env);
+  } catch (err) {
+    console.error('[TELEGRAM] Gateway startup failed:', err);
+    return c.json({ error: 'Bad gateway' }, 502);
+  }
+  try {
     const response = await sandbox.containerFetch(
       new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
         method: 'POST',

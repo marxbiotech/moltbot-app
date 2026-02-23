@@ -28,20 +28,6 @@ function getCredDir(): string {
   return `${OPENCLAW_DIR}/oauth`;
 }
 
-// ── Config helpers ───────────────────────────────────────────
-
-function readConfig(): Record<string, any> {
-  try {
-    return JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeConfig(config: Record<string, any>): void {
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-}
-
 // ── Telegram API helper ──────────────────────────────────────
 
 async function telegramApi(
@@ -75,11 +61,11 @@ async function telegramApi(
       throw new Error(`Telegram API ${method}: network error: ${e.message}`);
     }
 
+    const text = await resp.text();
     let data: any;
     try {
-      data = await resp.json();
+      data = JSON.parse(text);
     } catch {
-      const text = await resp.text().catch(() => "(unreadable)");
       throw new Error(`Telegram API ${method}: invalid JSON (HTTP ${resp.status}): ${text.slice(0, 200)}`);
     }
 
@@ -97,8 +83,10 @@ async function telegramApi(
 function readJsonFile(path: string): any {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
+  } catch (e: any) {
+    if (e.code === "ENOENT") return null;
+    console.error(`[telegram-tools] Failed to read ${path}: ${e.message}`);
+    throw new Error(`Cannot read ${path}: ${e.message}`);
   }
 }
 
@@ -116,7 +104,7 @@ function handleWebhookStatus(): string {
   lines.push(`WORKER_URL: ${process.env.WORKER_URL || "NOT SET"}`);
   lines.push(`TELEGRAM_WEBHOOK_SECRET: ${process.env.TELEGRAM_WEBHOOK_SECRET ? "set" : "NOT SET"}`);
 
-  const config = readConfig();
+  const config = readJsonFile(CONFIG_FILE) ?? {};
   const tg = config.channels?.telegram;
   const hasWebhookConfig = !!(tg?.webhookUrl && tg?.webhookSecret);
   lines.push("");
@@ -166,20 +154,26 @@ async function handleWebhookOn(): Promise<string> {
     lines.push(`[WARN] Could not verify: ${e.message}`);
   }
 
+  let configWritten = false;
   try {
-    const config = readConfig();
+    const config = readJsonFile(CONFIG_FILE) ?? {};
     config.channels ??= {};
     config.channels.telegram ??= {};
     config.channels.telegram.webhookUrl = webhookUrl;
     config.channels.telegram.webhookSecret = webhookSecret;
-    writeConfig(config);
+    writeJsonFile(CONFIG_FILE, config);
     lines.push("[PASS] Config updated with webhook settings");
+    configWritten = true;
   } catch (e: any) {
     lines.push(`[WARN] Could not update config: ${e.message}`);
   }
 
   lines.push("");
-  lines.push("Webhook mode enabled. Restart gateway to apply.");
+  if (configWritten) {
+    lines.push("Webhook mode enabled. Restart gateway to apply.");
+  } else {
+    lines.push("[WARN] Webhook registered with Telegram, but config write failed. Do NOT restart until config is fixed.");
+  }
   return lines.join("\n");
 }
 
@@ -208,11 +202,11 @@ async function handleWebhookOff(): Promise<string> {
   }
 
   try {
-    const config = readConfig();
+    const config = readJsonFile(CONFIG_FILE) ?? {};
     if (config.channels?.telegram) {
       delete config.channels.telegram.webhookUrl;
       delete config.channels.telegram.webhookSecret;
-      writeConfig(config);
+      writeJsonFile(CONFIG_FILE, config);
       lines.push("[PASS] Webhook fields removed from config");
     }
   } catch (e: any) {
@@ -265,12 +259,12 @@ interface PairingRequest {
 }
 
 interface PairingFile {
-  version: number;
+  version: 1;
   requests: PairingRequest[];
 }
 
 interface AllowFromFile {
-  version: number;
+  version: 1;
   allowFrom: string[];
 }
 
@@ -310,6 +304,7 @@ function filterExpired(requests: PairingRequest[]): PairingRequest[] {
   const now = Date.now();
   return requests.filter((r) => {
     const created = new Date(r.createdAt).getTime();
+    if (Number.isNaN(created)) return true; // keep requests with invalid dates visible
     return now - created < PAIRING_TTL_MS;
   });
 }
@@ -360,16 +355,16 @@ async function handlePairApprove(code: string): Promise<string> {
   const username = req.meta?.username ? ` (@${req.meta.username})` : "";
   const firstName = req.meta?.first_name ? ` ${req.meta.first_name}` : "";
 
-  // Remove from pairing requests
-  active.splice(idx, 1);
-  writePairingFile({ version: 1, requests: active });
-
-  // Add to allowFrom
+  // Add to allowFrom FIRST (critical operation)
   const allowFrom = readAllowFromFile();
   if (!allowFrom.allowFrom.includes(userId)) {
     allowFrom.allowFrom.push(userId);
     writeAllowFromFile(allowFrom);
   }
+
+  // Only remove from pairing AFTER allowFrom succeeds
+  active.splice(idx, 1);
+  writePairingFile({ version: 1, requests: active });
 
   const lines: string[] = [
     `[PASS] Approved user ${userId}${firstName}${username}`,
@@ -475,6 +470,7 @@ export default function register(api: any) {
 
         return { text };
       } catch (e: any) {
+        console.error("[telegram-tools] Unexpected error:", e);
         return { text: `[FAIL] Unexpected error: ${e.message}` };
       }
     },
