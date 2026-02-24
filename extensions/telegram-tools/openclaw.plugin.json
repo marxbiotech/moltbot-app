@@ -1,7 +1,7 @@
 {
   "id": "telegram-tools",
   "name": "Telegram Tools",
-  "description": "Telegram management. /telegram webhook|pair",
+  "description": "Telegram management. /telegram webhook|pair|group|mention|config",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

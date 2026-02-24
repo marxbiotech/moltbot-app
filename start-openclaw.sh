@@ -511,11 +511,14 @@ if (config.models && config.models.providers && config.models.providers['amazon-
 }
 
 // Telegram configuration
-// Overwrite entire channel object to drop stale keys from old R2 backups
-// that would fail OpenClaw's strict config validation (see #47)
+// Merge env-driven keys into existing config to preserve runtime changes
+// (groups, groupPolicy, historyLimit, reactionLevel, streaming, etc.)
+// while ensuring env vars always take precedence for their specific keys.
 if (process.env.TELEGRAM_BOT_TOKEN) {
     const dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
+    const existingTelegram = config.channels.telegram || {};
     config.channels.telegram = {
+        ...existingTelegram,
         botToken: process.env.TELEGRAM_BOT_TOKEN,
         enabled: true,
         dmPolicy: dmPolicy,

@@ -11,6 +11,7 @@
 - [Step 4：啟用 Webhook](#step-4啟用-webhook)
 - [Step 5：驗證](#step-5驗證)
 - [DM 存取控制](#dm-存取控制)
+  - [執行時設定管理命令](#執行時設定管理命令)
 - [群組設定](#群組設定)
 - [Forum Topics（論壇主題）](#forum-topics論壇主題)
 - [回覆模式與串流](#回覆模式與串流)
@@ -203,6 +204,42 @@ Telegram API
 | `/telegram pair approve <code>` | 核准配對（加入 allowFrom） |
 
 配對請求有 60 分鐘有效期。核准後，user ID 會寫入 `telegram-allowFrom.json` 並持久化到 R2。
+
+### 執行時設定管理命令
+
+以下命令在聊天中使用 `/telegram` 執行，修改會寫入 `openclaw.json` 並持久化到 R2。
+大部分修改需要重啟 gateway 才生效。
+
+#### 群組/頻道管理
+
+| 命令 | 說明 |
+|---|---|
+| `/telegram group` | 列出已設定的群組/頻道 |
+| `/telegram group add <id>` | 新增群組設定 |
+| `/telegram group add <id> --bot-to-bot` | 新增含 bot-to-bot 預設值的群組（enabled + no-mention + open policy） |
+| `/telegram group remove <id>` | 移除群組設定 |
+| `/telegram group show <id>` | 顯示群組詳細設定 |
+| `/telegram group set <id> <key> <value>` | 設定群組層級的 config |
+
+可設定的 key：`requireMention`（bool）、`groupPolicy`（open/disabled/allowlist）、`enabled`（bool）、`systemPrompt`（string）、`allowFrom`（逗號分隔 ID）
+
+#### Mention Pattern 管理
+
+| 命令 | 說明 |
+|---|---|
+| `/telegram mention` | 列出目前的 mention patterns |
+| `/telegram mention add <regex>` | 新增 regex pattern（會先驗證 regex 語法） |
+| `/telegram mention remove <index\|pattern>` | 以索引或完全匹配移除 |
+| `/telegram mention test <text>` | 測試文字是否觸發 mention |
+
+#### 帳號層級 Telegram 設定
+
+| 命令 | 說明 |
+|---|---|
+| `/telegram config` | 顯示 Telegram 設定摘要 |
+| `/telegram config set <key> <value>` | 設定帳號層級的 config |
+
+可設定的 key：`groupPolicy`、`historyLimit`、`dmPolicy`、`reactionLevel`、`reactionNotifications`、`streaming`、`replyToMode`、`ackReaction`、`linkPreview`
 
 ### 進階 DM 設定
 
@@ -550,7 +587,13 @@ OpenClaw 已實作 `channel_post` handler（`src/telegram/bot-handlers.ts`），
 
 3. **設定兩個 Bot 的 OpenClaw config**
 
-   Bot A 和 Bot B 的 config 結構相同，只需替換 `<channel_id>`：
+   使用 `/telegram` 命令（在聊天中執行）：
+
+   ```
+   /telegram group add -100xxxxxxxxxx --bot-to-bot
+   ```
+
+   這等同於手動設定以下 config：
 
    ```json
    {
