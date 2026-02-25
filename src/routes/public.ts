@@ -68,7 +68,7 @@ publicRoutes.get('/_admin/assets/*', async (c) => {
   return c.env.ASSETS.fetch(new Request(assetUrl.toString(), c.req.raw));
 });
 
-/** Send a 👀 reaction to acknowledge receipt before cold start / LLM processing. */
+/** Send a ⚡️ reaction to acknowledge receipt before cold start / LLM processing. */
 function sendAckReaction(botToken: string, chatId: number, messageId: number): Promise<void> {
   return fetch(`https://api.telegram.org/bot${botToken}/setMessageReaction`, {
     method: 'POST',
@@ -76,7 +76,7 @@ function sendAckReaction(botToken: string, chatId: number, messageId: number): P
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      reaction: [{ type: 'emoji', emoji: '⏳' }],
+      reaction: [{ type: 'emoji', emoji: '⚡' }],
     }),
   }).then((res) => {
     if (!res.ok) console.error(`[TELEGRAM] ack reaction failed: ${res.status}`);

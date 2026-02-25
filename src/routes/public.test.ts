@@ -136,7 +136,7 @@ describe('POST /telegram/webhook', () => {
     const reactionBody = JSON.parse(reactionInit!.body as string);
     expect(reactionBody.chat_id).toBe(-1003645700926);
     expect(reactionBody.message_id).toBe(7);
-    expect(reactionBody.reaction).toEqual([{ type: 'emoji', emoji: '⏳' }]);
+    expect(reactionBody.reaction).toEqual([{ type: 'emoji', emoji: '⚡' }]);
 
     fetchSpy.mockRestore();
   });
