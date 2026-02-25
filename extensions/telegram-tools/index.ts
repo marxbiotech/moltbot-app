@@ -5,8 +5,11 @@ import { dirname } from "node:path";
  * telegram-tools plugin — /telegram
  *
  * Manage Telegram webhook mode, channel pairing, group/channel config,
- * mention patterns, and account-level settings.
- * Uses registerCommand() so commands execute WITHOUT the AI agent.
+ * and mention patterns.
+ *
+ * Config writes delegate to `openclaw config set/unset` CLI so schema
+ * validation is handled by OpenClaw itself — no hardcoded type mappings.
+ * Array operations (mention patterns) use runtime.config.loadConfig/writeConfigFile.
  *
  * Subcommands:
  *   /telegram                             — show help
@@ -14,17 +17,19 @@ import { dirname } from "node:path";
  *   /telegram webhook on|off|verify       — manage webhook
  *   /telegram pair                        — list pending pairing requests
  *   /telegram pair approve <code>         — approve a pairing request
- *   /telegram group                       — list configured groups/channels
- *   /telegram group add|remove|show|set   — manage group config
+ *   /telegram group                       — list configured groups
+ *   /telegram group add|remove|set        — manage group config
+ *   /telegram group show <id>             — show group details
  *   /telegram mention                     — list mention patterns
  *   /telegram mention add|remove|test     — manage mention patterns
- *   /telegram config                      — show telegram config
- *   /telegram config set <key> <value>    — set account-level config
  */
 
-const CONFIG_FILE = "/root/.openclaw/openclaw.json";
 const OPENCLAW_DIR = "/root/.openclaw";
 const PAIRING_TTL_MS = 60 * 60 * 1000; // 60 minutes
+const CLI_TIMEOUT_MS = 10_000;
+
+// Captured at plugin registration time; gives access to OpenClaw runtime APIs.
+let runtime: any;
 
 // ── Credential directory detection ───────────────────────────
 
@@ -84,7 +89,7 @@ async function telegramApi(
   }
 }
 
-// ── JSON file helpers ────────────────────────────────────────
+// ── JSON file helpers (for pairing files only) ───────────────
 
 function readJsonFile(path: string): any {
   try {
@@ -101,14 +106,7 @@ function writeJsonFile(path: string, data: any): void {
   writeFileSync(path, JSON.stringify(data, null, 2));
 }
 
-// ── Value parsing helpers ────────────────────────────────────
-
-function parseCommaSeparated(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+// ── Value formatting ─────────────────────────────────────────
 
 function formatValue(val: unknown): string {
   if (val === undefined) return "(not set)";
@@ -117,23 +115,48 @@ function formatValue(val: unknown): string {
   return String(val);
 }
 
-function readTelegramConfig(): [any, any] {
-  const config = readJsonFile(CONFIG_FILE) ?? {};
-  config.channels ??= {};
-  config.channels.telegram ??= {};
-  return [config, config.channels.telegram];
+// ── Config CLI helpers ───────────────────────────────────────
+
+async function configSet(
+  path: string,
+  value: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const result = await runtime.system.runCommandWithTimeout(
+      ["openclaw", "config", "set", path, value],
+      CLI_TIMEOUT_MS,
+    );
+    if (result.code === 0) return { ok: true };
+    return { ok: false, error: result.stderr?.trim() || result.stdout?.trim() || "Unknown error" };
+  } catch (e: any) {
+    return { ok: false, error: e.message };
+  }
+}
+
+async function configUnset(
+  path: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const result = await runtime.system.runCommandWithTimeout(
+      ["openclaw", "config", "unset", path],
+      CLI_TIMEOUT_MS,
+    );
+    if (result.code === 0) return { ok: true };
+    return { ok: false, error: result.stderr?.trim() || result.stdout?.trim() || "Unknown error" };
+  } catch (e: any) {
+    return { ok: false, error: e.message };
+  }
 }
 
 // ── Webhook subcommands ──────────────────────────────────────
 
-function handleWebhookStatus(): string {
+function handleWebhookStatus(config: any): string {
   const lines: string[] = [];
 
   lines.push(`TELEGRAM_BOT_TOKEN: ${process.env.TELEGRAM_BOT_TOKEN ? "set" : "NOT SET"}`);
   lines.push(`WORKER_URL: ${process.env.WORKER_URL || "NOT SET"}`);
   lines.push(`TELEGRAM_WEBHOOK_SECRET: ${process.env.TELEGRAM_WEBHOOK_SECRET ? "set" : "NOT SET"}`);
 
-  const config = readJsonFile(CONFIG_FILE) ?? {};
   const tg = config.channels?.telegram;
   const hasWebhookConfig = !!(tg?.webhookUrl && tg?.webhookSecret);
   lines.push("");
@@ -183,24 +206,17 @@ async function handleWebhookOn(): Promise<string> {
     lines.push(`[WARN] Could not verify: ${e.message}`);
   }
 
-  let configWritten = false;
-  try {
-    const config = readJsonFile(CONFIG_FILE) ?? {};
-    config.channels ??= {};
-    config.channels.telegram ??= {};
-    config.channels.telegram.webhookUrl = webhookUrl;
-    config.channels.telegram.webhookSecret = webhookSecret;
-    writeJsonFile(CONFIG_FILE, config);
-    lines.push("[PASS] Config updated with webhook settings");
-    configWritten = true;
-  } catch (e: any) {
-    lines.push(`[WARN] Could not update config: ${e.message}`);
-  }
+  const urlResult = await configSet("channels.telegram.webhookUrl", webhookUrl);
+  const secretResult = await configSet("channels.telegram.webhookSecret", webhookSecret);
 
-  lines.push("");
-  if (configWritten) {
+  if (urlResult.ok && secretResult.ok) {
+    lines.push("[PASS] Config updated with webhook settings");
+    lines.push("");
     lines.push("Webhook mode enabled. Restart gateway to apply.");
   } else {
+    const errors = [urlResult.error, secretResult.error].filter(Boolean).join("; ");
+    lines.push(`[WARN] Config write failed: ${errors}`);
+    lines.push("");
     lines.push("[WARN] Webhook registered with Telegram, but config write failed. Do NOT restart until config is fixed.");
   }
   return lines.join("\n");
@@ -230,16 +246,14 @@ async function handleWebhookOff(): Promise<string> {
     lines.push(`[WARN] Could not verify: ${e.message}`);
   }
 
-  try {
-    const config = readJsonFile(CONFIG_FILE) ?? {};
-    if (config.channels?.telegram) {
-      delete config.channels.telegram.webhookUrl;
-      delete config.channels.telegram.webhookSecret;
-      writeJsonFile(CONFIG_FILE, config);
-      lines.push("[PASS] Webhook fields removed from config");
-    }
-  } catch (e: any) {
-    lines.push(`[WARN] Could not update config: ${e.message}`);
+  const urlResult = await configUnset("channels.telegram.webhookUrl");
+  const secretResult = await configUnset("channels.telegram.webhookSecret");
+
+  if (urlResult.ok && secretResult.ok) {
+    lines.push("[PASS] Webhook fields removed from config");
+  } else {
+    const errors = [urlResult.error, secretResult.error].filter(Boolean).join("; ");
+    lines.push(`[WARN] Could not update config: ${errors}`);
   }
 
   lines.push("");
@@ -419,19 +433,8 @@ async function handlePairApprove(code: string): Promise<string> {
 
 // ── Group subcommands ────────────────────────────────────────
 
-const GROUP_SET_KEYS: Record<string, "boolean" | "string" | "enum" | "array"> = {
-  requireMention: "boolean",
-  groupPolicy: "enum",
-  enabled: "boolean",
-  systemPrompt: "string",
-  allowFrom: "array",
-};
-
-const GROUP_POLICY_VALUES = ["open", "disabled", "allowlist"];
-
-function handleGroupList(): string {
-  const [, tg] = readTelegramConfig();
-  const groups: Record<string, any> | undefined = tg.groups;
+function handleGroupList(config: any): string {
+  const groups: Record<string, any> | undefined = config.channels?.telegram?.groups;
 
   if (!groups || Object.keys(groups).length === 0) {
     return "No groups configured.\n\nUse /telegram group add <id> to add one.";
@@ -458,69 +461,61 @@ function handleGroupList(): string {
   return lines.join("\n");
 }
 
-function handleGroupAdd(id: string, flags: string): string {
+async function handleGroupAdd(id: string, flags: string): Promise<string> {
   if (!id) return "[FAIL] Usage: /telegram group add <id> [--bot-to-bot]";
-
-  const [config, tg] = readTelegramConfig();
-  tg.groups ??= {};
-
-  if (tg.groups[id]) {
-    return `[WARN] Group ${id} already exists. Use /telegram group set to modify.`;
-  }
 
   const isBotToBot = flags.includes("--bot-to-bot");
 
   if (isBotToBot) {
-    tg.groups[id] = {
-      enabled: true,
-      requireMention: false,
-      groupPolicy: "open",
-    };
-  } else {
-    tg.groups[id] = {};
+    const results = await Promise.all([
+      configSet(`channels.telegram.groups.${id}.enabled`, "true"),
+      configSet(`channels.telegram.groups.${id}.requireMention`, "false"),
+      configSet(`channels.telegram.groups.${id}.groupPolicy`, "open"),
+    ]);
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length > 0) {
+      return `[FAIL] Config write failed: ${failed.map((r) => r.error).join("; ")}`;
+    }
+    return [
+      `[PASS] Group ${id} added with bot-to-bot defaults:`,
+      "  enabled: true",
+      "  requireMention: false",
+      "  groupPolicy: open",
+      "",
+      "Tip: ensure both bots are Channel admins with Sign Messages ON.",
+      "",
+      "Restart gateway to apply.",
+    ].join("\n");
   }
 
-  writeJsonFile(CONFIG_FILE, config);
-
-  const lines = [`[PASS] Group ${id} added`];
-  if (isBotToBot) {
-    lines.push("[PASS] Bot-to-bot defaults applied:");
-    lines.push("  enabled: true");
-    lines.push("  requireMention: false");
-    lines.push("  groupPolicy: open");
-    lines.push("");
-    lines.push("Tip: ensure both bots are Channel admins with Sign Messages ON.");
+  const result = await configSet(`channels.telegram.groups.${id}.enabled`, "true");
+  if (!result.ok) {
+    return `[FAIL] Config write failed: ${result.error}`;
   }
-  lines.push("");
-  lines.push("Restart gateway to apply: POST /api/admin/gateway/restart");
-  return lines.join("\n");
+
+  return `[PASS] Group ${id} added\n\nRestart gateway to apply.`;
 }
 
-function handleGroupRemove(id: string): string {
+async function handleGroupRemove(id: string): Promise<string> {
   if (!id) return "[FAIL] Usage: /telegram group remove <id>";
 
-  const [config, tg] = readTelegramConfig();
-
-  if (!tg.groups?.[id]) {
-    return `[FAIL] Group ${id} not found. Use /telegram group list to see configured groups.`;
+  const result = await configUnset(`channels.telegram.groups.${id}`);
+  if (!result.ok) {
+    return `[FAIL] Config write failed: ${result.error}`;
   }
 
-  delete tg.groups[id];
-  writeJsonFile(CONFIG_FILE, config);
-
-  return `[PASS] Group ${id} removed\n\nRestart gateway to apply: POST /api/admin/gateway/restart`;
+  return `[PASS] Group ${id} removed\n\nRestart gateway to apply.`;
 }
 
-function handleGroupShow(id: string): string {
+function handleGroupShow(id: string, config: any): string {
   if (!id) return "[FAIL] Usage: /telegram group show <id>";
 
-  const [, tg] = readTelegramConfig();
-
-  if (!tg.groups?.[id]) {
+  const groups = config.channels?.telegram?.groups;
+  if (!groups?.[id]) {
     return `[FAIL] Group ${id} not found. Use /telegram group list to see configured groups.`;
   }
 
-  const cfg = tg.groups[id];
+  const cfg = groups[id];
   const lines: string[] = [`Group: ${id}`, ""];
 
   const knownKeys = [
@@ -554,15 +549,12 @@ function handleGroupShow(id: string): string {
   return lines.join("\n");
 }
 
-function handleGroupSet(id: string, keyAndValue: string): string {
+async function handleGroupSet(id: string, keyAndValue: string): Promise<string> {
   if (!id) return "[FAIL] Usage: /telegram group set <id> <key> <value>";
 
   const spaceIdx = keyAndValue.indexOf(" ");
   if (spaceIdx === -1 || !keyAndValue.trim()) {
-    return (
-      "[FAIL] Usage: /telegram group set <id> <key> <value>\n\nKeys: " +
-      Object.keys(GROUP_SET_KEYS).join(", ")
-    );
+    return "[FAIL] Usage: /telegram group set <id> <key> <value>";
   }
 
   const key = keyAndValue.substring(0, spaceIdx).trim();
@@ -570,53 +562,18 @@ function handleGroupSet(id: string, keyAndValue: string): string {
 
   if (!rawValue) return `[FAIL] Missing value for key "${key}"`;
 
-  if (!GROUP_SET_KEYS[key]) {
-    return `[FAIL] Unknown key: ${key}\n\nValid keys: ${Object.keys(GROUP_SET_KEYS).join(", ")}`;
+  const result = await configSet(`channels.telegram.groups.${id}.${key}`, rawValue);
+  if (!result.ok) {
+    return `[FAIL] ${result.error}`;
   }
 
-  const [config, tg] = readTelegramConfig();
-  tg.groups ??= {};
-  if (!tg.groups[id]) {
-    return `[FAIL] Group ${id} not found. Use /telegram group add <id> first.`;
-  }
-
-  let value: any;
-  const expectedType = GROUP_SET_KEYS[key];
-
-  if (expectedType === "boolean") {
-    if (rawValue.toLowerCase() !== "true" && rawValue.toLowerCase() !== "false") {
-      return `[FAIL] ${key} must be true or false`;
-    }
-    value = rawValue.toLowerCase() === "true";
-  } else if (expectedType === "enum") {
-    if (!GROUP_POLICY_VALUES.includes(rawValue)) {
-      return `[FAIL] ${key} must be one of: ${GROUP_POLICY_VALUES.join(", ")}`;
-    }
-    value = rawValue;
-  } else if (expectedType === "array") {
-    value = parseCommaSeparated(rawValue);
-  } else {
-    value = rawValue;
-  }
-
-  tg.groups[id][key] = value;
-  writeJsonFile(CONFIG_FILE, config);
-
-  return `[PASS] Group ${id}: ${key} = ${formatValue(value)}\n\nRestart gateway to apply.`;
+  return `[PASS] Group ${id}: ${key} = ${rawValue}\n\nRestart gateway to apply.`;
 }
 
 // ── Mention subcommands ──────────────────────────────────────
 
-function readMentionPatterns(): [any, string[]] {
-  const config = readJsonFile(CONFIG_FILE) ?? {};
-  config.messages ??= {};
-  config.messages.groupChat ??= {};
-  config.messages.groupChat.mentionPatterns ??= [];
-  return [config, config.messages.groupChat.mentionPatterns];
-}
-
-function handleMentionList(): string {
-  const [, patterns] = readMentionPatterns();
+function handleMentionList(config: any): string {
+  const patterns: string[] = config.messages?.groupChat?.mentionPatterns || [];
 
   if (patterns.length === 0) {
     return "No mention patterns configured.\n\nUse /telegram mention add <regex> to add one.";
@@ -639,7 +596,7 @@ function handleMentionList(): string {
   return lines.join("\n");
 }
 
-function handleMentionAdd(pattern: string): string {
+async function handleMentionAdd(pattern: string): Promise<string> {
   if (!pattern) return "[FAIL] Usage: /telegram mention add <regex>";
 
   try {
@@ -648,48 +605,60 @@ function handleMentionAdd(pattern: string): string {
     return `[FAIL] Invalid regex: ${e.message}\n\nPattern: ${pattern}`;
   }
 
-  const [config, patterns] = readMentionPatterns();
+  try {
+    const config = await runtime.config.loadConfig();
+    config.messages ??= {};
+    config.messages.groupChat ??= {};
+    config.messages.groupChat.mentionPatterns ??= [];
 
-  if (patterns.includes(pattern)) {
-    return `[WARN] Pattern already exists: /${pattern}/`;
+    if (config.messages.groupChat.mentionPatterns.includes(pattern)) {
+      return `[WARN] Pattern already exists: /${pattern}/`;
+    }
+
+    config.messages.groupChat.mentionPatterns.push(pattern);
+    await runtime.config.writeConfigFile(config);
+  } catch (e: any) {
+    return `[FAIL] Config write failed: ${e.message}`;
   }
-
-  patterns.push(pattern);
-  writeJsonFile(CONFIG_FILE, config);
 
   return `[PASS] Pattern added: /${pattern}/\n\nRestart gateway to apply.`;
 }
 
-function handleMentionRemove(target: string): string {
+async function handleMentionRemove(target: string): Promise<string> {
   if (!target) return "[FAIL] Usage: /telegram mention remove <index|pattern>";
 
-  const [config, patterns] = readMentionPatterns();
+  try {
+    const config = await runtime.config.loadConfig();
+    const patterns: string[] = config.messages?.groupChat?.mentionPatterns || [];
 
-  if (patterns.length === 0) {
-    return "[FAIL] No patterns to remove.";
+    if (patterns.length === 0) {
+      return "[FAIL] No patterns to remove.";
+    }
+
+    const idx = Number(target);
+    if (!Number.isNaN(idx) && Number.isInteger(idx) && idx >= 0 && idx < patterns.length) {
+      const removed = patterns.splice(idx, 1)[0];
+      await runtime.config.writeConfigFile(config);
+      return `[PASS] Removed pattern [${idx}]: /${removed}/\n\nRestart gateway to apply.`;
+    }
+
+    const strIdx = patterns.indexOf(target);
+    if (strIdx !== -1) {
+      patterns.splice(strIdx, 1);
+      await runtime.config.writeConfigFile(config);
+      return `[PASS] Removed pattern: /${target}/\n\nRestart gateway to apply.`;
+    }
+
+    return `[FAIL] Pattern not found: "${target}"\n\nUse /telegram mention list to see current patterns.`;
+  } catch (e: any) {
+    return `[FAIL] Config write failed: ${e.message}`;
   }
-
-  const idx = Number(target);
-  if (!Number.isNaN(idx) && Number.isInteger(idx) && idx >= 0 && idx < patterns.length) {
-    const removed = patterns.splice(idx, 1)[0];
-    writeJsonFile(CONFIG_FILE, config);
-    return `[PASS] Removed pattern [${idx}]: /${removed}/\n\nRestart gateway to apply.`;
-  }
-
-  const strIdx = patterns.indexOf(target);
-  if (strIdx !== -1) {
-    patterns.splice(strIdx, 1);
-    writeJsonFile(CONFIG_FILE, config);
-    return `[PASS] Removed pattern: /${target}/\n\nRestart gateway to apply.`;
-  }
-
-  return `[FAIL] Pattern not found: "${target}"\n\nUse /telegram mention list to see current patterns.`;
 }
 
-function handleMentionTest(text: string): string {
+function handleMentionTest(text: string, config: any): string {
   if (!text) return "[FAIL] Usage: /telegram mention test <text>";
 
-  const [, patterns] = readMentionPatterns();
+  const patterns: string[] = config.messages?.groupChat?.mentionPatterns || [];
 
   if (patterns.length === 0) {
     return "[WARN] No patterns configured. Nothing to test against.";
@@ -720,117 +689,6 @@ function handleMentionTest(text: string): string {
   );
 
   return lines.join("\n");
-}
-
-// ── Config subcommands ───────────────────────────────────────
-
-const CONFIG_SET_KEYS: Record<string, { type: "string" | "number" | "boolean" | "enum"; values?: string[] }> = {
-  groupPolicy: { type: "enum", values: ["open", "disabled", "allowlist"] },
-  historyLimit: { type: "number" },
-  dmPolicy: { type: "enum", values: ["pairing", "allowlist", "open", "disabled"] },
-  reactionLevel: { type: "enum", values: ["off", "ack", "minimal", "extensive"] },
-  reactionNotifications: { type: "enum", values: ["off", "own", "all"] },
-  streaming: { type: "boolean" },
-  replyToMode: { type: "enum", values: ["off", "first", "all"] },
-  ackReaction: { type: "string" },
-  linkPreview: { type: "boolean" },
-};
-
-function handleConfigShow(): string {
-  const [, tg] = readTelegramConfig();
-
-  const lines: string[] = ["Telegram configuration:", ""];
-
-  lines.push("  botToken: " + (tg.botToken ? "(set)" : "(not set)"));
-  lines.push("  enabled: " + formatValue(tg.enabled));
-
-  const displayKeys = [
-    "dmPolicy",
-    "groupPolicy",
-    "groupAllowFrom",
-    "historyLimit",
-    "reactionLevel",
-    "reactionNotifications",
-    "streaming",
-    "replyToMode",
-    "ackReaction",
-    "linkPreview",
-  ];
-
-  for (const key of displayKeys) {
-    if (tg[key] !== undefined) {
-      lines.push(`  ${key}: ${formatValue(tg[key])}`);
-    }
-  }
-
-  if (tg.webhookUrl) {
-    lines.push("");
-    lines.push("Webhook:");
-    lines.push(`  url: ${tg.webhookUrl}`);
-    lines.push(`  secret: ${tg.webhookSecret ? "(set)" : "(not set)"}`);
-    lines.push(`  host: ${tg.webhookHost || "(default)"}`);
-  }
-
-  if (tg.groups && Object.keys(tg.groups).length > 0) {
-    lines.push("");
-    lines.push(`Groups: ${Object.keys(tg.groups).length} configured`);
-    lines.push("  Use /telegram group list for details.");
-  }
-
-  if (tg.allowFrom) {
-    const count = Array.isArray(tg.allowFrom) ? tg.allowFrom.length : "?";
-    lines.push("");
-    lines.push(`DM allowFrom: ${count} entries`);
-  }
-
-  lines.push("");
-  lines.push("Use /telegram config set <key> <value> to modify.");
-  lines.push("Valid keys: " + Object.keys(CONFIG_SET_KEYS).join(", "));
-  return lines.join("\n");
-}
-
-function handleConfigSet(keyAndValue: string): string {
-  const spaceIdx = keyAndValue.indexOf(" ");
-  if (spaceIdx === -1 || !keyAndValue.trim()) {
-    return (
-      "[FAIL] Usage: /telegram config set <key> <value>\n\nValid keys: " +
-      Object.keys(CONFIG_SET_KEYS).join(", ")
-    );
-  }
-
-  const key = keyAndValue.substring(0, spaceIdx).trim();
-  const rawValue = keyAndValue.substring(spaceIdx + 1).trim();
-
-  if (!rawValue) return `[FAIL] Missing value for key "${key}"`;
-
-  const schema = CONFIG_SET_KEYS[key];
-  if (!schema) {
-    return `[FAIL] Unknown key: ${key}\n\nValid keys: ${Object.keys(CONFIG_SET_KEYS).join(", ")}`;
-  }
-
-  let value: any;
-  if (schema.type === "boolean") {
-    if (rawValue.toLowerCase() !== "true" && rawValue.toLowerCase() !== "false") {
-      return `[FAIL] ${key} must be true or false`;
-    }
-    value = rawValue.toLowerCase() === "true";
-  } else if (schema.type === "number") {
-    value = Number(rawValue);
-    if (Number.isNaN(value)) return `[FAIL] ${key} must be a number`;
-  } else if (schema.type === "enum") {
-    if (!schema.values!.includes(rawValue)) {
-      return `[FAIL] ${key} must be one of: ${schema.values!.join(", ")}`;
-    }
-    value = rawValue;
-  } else {
-    value = rawValue;
-  }
-
-  const [config, tg] = readTelegramConfig();
-  tg[key] = value;
-  writeJsonFile(CONFIG_FILE, config);
-
-  return `[PASS] ${key} = ${formatValue(value)}\n\nRestart gateway to apply.`;
 }
 
 // ── Help text ────────────────────────────────────────────────
@@ -865,17 +723,19 @@ function showHelp(): string {
     "  /telegram mention test <text>    — Test text against patterns",
     "",
     "Telegram config:",
-    "  /telegram config                 — Show config summary",
-    "  /telegram config set <key> <val> — Set account-level config",
+    "  Use /config show channels.telegram to view settings",
+    "  Use /config set channels.telegram.<key> <value> to modify",
   ].join("\n");
 }
 
 // ── Plugin registration ──────────────────────────────────────
 
 export default function register(api: any) {
+  runtime = api.runtime;
+
   api.registerCommand({
     name: "telegram",
-    description: "Telegram management — /telegram webhook|pair|group|mention|config",
+    description: "Telegram management — /telegram webhook|pair|group|mention",
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: any) => {
@@ -902,7 +762,7 @@ export default function register(api: any) {
                 break;
               case "status":
               case "":
-                text = handleWebhookStatus();
+                text = handleWebhookStatus(ctx.config);
                 break;
               default:
                 text = `Unknown webhook subcommand: ${sub}\n\nUsage: /telegram webhook [status|on|off|verify]`;
@@ -924,29 +784,28 @@ export default function register(api: any) {
             break;
 
           case "group": {
-            const groupParts = rest.split(/\s+/);
-            const groupId = groupParts[0] || "";
-            const groupRest = groupParts.slice(1).join(" ");
+            const groupId = parts[2] || "";
+            const groupRest = parts.slice(3).join(" ");
             switch (sub) {
               case "add":
-                text = handleGroupAdd(groupId, groupRest);
+                text = await handleGroupAdd(groupId, groupRest);
                 break;
               case "remove":
-                text = handleGroupRemove(groupId);
+                text = await handleGroupRemove(groupId);
                 break;
               case "show":
-                text = handleGroupShow(groupId);
+                text = handleGroupShow(groupId, ctx.config);
                 break;
               case "set":
-                text = handleGroupSet(groupId, groupRest);
+                text = await handleGroupSet(groupId, groupRest);
                 break;
               case "list":
               case "":
-                text = handleGroupList();
+                text = handleGroupList(ctx.config);
                 break;
               default:
                 // /telegram group <id> → shorthand for show
-                text = handleGroupShow(sub);
+                text = handleGroupShow(sub, ctx.config);
             }
             break;
           }
@@ -954,17 +813,17 @@ export default function register(api: any) {
           case "mention":
             switch (sub) {
               case "add":
-                text = handleMentionAdd(rest);
+                text = await handleMentionAdd(rest);
                 break;
               case "remove":
-                text = handleMentionRemove(rest);
+                text = await handleMentionRemove(rest);
                 break;
               case "test":
-                text = handleMentionTest(rest);
+                text = handleMentionTest(rest, ctx.config);
                 break;
               case "list":
               case "":
-                text = handleMentionList();
+                text = handleMentionList(ctx.config);
                 break;
               default:
                 text = `Unknown mention subcommand: ${sub}\n\nUsage: /telegram mention [list|add|remove|test]`;
@@ -972,17 +831,14 @@ export default function register(api: any) {
             break;
 
           case "config":
-            switch (sub) {
-              case "set":
-                text = handleConfigSet(rest);
-                break;
-              case "show":
-              case "":
-                text = handleConfigShow();
-                break;
-              default:
-                text = `Unknown config subcommand: ${sub}\n\nUsage: /telegram config [show|set <key> <value>]`;
-            }
+            text = [
+              "The /telegram config subcommand has been removed.",
+              "",
+              "Use built-in config commands instead:",
+              "  /config show channels.telegram",
+              "  /config set channels.telegram.<key> <value>",
+              "  /config unset channels.telegram.<key>",
+            ].join("\n");
             break;
 
           case "":

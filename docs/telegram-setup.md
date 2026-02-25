@@ -364,16 +364,18 @@ Telegram 的 Forum 群組支援以主題分隔對話，OpenClaw 會為每個 top
 {
   "channels": {
     "telegram": {
-      "streaming": true
+      "streaming": "partial"
     }
   }
 }
 ```
 
-| Value | 行為 |
+| Mode | 行為 |
 |---|---|
-| `false`（預設） | 等完整回覆後一次發送 |
-| `true` | 啟用串流模式 |
+| `"off"` / `false`（預設） | 等完整回覆後一次發送 |
+| `"partial"` / `true` | 即時編輯單一預覽訊息 |
+| `"block"` | 分段串流 |
+| `"progress"` | 顯示進度條（Telegram 會映射為 partial） |
 
 ## Reaction 設定
 

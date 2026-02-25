@@ -523,12 +523,6 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
         enabled: true,
         dmPolicy: dmPolicy,
     };
-    // OpenClaw changed streaming from string enum to boolean.
-    // R2 backups may have the old string value — remove it so the gateway
-    // doesn't reject the config on startup.
-    if (typeof config.channels.telegram.streaming === 'string') {
-        delete config.channels.telegram.streaming;
-    }
     if (process.env.TELEGRAM_DM_ALLOW_FROM) {
         config.channels.telegram.allowFrom = process.env.TELEGRAM_DM_ALLOW_FROM.split(',');
     } else if (dmPolicy === 'open') {
