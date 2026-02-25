@@ -730,7 +730,7 @@ const CONFIG_SET_KEYS: Record<string, { type: "string" | "number" | "boolean" | 
   dmPolicy: { type: "enum", values: ["pairing", "allowlist", "open", "disabled"] },
   reactionLevel: { type: "enum", values: ["off", "ack", "minimal", "extensive"] },
   reactionNotifications: { type: "enum", values: ["off", "own", "all"] },
-  streaming: { type: "enum", values: ["off", "partial", "block", "progress"] },
+  streaming: { type: "boolean" },
   replyToMode: { type: "enum", values: ["off", "first", "all"] },
   ackReaction: { type: "string" },
   linkPreview: { type: "boolean" },
