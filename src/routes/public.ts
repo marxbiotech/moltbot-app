@@ -68,6 +68,23 @@ publicRoutes.get('/_admin/assets/*', async (c) => {
   return c.env.ASSETS.fetch(new Request(assetUrl.toString(), c.req.raw));
 });
 
+/** Send a 👀 reaction to acknowledge receipt before cold start / LLM processing. */
+function sendAckReaction(botToken: string, chatId: number, messageId: number): Promise<void> {
+  return fetch(`https://api.telegram.org/bot${botToken}/setMessageReaction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      reaction: [{ type: 'emoji', emoji: '⏳' }],
+    }),
+  }).then((res) => {
+    if (!res.ok) console.error(`[TELEGRAM] ack reaction failed: ${res.status}`);
+  }).catch((err) => {
+    console.error('[TELEGRAM] ack reaction error:', err);
+  });
+}
+
 // POST /telegram/webhook - Telegram webhook endpoint (secret-validated, no CF Access)
 publicRoutes.post('/telegram/webhook', async (c) => {
   const secret = c.env.TELEGRAM_WEBHOOK_SECRET;
@@ -81,6 +98,24 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
+  // Buffer the body before returning — the request stream closes once we respond
+  const body = await c.req.arrayBuffer();
+
+  // Send ack reaction immediately (before gateway startup) so the user knows
+  // the message was received, even during cold start or long LLM inference.
+  const botToken = c.env.TELEGRAM_BOT_TOKEN;
+  if (botToken) {
+    try {
+      const update = JSON.parse(new TextDecoder().decode(body));
+      const msg = update.message || update.channel_post;
+      if (msg?.chat?.id && msg?.message_id) {
+        c.executionCtx.waitUntil(sendAckReaction(botToken, msg.chat.id, msg.message_id));
+      }
+    } catch {
+      // Non-critical — don't block webhook processing if parsing fails
+    }
+  }
+
   const sandbox = c.get('sandbox');
   try {
     await ensureMoltbotGateway(sandbox, c.env);
@@ -88,23 +123,22 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     console.error('[TELEGRAM] Gateway startup failed:', err);
     return c.json({ error: 'Bad gateway' }, 502);
   }
-  try {
-    const response = await sandbox.containerFetch(
+
+  // Fire-and-forget: proxy to container in background so Telegram gets 200 immediately
+  c.executionCtx.waitUntil(
+    sandbox.containerFetch(
       new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
         method: 'POST',
         headers: c.req.raw.headers,
-        body: c.req.raw.body,
+        body,
       }),
       TELEGRAM_WEBHOOK_PORT,
-    );
-    return new Response(response.body, {
-      status: response.status,
-      headers: response.headers,
-    });
-  } catch (err) {
-    console.error('[TELEGRAM] Webhook proxy failed:', err);
-    return c.json({ error: 'Service unavailable' }, 503);
-  }
+    ).catch((err) => {
+      console.error('[TELEGRAM] Webhook proxy failed:', err);
+    })
+  );
+
+  return c.json({ ok: true });
 });
 
 export { publicRoutes };
