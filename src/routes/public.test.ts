@@ -104,7 +104,7 @@ describe('POST /telegram/webhook', () => {
     expect(proxiedReq.method).toBe('POST');
   });
 
-  it('sends ⏳ ack reaction before gateway startup', async () => {
+  it('sends ⏳ ack reaction for channel_post', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}'));
     const env = createMockEnv({
       TELEGRAM_WEBHOOK_SECRET: 'my-secret',
@@ -127,7 +127,6 @@ describe('POST /telegram/webhook', () => {
     expect(resp.status).toBe(200);
     await flushWaitUntil();
 
-    // Verify setMessageReaction was called with ⏳
     const reactionCall = fetchSpy.mock.calls.find(([url]) =>
       typeof url === 'string' && url.includes('/setMessageReaction'),
     );
