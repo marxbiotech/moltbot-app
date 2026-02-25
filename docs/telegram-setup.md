@@ -141,9 +141,20 @@ Telegram API
   → POST https://your-worker.example.com/telegram/webhook
   → Header: X-Telegram-Bot-Api-Secret-Token: <secret>
   → Worker 驗證 secret（timing-safe comparison）
-  → Worker proxy 到 container:8787/telegram-webhook
+  → Worker 緩衝 request body
+  → Worker 發送 ⏳ ack reaction（Telegram API，fire-and-forget）
+  → Worker await ensureMoltbotGateway()（冷啟動時等待容器就緒）
+  → Worker 立即回覆 200 給 Telegram
+  → Worker 透過 waitUntil() 在背景 proxy 到 container:8787/telegram-webhook
   → OpenClaw 處理訊息並回覆
 ```
+
+**Fire-and-forget 設計：** Worker 不等待 container 處理完成就回 200 給 Telegram，避免 AI 推論時間（數十秒）觸發 Telegram 的 60 秒 webhook timeout（`Read timeout expired`）。Container 的 telegram-tools 透過 Telegram Bot API 獨立發送回覆，不依賴 webhook response。
+
+**⏳ Ack Reaction：** Worker 在 `ensureMoltbotGateway()` **之前**就發送 ⏳ reaction 到訊息上，讓使用者在冷啟動期間就能看到「已收到」的回饋。OpenClaw 開始處理後會發送自己的 ack reaction（預設 👀），自動覆蓋 ⏳。使用者看到的時序：
+1. **⏳** — Worker 已收到（即時）
+2. **👀** — OpenClaw 開始處理（容器就緒後）
+3. **回覆訊息** — 完成
 
 > Webhook route 是 public 的（不經過 Cloudflare Access），`TELEGRAM_WEBHOOK_SECRET` 是唯一的驗證層。
 
@@ -286,6 +297,8 @@ Telegram API
 | `open` | 所有群組成員都可觸發 bot |
 | `allowlist`（預設） | 只允許 `groupAllowFrom` 或 per-group `allowFrom` 中的使用者 |
 | `disabled` | 停用所有群組互動 |
+
+> **Channel vs Group 的 allowlist 行為不同：** 一般 group 的 `message` 事件設定 `requireConfiguredGroup: false`，即使 group ID 不在 `channels.telegram.groups` 中也能回應 mention。但 channel 的 `channel_post` 事件設定 `requireConfiguredGroup: true`，**必須**在 `channels.telegram.groups` 中明確加入 channel ID 且 `enabled: true` 才會處理。未加入 allowlist 的 channel 訊息會被 log `Blocked telegram channel <id> (channel disabled)`。
 
 ### Mention 設定
 
@@ -897,6 +910,7 @@ OpenClaw 支援 multi-account，可以在同一個實例中同時運行多個 Te
 3. 確認 bot 已被加入群組（群組場景）
 4. 確認 BotFather privacy mode 已 disable（群組場景）
 5. 如果在群組中，確認有 @mention bot（除非設定 `requireMention: false`）
+6. **如果是 Channel**：確認 channel ID 已加入 `channels.telegram.groups` allowlist（`/telegram group add <channel-id>`）。Container log 中的 `Blocked telegram channel <id> (channel disabled)` 表示 channel 未加入 allowlist
 
 ### Webhook 連線失敗
 
