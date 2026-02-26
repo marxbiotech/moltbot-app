@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
+import { BUILD_VERSION } from '../config';
 import { createAccessMiddleware } from '../auth';
 import {
   ensureMoltbotGateway,
@@ -18,6 +19,40 @@ const CLI_TIMEOUT_MS = 20000;
  * Note: /api/status is now handled by publicRoutes (no auth required)
  */
 const api = new Hono<AppEnv>();
+
+// GET /api/version - Show Worker and container build versions (public, no auth)
+api.get('/version', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  const result: Record<string, unknown> = {
+    worker: { version: BUILD_VERSION },
+  };
+
+  try {
+    const process = await findExistingMoltbotProcess(sandbox);
+    if (process) {
+      const [versionResult, openclawResult] = await Promise.all([
+        sandbox.exec('cat /build-version.txt 2>/dev/null', { timeout: 3000 }),
+        sandbox.exec('cat /root/.openclaw/.version 2>/dev/null || openclaw --version 2>/dev/null', { timeout: 5000 }),
+      ]);
+      const containerVersion = (versionResult.stdout || '').trim();
+      const openclawVersion = (openclawResult.stdout || '').trim();
+      result.container = {
+        version: containerVersion || 'unknown',
+        openclaw: openclawVersion || 'unknown',
+      };
+      result.match = containerVersion === BUILD_VERSION;
+    } else {
+      result.container = { status: 'not_running' };
+      result.match = null;
+    }
+  } catch {
+    result.container = { status: 'error' };
+    result.match = null;
+  }
+
+  return c.json(result);
+});
 
 /**
  * Admin API routes - all protected by Cloudflare Access
@@ -288,6 +323,30 @@ adminApi.post('/gateway/restart', async (c) => {
         ? 'Gateway process killed, new instance starting...'
         : 'No existing process found, starting new instance...',
       previousProcessId: existingProcess?.id,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// POST /api/admin/container/recreate - Destroy container so next request rebuilds from new image
+adminApi.post('/container/recreate', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    // Sync to R2 before destroying so no data is lost
+    const syncResult = await syncToR2(sandbox, c.env);
+    if (!syncResult.success) {
+      console.warn('[Container] R2 sync before destroy failed:', syncResult.error);
+    }
+
+    await sandbox.destroy();
+
+    return c.json({
+      success: true,
+      message: 'Container destroyed. Next request will create a new container from the latest image.',
+      syncedBeforeDestroy: syncResult.success,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
