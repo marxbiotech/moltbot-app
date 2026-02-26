@@ -380,6 +380,10 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
 if (process.env.OPENCLAW_DEV_MODE === 'true') {
     config.gateway.controlUi = config.gateway.controlUi || {};
     config.gateway.controlUi.allowInsecureAuth = true;
+} else {
+    // Remove controlUi from R2-restored config — OpenClaw 2026.2.24 requires
+    // allowedOrigins when binding to non-loopback, which breaks --bind lan.
+    delete config.gateway.controlUi;
 }
 
 // Legacy AI Gateway base URL override:
