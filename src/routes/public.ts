@@ -85,6 +85,64 @@ function sendAckReaction(botToken: string, chatId: number, messageId: number): P
   });
 }
 
+/**
+ * Fire-and-forget: if the chat is not in the configured group allowlist,
+ * send a one-time hint message with the chat ID and add instructions.
+ * Only triggers when groups config has entries (i.e. allowlist is active).
+ * Uses a flag file in /tmp to deduplicate within a container lifetime.
+ *
+ * Note: sandbox.exec() is the Cloudflare Container API, not child_process.exec().
+ * chatId is a number from Telegram's update payload — no injection risk.
+ */
+async function sendGroupAllowlistHint(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Sandbox type from @cloudflare/sandbox
+  sandbox: any,
+  botToken: string,
+  chatId: number,
+): Promise<void> {
+  const flagFile = `/tmp/.tg-hint-${chatId}`;
+
+  // Single exec: skip if already hinted, otherwise read config
+  const result = await sandbox.exec(
+    `test -f ${flagFile} && echo HINTED || cat /root/.openclaw/openclaw.json 2>/dev/null`,
+    { timeout: 5000 },
+  );
+
+  const stdout = (result.stdout || '').trim();
+  if (stdout === 'HINTED' || !stdout) return;
+
+  let config: any;
+  try {
+    config = JSON.parse(stdout);
+  } catch {
+    return;
+  }
+
+  const groups = config.channels?.telegram?.groups;
+  if (!groups || Object.keys(groups).length === 0) return;
+  if (groups[String(chatId)] || groups['*']) return;
+
+  // Mark as hinted before sending (dedup within container lifetime)
+  await sandbox.exec(`touch ${flagFile}`);
+
+  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: [
+        '⚠️ This group is not in the allowlist. Messages will be ignored.',
+        '',
+        `Chat ID: \`${chatId}\``,
+        '',
+        'To enable, ask the bot admin to run:',
+        `\`/telegram group add ${chatId}\``,
+      ].join('\n'),
+      parse_mode: 'Markdown',
+    }),
+  });
+}
+
 // POST /telegram/webhook - Telegram webhook endpoint (secret-validated, no CF Access)
 publicRoutes.post('/telegram/webhook', async (c) => {
   const secret = c.env.TELEGRAM_WEBHOOK_SECRET;
@@ -101,14 +159,17 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   // Buffer the body before returning — the request stream closes once we respond
   const body = await c.req.arrayBuffer();
 
-  // Send ack reaction immediately (before gateway startup) so the user knows
-  // the message was received, even during cold start or long LLM inference.
+  // Parse update for ack reaction and group allowlist hint
   const botToken = c.env.TELEGRAM_BOT_TOKEN;
+  let chatId: number | undefined;
+  let chatType: string | undefined;
   if (botToken) {
     try {
       const update = JSON.parse(new TextDecoder().decode(body));
       const msg = update.message || update.channel_post;
       if (msg?.chat?.id && msg?.message_id) {
+        chatId = msg.chat.id;
+        chatType = msg.chat.type;
         c.executionCtx.waitUntil(sendAckReaction(botToken, msg.chat.id, msg.message_id));
       }
     } catch {
@@ -119,8 +180,10 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   // Fire-and-forget: start gateway + proxy in background so Telegram gets 200 immediately.
   // ensureMoltbotGateway can take 60-120s on cold start, exceeding Telegram's 60s timeout.
   const sandbox = c.get('sandbox');
+  const gatewayReady = ensureMoltbotGateway(sandbox, c.env);
+
   c.executionCtx.waitUntil(
-    ensureMoltbotGateway(sandbox, c.env).then(() =>
+    gatewayReady.then(() =>
       sandbox.containerFetch(
         new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
           method: 'POST',
@@ -133,6 +196,18 @@ publicRoutes.post('/telegram/webhook', async (c) => {
       console.error('[TELEGRAM] Webhook proxy failed:', err);
     })
   );
+
+  // Fire-and-forget: hint unconfigured groups with their chat ID
+  if (botToken && chatId && chatType && chatType !== 'private') {
+    const hintChatId = chatId;
+    c.executionCtx.waitUntil(
+      gatewayReady.then(() =>
+        sendGroupAllowlistHint(sandbox, botToken, hintChatId)
+      ).catch((err) => {
+        console.error('[TELEGRAM] Allowlist hint failed:', err);
+      })
+    );
+  }
 
   return c.json({ ok: true });
 });
