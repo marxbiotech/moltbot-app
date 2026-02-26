@@ -142,17 +142,20 @@ Telegram API
   → Header: X-Telegram-Bot-Api-Secret-Token: <secret>
   → Worker 驗證 secret（timing-safe comparison）
   → Worker 緩衝 request body
-  → Worker 發送 ⏳ ack reaction（Telegram API，fire-and-forget）
-  → Worker await ensureMoltbotGateway()（冷啟動時等待容器就緒）
+  → Worker 發送 ⚡ ack reaction（Telegram API，fire-and-forget）
   → Worker 立即回覆 200 給 Telegram
-  → Worker 透過 waitUntil() 在背景 proxy 到 container:8787/telegram-webhook
+  → Worker 透過 waitUntil() 在背景執行：
+    → ensureMoltbotGateway()（冷啟動時等待容器就緒）
+    → proxy 到 container:8787/telegram-webhook
   → OpenClaw 處理訊息並回覆
 ```
 
-**Fire-and-forget 設計：** Worker 不等待 container 處理完成就回 200 給 Telegram，避免 AI 推論時間（數十秒）觸發 Telegram 的 60 秒 webhook timeout（`Read timeout expired`）。Container 的 telegram-tools 透過 Telegram Bot API 獨立發送回覆，不依賴 webhook response。
+**Fire-and-forget 設計：** Worker 不等待 container 處理完成就回 200 給 Telegram，避免 AI 推論時間（數十秒）加上 cold start 時間（60-120s）觸發 Telegram 的 60 秒 webhook timeout（`Read timeout expired`）。`ensureMoltbotGateway()` 和 proxy 都在 `waitUntil()` 背景執行，Container 的 telegram-tools 透過 Telegram Bot API 獨立發送回覆，不依賴 webhook response。
 
-**⏳ Ack Reaction：** Worker 在 `ensureMoltbotGateway()` **之前**就發送 ⏳ reaction 到訊息上，讓使用者在冷啟動期間就能看到「已收到」的回饋。OpenClaw 開始處理後會發送自己的 ack reaction（預設 👀），自動覆蓋 ⏳。使用者看到的時序：
-1. **⏳** — Worker 已收到（即時）
+> **⚠️ Trade-off：** 因為 Worker 先回 200 才在背景 proxy，如果 container 不可用（crashed、sleeping、cold start 失敗），**update 會靜默丟失**。Telegram 收到 200 就認為 deliver 成功不會 retry。`waitUntil` 的 `.catch()` 只會 log error。可透過 `getWebhookInfo` API 的 `pending_update_count` 和 `last_error_message` 判斷是否有問題。
+
+**⚡ Ack Reaction：** Worker 在 `ensureMoltbotGateway()` **之前**就發送 ⚡ reaction 到訊息上，讓使用者在冷啟動期間就能看到「已收到」的回饋。OpenClaw 開始處理後會發送自己的 ack reaction（預設 👀），自動覆蓋 ⚡。使用者看到的時序：
+1. **⚡** — Worker 已收到（即時）
 2. **👀** — OpenClaw 開始處理（容器就緒後）
 3. **回覆訊息** — 完成
 
@@ -234,6 +237,16 @@ Telegram API
 
 可設定的 key：`requireMention`（bool）、`groupPolicy`（open/disabled/allowlist）、`enabled`（bool）、`systemPrompt`（string）、`allowFrom`（逗號分隔 ID）
 
+#### 如何取得群組/頻道的 Chat ID
+
+`/telegram group add` 需要提供 chat ID（格式為 `-100xxxxxxxxxx`）。使用 Telegram 網頁版即可取得：
+
+1. 登入 [Telegram Web](https://web.telegram.org)
+2. 點擊進入目標群組或頻道
+3. 觀察瀏覽器的 URL 網址列，網址結尾的數字即為 ID
+   - **群組/超級群組：** 直接取用網址中的數字（含前面的 `-`）
+   - **頻道：** 若數字部分不含 `-100`，需要在數字前自行加上 `-100`（例如網址是 `123456789`，則頻道 ID 為 `-100123456789`）
+
 #### Mention Pattern 管理
 
 | 命令 | 說明 |
@@ -298,7 +311,51 @@ Telegram API
 | `allowlist`（預設） | 只允許 `groupAllowFrom` 或 per-group `allowFrom` 中的使用者 |
 | `disabled` | 停用所有群組互動 |
 
-> **Channel vs Group 的 allowlist 行為不同：** 一般 group 的 `message` 事件設定 `requireConfiguredGroup: false`，即使 group ID 不在 `channels.telegram.groups` 中也能回應 mention。但 channel 的 `channel_post` 事件設定 `requireConfiguredGroup: true`，**必須**在 `channels.telegram.groups` 中明確加入 channel ID 且 `enabled: true` 才會處理。未加入 allowlist 的 channel 訊息會被 log `Blocked telegram channel <id> (channel disabled)`。
+#### groupPolicy vs groups — 兩個層級的 allowlist
+
+`groupPolicy` 和 `groups` 控制的是**兩個不同層級的 allowlist**：
+
+| 層級 | 控制項 | 說明 |
+|---|---|---|
+| **Sender allowlist** | `groupPolicy` | 控制**誰**可以在群組中觸發 bot（哪些使用者） |
+| **Chat allowlist** | `groups` 是否有條目 | 控制 bot 在**哪些群組**中回應 |
+
+> **⚠️ v2026.2.24 行為變更（fail-closed）：** 從 v2026.2.24 起，`groupPolicy: "allowlist"` **本身就啟用 chat allowlist**。在舊版（≤2026.2.22），chat allowlist 只看 `groups` 有無條目。
+
+```typescript
+// resolveChannelGroupPolicy (OpenClaw ≥2026.2.24)
+const hasGroups = Boolean(groups && Object.keys(groups).length > 0);
+const allowlistEnabled = groupPolicy === "allowlist" || hasGroups;
+const allowed = groupPolicy === "disabled" ? false : !allowlistEnabled || allowAll || Boolean(groupConfig);
+```
+
+完整行為矩陣（v2026.2.24）：
+
+| `groupPolicy` | `groups` | Sender allowlist | Chat allowlist (`allowlistEnabled`) | 效果 |
+|---|---|---|---|---|
+| 未設定 | 未設定 | off（fallback `"open"`） | `false` | **全部放行** — 任何人在任何群組都可觸發 |
+| 未設定 | `{}` | off（fallback `"open"`） | `false` | **全部放行** — 空物件等同未設定 |
+| `"allowlist"` | 未設定 | **on** — 需要在 allowFrom 中 | **`true`** | **⚠️ 所有群組都被擋** — allowlist 啟用但名單為空 |
+| `"allowlist"` | `{}` | **on** — 需要在 allowFrom 中 | **`true`** | **⚠️ 所有群組都被擋** — 空物件等同未設定 |
+| `"allowlist"` | 有條目 | **on** — 需要在 allowFrom 中 | `true` | 只有列出的 chat ID 可互動，且只有 allowFrom 中的使用者能觸發 |
+| `"open"` | 未設定 | off | `false` | 全部放行 |
+| `"open"` | 有條目 | off | `true` | Chat allowlist 啟用 — 只有列出的群組可互動，但群組內任何人都可觸發 |
+| `"disabled"` | 任何 | N/A | N/A | 所有群組互動停用 |
+
+> **常見陷阱 1：** 初始設定時沒有 `groups`，所有群組都能互動。但一旦用 `/telegram group add` 加入第一個群組，`groups` 就有了條目，**chat allowlist 自動啟用**。之後新的 group/supergroup/channel 都必須明確加入（`/telegram group add <id>`），否則會被靜默擋掉。
+
+> **常見陷阱 2（v2026.2.24 新增）：** 設定 `groupPolicy: "allowlist"` 但未加入任何 `groups` 條目，所有群組都會被擋。如果只需要 sender allowlist（控制誰能觸發）而不需要 chat allowlist（控制哪些群組），請改用 per-group `allowFrom` 搭配 `groupPolicy: "open"`。
+
+> **Group/Supergroup/Channel 的 chat allowlist 行為：** 一旦 chat allowlist 啟用（`groups` 有條目 **或** `groupPolicy: "allowlist"`），所有類型的群組聊天（group、supergroup、channel）都必須在 `channels.telegram.groups` 中明確加入 ID 才會處理。
+>
+> OpenClaw 有兩層群組過濾：
+>
+> | 過濾層 | 適用對象 | 檢查內容 |
+> |---|---|---|
+> | Layer 1：`requireConfiguredGroup` | 僅 `channel_post`（channel） | group ID 必須存在於 config 且 `enabled: true` |
+> | Layer 2：`evaluateTelegramGroupPolicyAccess` | **所有** group/supergroup/channel | sender allowlist（`groupPolicy`）+ chat allowlist |
+>
+> Group 和 supergroup 的 `message` 事件跳過 Layer 1（`requireConfiguredGroup: false`），但仍受 Layer 2 的 chat allowlist 約束。Channel 的 `channel_post` 則兩層都要通過。
 
 ### Mention 設定
 
@@ -910,7 +967,16 @@ OpenClaw 支援 multi-account，可以在同一個實例中同時運行多個 Te
 3. 確認 bot 已被加入群組（群組場景）
 4. 確認 BotFather privacy mode 已 disable（群組場景）
 5. 如果在群組中，確認有 @mention bot（除非設定 `requireMention: false`）
-6. **如果是 Channel**：確認 channel ID 已加入 `channels.telegram.groups` allowlist（`/telegram group add <channel-id>`）。Container log 中的 `Blocked telegram channel <id> (channel disabled)` 表示 channel 未加入 allowlist
+6. **如果是 group/supergroup/channel**：確認 chat ID 已加入 allowlist（`/telegram group add <id>`）。當 config 中已有任何 group 條目時，allowlist 模式自動啟用，未加入的 group/supergroup/channel 都會被靜默擋掉
+7. 用 `/telegram group` 列出目前的 allowlist，確認目標 chat ID 在列表中
+
+### Bot 曾經可以回覆但突然不行了
+
+1. **檢查 container 是否存活**：`GET /api/status`
+2. **檢查 Telegram webhook 狀態**：`/telegram webhook verify`，注意 `last_error_message` 和 `pending_update_count`
+3. **如果是 `Read timeout expired`**：表示之前有 webhook 超時。因為 fire-and-forget 設計，container 不可用期間的 update 會靜默丟失（Worker 已回 200，Telegram 不會 retry）
+4. **檢查 container logs**：`debug/logs` endpoint 可以確認 update 有沒有到達 container。如果 `[telegram] update:` 中沒有你的訊息，問題在 Worker → container 的 proxy 層
+5. **嘗試發送 command**（如 `/models`）：如果 command 有回覆但文字訊息沒有，問題在 LLM API 層（quota、key、model 不可用）
 
 ### Webhook 連線失敗
 
