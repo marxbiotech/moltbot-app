@@ -116,23 +116,19 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     }
   }
 
+  // Fire-and-forget: start gateway + proxy in background so Telegram gets 200 immediately.
+  // ensureMoltbotGateway can take 60-120s on cold start, exceeding Telegram's 60s timeout.
   const sandbox = c.get('sandbox');
-  try {
-    await ensureMoltbotGateway(sandbox, c.env);
-  } catch (err) {
-    console.error('[TELEGRAM] Gateway startup failed:', err);
-    return c.json({ error: 'Bad gateway' }, 502);
-  }
-
-  // Fire-and-forget: proxy to container in background so Telegram gets 200 immediately
   c.executionCtx.waitUntil(
-    sandbox.containerFetch(
-      new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
-        method: 'POST',
-        headers: c.req.raw.headers,
-        body,
-      }),
-      TELEGRAM_WEBHOOK_PORT,
+    ensureMoltbotGateway(sandbox, c.env).then(() =>
+      sandbox.containerFetch(
+        new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+          method: 'POST',
+          headers: c.req.raw.headers,
+          body,
+        }),
+        TELEGRAM_WEBHOOK_PORT,
+      )
     ).catch((err) => {
       console.error('[TELEGRAM] Webhook proxy failed:', err);
     })

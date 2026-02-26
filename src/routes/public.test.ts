@@ -159,19 +159,22 @@ describe('POST /telegram/webhook', () => {
     await flushWaitUntil();
   });
 
-  it('returns 502 when ensureMoltbotGateway throws', async () => {
+  it('returns 200 even when ensureMoltbotGateway throws (error is logged)', async () => {
     const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
     const mock = createMockSandbox();
     vi.mocked(ensureMoltbotGateway).mockRejectedValue(new Error('gateway startup failed'));
-    const { fetch } = createApp(env, mock);
+    const { fetch, flushWaitUntil } = createApp(env, mock);
 
     const resp = await fetch(new Request('http://localhost/telegram/webhook', {
       method: 'POST',
       headers: { 'X-Telegram-Bot-Api-Secret-Token': 'my-secret' },
     }));
 
-    expect(resp.status).toBe(502);
-    expect(await resp.json()).toEqual({ error: 'Bad gateway' });
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toEqual({ ok: true });
+
+    // Gateway failure is caught inside waitUntil (no unhandled rejection)
+    await flushWaitUntil();
     expect(mock.containerFetchMock).not.toHaveBeenCalled();
   });
 });
