@@ -2,6 +2,10 @@
  * Configuration constants for Moltbot Sandbox
  */
 
+/** Build-time git SHA injected by vite define (see vite.config.ts) */
+declare const __BUILD_VERSION__: string;
+export const BUILD_VERSION: string = typeof __BUILD_VERSION__ !== 'undefined' ? __BUILD_VERSION__ : 'dev';
+
 /** Port that the Moltbot gateway listens on inside the container */
 export const MOLTBOT_PORT = 18789;
 

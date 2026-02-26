@@ -1,6 +1,6 @@
 import type { Sandbox, Process } from '@cloudflare/sandbox';
 import type { MoltbotEnv } from '../types';
-import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
+import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS, BUILD_VERSION } from '../config';
 import { buildEnvVars } from './env';
 import { ensureRcloneConfig } from './r2';
 
@@ -132,8 +132,21 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
     }
   }
 
-  // Verify gateway is actually responding
-  console.log('[Gateway] Verifying gateway health...');
+  // Check container build version against Worker build version
+  if (BUILD_VERSION !== 'dev') {
+    try {
+      const versionResult = await sandbox.exec('cat /build-version.txt 2>/dev/null', { timeout: 3000 });
+      const containerVersion = (versionResult.stdout || '').trim();
+      if (containerVersion && containerVersion !== BUILD_VERSION) {
+        console.warn(
+          `[Gateway] VERSION MISMATCH: Worker=${BUILD_VERSION} Container=${containerVersion}. ` +
+          'Container is running a stale image. Use /api/admin/container/recreate to rebuild.',
+        );
+      }
+    } catch {
+      // Non-critical — don't block gateway startup
+    }
+  }
 
   return process;
 }

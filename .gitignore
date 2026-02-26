@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 build-info.json
+build-version.txt
 
 # Wrangler
 .wrangler/

@@ -102,7 +102,7 @@ Telegram → CF Worker (POST /telegram/webhook) → Container (port 8787, /teleg
 
 **EADDRINUSE patch:** `start-openclaw.sh` patches OpenClaw's `monitorTelegramProvider` in webhook mode (openclaw/openclaw#19831). The upstream bug causes an immediate return → auto-restart → port conflict crash loop. The patch adds an `abortSignal` await before the return. Applies to all matching `.js` files in `dist/` since chunk boundaries vary between versions. Remove once OpenClaw ships PR #20309.
 
-**Extension:** `extensions/telegram-tools/` is an OpenClaw extension (not Worker code) that runs inside the container. It handles `/telegram` slash commands (webhook on/off, pair, approve) and manages `openclaw.json` webhook config + `allow-from.json` for DM access control.
+**Extension:** `extensions/telegram-tools/` is an OpenClaw extension (not Worker code) that runs inside the container. It handles `/telegram` slash commands (webhook on/off, pair, approve) and manages webhook config + `allow-from.json` for DM access control.
 
 ## Patterns & Conventions
 
@@ -111,6 +111,40 @@ Telegram → CF Worker (POST /telegram/webhook) → Container (port 8787, /teleg
 - **OpenClaw CLI calls:** Always include `--url ws://localhost:18789` and optionally `--token`. Commands take 10-15s (WebSocket overhead). Use `waitForProcess()` helper.
 - **Linting/formatting:** oxlint + oxfmt (not ESLint/Prettier)
 - **The CLI tool is named `openclaw`** but config paths use `.openclaw/openclaw.json`. Legacy `.clawdbot` paths still supported.
+
+### OpenClaw Plugin Config Writes — NEVER Hardcode Schema
+
+**Rule: OpenClaw extensions MUST NOT hardcode config field types, enum values, or schema definitions.** OpenClaw's config schema changes between versions. If a plugin maintains its own copy of type mappings (e.g., `streaming: { type: "enum", values: [...] }`), it will break silently when OpenClaw updates the schema.
+
+**How to write config from plugins:**
+
+1. **Individual field writes** — Use `openclaw config set/unset` CLI via `api.runtime.system.runCommandWithTimeout`:
+   ```typescript
+   // In register(api), capture runtime:
+   runtime = api.runtime;
+   // In handler:
+   await runtime.system.runCommandWithTimeout(
+     ["openclaw", "config", "set", "channels.telegram.streaming", "partial"],
+     10000,
+   );
+   ```
+   The CLI handles schema validation, type coercion, and error reporting. Invalid values are rejected with a clear error — no need to validate types ourselves.
+
+2. **Array/batch operations** — Use `api.runtime.config.loadConfig()` + `writeConfigFile()` when CLI is impractical (e.g., pushing to an array):
+   ```typescript
+   const config = await runtime.config.loadConfig();
+   config.messages.groupChat.mentionPatterns.push(newPattern);
+   await runtime.config.writeConfigFile(config);
+   ```
+
+3. **Reading config** — Use `ctx.config` (the validated snapshot passed to command handlers), not `readFileSync`:
+   ```typescript
+   handler: async (ctx) => {
+     const tg = ctx.config.channels?.telegram;
+   }
+   ```
+
+4. **Redundant subcommands** — Do NOT wrap OpenClaw's built-in `/config show/set` with plugin commands. `/config` is a reserved command and handles validation + restart automatically. Only create plugin commands for operations that OpenClaw doesn't provide natively (e.g., Telegram API calls, pairing flows, array manipulation with UX).
 
 ## Adding New Features
 
