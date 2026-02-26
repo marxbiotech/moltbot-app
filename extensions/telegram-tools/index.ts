@@ -691,6 +691,52 @@ function handleMentionTest(text: string, config: any): string {
   return lines.join("\n");
 }
 
+// ── Chat ID subcommand ───────────────────────────────────────
+
+function handleChatId(ctx: any): string {
+  // ctx.to = "telegram:{chatId}" (most reliable for chat ID)
+  // ctx.from = "telegram:{chatId}" (DM) or "telegram:group:{chatId}" or "telegram:group:{chatId}:topic:{threadId}" (group)
+  const to = (ctx.to || "") as string;
+  const chatId = to.replace(/^telegram:/, "");
+
+  if (!chatId) {
+    return [
+      "[WARN] Could not detect chat ID from current context.",
+      "",
+      "Try sending this command in the group/channel you want to add.",
+    ].join("\n");
+  }
+
+  const groups = ctx.config?.channels?.telegram?.groups;
+  const isConfigured = groups?.[chatId];
+
+  const lines: string[] = [
+    `Chat ID: ${chatId}`,
+  ];
+
+  if (ctx.senderId) {
+    lines.push(`Sender ID: ${ctx.senderId}`);
+  }
+  if (ctx.messageThreadId) {
+    lines.push(`Thread/Topic ID: ${ctx.messageThreadId}`);
+  }
+
+  lines.push("");
+
+  if (isConfigured) {
+    lines.push("[OK] This chat is already in the allowlist.");
+  } else {
+    lines.push(
+      "This chat is NOT in the allowlist.",
+      "",
+      "To add it, run:",
+      `  /telegram group add ${chatId}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 // ── Help text ────────────────────────────────────────────────
 
 function showHelp(): string {
@@ -707,6 +753,9 @@ function showHelp(): string {
     "  /telegram pair                   — List pending pairing requests",
     "  /telegram pair list              — Same as above",
     "  /telegram pair approve <code>    — Approve a pairing request",
+    "",
+    "Chat ID:",
+    "  /telegram chatid                 — Show current chat/sender ID",
     "",
     "Group/channel management:",
     "  /telegram group                  — List configured groups",
@@ -828,6 +877,10 @@ export default function register(api: any) {
               default:
                 text = `Unknown mention subcommand: ${sub}\n\nUsage: /telegram mention [list|add|remove|test]`;
             }
+            break;
+
+          case "chatid":
+            text = handleChatId(ctx);
             break;
 
           case "config":
