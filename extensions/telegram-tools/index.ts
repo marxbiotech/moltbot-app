@@ -343,6 +343,38 @@ function writeAllowFromFile(data: AllowFromFile): void {
   writeJsonFile(getAllowFromFilePath(), data);
 }
 
+// ── Discipline state & file helpers ─────────────────────────
+
+interface DisciplineGroupConfig {
+  enabled: boolean;
+  threshold: number;
+}
+
+interface DisciplineFile {
+  version: 1;
+  groups: Record<string, DisciplineGroupConfig>;
+}
+
+const disciplineTracker: Map<string, { count: number }> = new Map();
+
+let pendingRestart: { groupId: string; removedBotIds: string[] } | null = null;
+
+function getDisciplineFilePath(): string {
+  return `${getCredDir()}/telegram-discipline.json`;
+}
+
+function readDisciplineFile(): DisciplineFile {
+  const data = readJsonFile(getDisciplineFilePath());
+  if (data && data.version === 1 && data.groups) {
+    return data;
+  }
+  return { version: 1, groups: {} };
+}
+
+function writeDisciplineFile(data: DisciplineFile): void {
+  writeJsonFile(getDisciplineFilePath(), data);
+}
+
 function filterExpired(requests: PairingRequest[]): PairingRequest[] {
   const now = Date.now();
   return requests.filter((r) => {
@@ -583,80 +615,6 @@ function extractGroupIdFromContext(ctx: any): string | undefined {
   if (!from) return undefined;
   const match = from.match(/^telegram:(-\d+)/);
   return match?.[1];
-}
-
-async function handleMute(args: string, ctx: any): Promise<string> {
-  const parts = args.split(/\s+/).filter(Boolean);
-  const senderId = parts[0];
-  if (!senderId || !/^\d+$/.test(senderId)) {
-    return "[FAIL] Usage: /telegram mute <sender-id> [<group-id>]";
-  }
-
-  const groupId = parts[1] || extractGroupIdFromContext(ctx);
-  if (!groupId) {
-    return "[FAIL] Could not detect group ID. Usage: /telegram mute <sender-id> <group-id>";
-  }
-
-  // Read current allowFrom
-  const config = runtime.config.loadConfig();
-  const existing: string[] =
-    (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? [])
-      .map((v: unknown) => String(v));
-
-  if (!existing.includes(senderId)) {
-    return `[PASS] Sender ${senderId} is not in allowFrom for group ${groupId}. No change needed.`;
-  }
-
-  const updated = existing.filter((v: string) => v !== senderId);
-  const result = await configSet(
-    `channels.telegram.groups.${groupId}.allowFrom`,
-    JSON.stringify(updated),
-  );
-  if (!result.ok) return `[FAIL] Config write failed: ${result.error}`;
-
-  // Auto-restart gateway for immediate effect
-  const restart = await restartGateway();
-  const restartStatus = restart.ok
-    ? "Gateway restarting..."
-    : `[WARN] Config saved but gateway restart failed: ${restart.error}`;
-
-  return `[PASS] Muted sender ${senderId} in group ${groupId}\nallowFrom: ${JSON.stringify(updated)}\n\n${restartStatus}`;
-}
-
-async function handleUnmute(args: string, ctx: any): Promise<string> {
-  const parts = args.split(/\s+/).filter(Boolean);
-  const senderId = parts[0];
-  if (!senderId || !/^\d+$/.test(senderId)) {
-    return "[FAIL] Usage: /telegram unmute <sender-id> [<group-id>]";
-  }
-
-  const groupId = parts[1] || extractGroupIdFromContext(ctx);
-  if (!groupId) {
-    return "[FAIL] Could not detect group ID. Usage: /telegram unmute <sender-id> <group-id>";
-  }
-
-  const config = runtime.config.loadConfig();
-  const existing: string[] =
-    (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? [])
-      .map((v: unknown) => String(v));
-
-  if (existing.includes(senderId)) {
-    return `[PASS] Sender ${senderId} is already in allowFrom for group ${groupId}. No change needed.`;
-  }
-
-  const updated = [...existing, senderId];
-  const result = await configSet(
-    `channels.telegram.groups.${groupId}.allowFrom`,
-    JSON.stringify(updated),
-  );
-  if (!result.ok) return `[FAIL] Config write failed: ${result.error}`;
-
-  const restart = await restartGateway();
-  const restartStatus = restart.ok
-    ? "Gateway restarting..."
-    : `[WARN] Config saved but gateway restart failed: ${restart.error}`;
-
-  return `[PASS] Unmuted sender ${senderId} in group ${groupId}\nallowFrom: ${JSON.stringify(updated)}\n\n${restartStatus}`;
 }
 
 function handleGroupShow(id: string, config: any): string {
@@ -966,10 +924,10 @@ function showHelp(): string {
     "  /telegram group set <id> -<k> <v> — Remove from array key",
     "    Array keys: allowFrom, groupAllowFrom, skills (comma-separated or JSON)",
     "",
-    "Moderation:",
-    "  /telegram mute <sender-id> [<group-id>]   — Remove sender from allowFrom + restart",
-    "  /telegram unmute <sender-id> [<group-id>] — Add sender back to allowFrom + restart",
-    "    group-id auto-detected when run in a channel/group",
+    "Discipline (bot-to-bot loop prevention):",
+    "  /telegram discipline <id> [threshold] — Enable discipline (default: 6)",
+    "  /telegram discipline show [<id>]      — Show settings + current count",
+    "  /telegram discipline off <id>         — Disable discipline",
     "",
     "Mention patterns:",
     "  /telegram mention                — List mention patterns",
@@ -983,6 +941,79 @@ function showHelp(): string {
   ].join("\n");
 }
 
+// ── Discipline subcommands ───────────────────────────────────
+
+function extractGroupIdFromChannelId(channelId: string): string | undefined {
+  const match = channelId?.match(/^telegram:(-\d+)/);
+  return match?.[1];
+}
+
+async function handleDiscipline(channelId: string, threshold: number): Promise<string> {
+  if (!channelId || !/^-\d+$/.test(channelId)) {
+    return "[FAIL] Usage: /telegram discipline <channel-id> [threshold]";
+  }
+
+  const data = readDisciplineFile();
+  data.groups[channelId] = { enabled: true, threshold };
+  writeDisciplineFile(data);
+
+  return [
+    `[PASS] 已啟用 discipline (group: ${channelId}, threshold: ${threshold})`,
+    `連續 ${threshold} 則 bot 訊息後自動停止回應。人類發言後重置。`,
+    "每則回應會附加 discipline 狀態。",
+  ].join("\n");
+}
+
+function handleDisciplineShow(channelId?: string): string {
+  const data = readDisciplineFile();
+
+  if (channelId) {
+    const cfg = data.groups[channelId];
+    if (!cfg) {
+      return `[WARN] Discipline 未設定 (group: ${channelId})`;
+    }
+    const tracker = disciplineTracker.get(channelId);
+    const count = tracker?.count ?? 0;
+    return [
+      `Discipline 設定 (group: ${channelId}):`,
+      `  enabled: ${cfg.enabled}`,
+      `  threshold: ${cfg.threshold}`,
+      `  current count: ${count}/${cfg.threshold}`,
+    ].join("\n");
+  }
+
+  const entries = Object.entries(data.groups);
+  if (entries.length === 0) {
+    return "No discipline settings configured.";
+  }
+
+  const lines: string[] = [`Discipline 設定 (${entries.length} group(s)):`, ""];
+  for (const [gid, cfg] of entries) {
+    const tracker = disciplineTracker.get(gid);
+    const count = tracker?.count ?? 0;
+    const status = cfg.enabled ? "enabled" : "disabled";
+    lines.push(`  ${gid}  [${status}, threshold: ${cfg.threshold}, count: ${count}/${cfg.threshold}]`);
+  }
+  return lines.join("\n");
+}
+
+async function handleDisciplineOff(channelId: string): Promise<string> {
+  if (!channelId || !/^-\d+$/.test(channelId)) {
+    return "[FAIL] Usage: /telegram discipline off <channel-id>";
+  }
+
+  const data = readDisciplineFile();
+  if (!data.groups[channelId]) {
+    return `[PASS] Discipline 未設定 (group: ${channelId})，無需停用。`;
+  }
+
+  delete data.groups[channelId];
+  writeDisciplineFile(data);
+  disciplineTracker.delete(channelId);
+
+  return `[PASS] 已停用 discipline (group: ${channelId})`;
+}
+
 // ── Plugin registration ──────────────────────────────────────
 
 export default function register(api: any) {
@@ -990,7 +1021,7 @@ export default function register(api: any) {
 
   api.registerCommand({
     name: "telegram",
-    description: "Telegram management — /telegram webhook|pair|group|mention",
+    description: "Telegram management — /telegram webhook|pair|group|discipline|mention",
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: any) => {
@@ -1092,13 +1123,29 @@ export default function register(api: any) {
             text = handleChatId(ctx);
             break;
 
-          case "mute":
-            text = await handleMute(`${sub} ${rest}`.trim(), ctx);
+          case "discipline": {
+            // sub = first arg after "discipline"
+            // /telegram discipline <channel-id> [threshold]
+            // /telegram discipline show [<channel-id>]
+            // /telegram discipline off <channel-id>
+            if (sub === "show") {
+              text = handleDisciplineShow(rest || undefined);
+            } else if (sub === "off") {
+              text = await handleDisciplineOff(rest);
+            } else if (sub && /^-\d+$/.test(sub)) {
+              const threshold = rest ? parseInt(rest, 10) : 6;
+              if (Number.isNaN(threshold) || threshold < 1) {
+                text = "[FAIL] Threshold must be a positive integer.";
+              } else {
+                text = await handleDiscipline(sub, threshold);
+              }
+            } else if (!sub) {
+              text = handleDisciplineShow();
+            } else {
+              text = `Unknown discipline subcommand: ${sub}\n\nUsage:\n  /telegram discipline <channel-id> [threshold]\n  /telegram discipline show [<channel-id>]\n  /telegram discipline off <channel-id>`;
+            }
             break;
-
-          case "unmute":
-            text = await handleUnmute(`${sub} ${rest}`.trim(), ctx);
-            break;
+          }
 
           case "config":
             text = [
@@ -1125,5 +1172,79 @@ export default function register(api: any) {
         return { text: `[FAIL] Unexpected error: ${e.message}` };
       }
     },
+  });
+
+  // ── Discipline hooks ────────────────────────────────────────
+
+  api.on("message_received", async (event: any, ctx: any) => {
+    const groupId = extractGroupIdFromChannelId(ctx.channelId);
+    if (!groupId) return;
+
+    const monitorConfig = readDisciplineFile();
+    const groupCfg = monitorConfig.groups?.[groupId];
+    if (!groupCfg?.enabled) return;
+
+    const senderId = String(event.metadata?.senderId ?? "");
+    const pairedUsers = readAllowFromFile().allowFrom;
+
+    if (pairedUsers.includes(senderId)) {
+      disciplineTracker.delete(groupId);
+      return;
+    }
+
+    // Bot message → increment
+    const tracker = disciplineTracker.get(groupId) ?? { count: 0 };
+    tracker.count++;
+    disciplineTracker.set(groupId, tracker);
+
+    if (tracker.count >= groupCfg.threshold) {
+      const config = runtime.config.loadConfig();
+      const currentAllowFrom: string[] =
+        (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? []).map(String);
+      const humanOnly = currentAllowFrom.filter((id: string) => pairedUsers.includes(id));
+      const removedBotIds = currentAllowFrom.filter((id: string) => !pairedUsers.includes(id));
+
+      await configSet(
+        `channels.telegram.groups.${groupId}.allowFrom`,
+        JSON.stringify(humanOnly),
+      );
+
+      pendingRestart = { groupId, removedBotIds };
+    }
+  });
+
+  api.on("message_sending", async (event: any, ctx: any) => {
+    const groupId = extractGroupIdFromChannelId(ctx.channelId);
+    if (!groupId) return;
+
+    const monitorConfig = readDisciplineFile();
+    const groupCfg = monitorConfig.groups?.[groupId];
+    if (!groupCfg?.enabled) return;
+
+    const tracker = disciplineTracker.get(groupId);
+    const count = tracker?.count ?? 0;
+    const threshold = groupCfg.threshold;
+
+    if (pendingRestart?.groupId === groupId) {
+      const restoreCmds = pendingRestart.removedBotIds
+        .map((id: string) => `/telegram group set ${groupId} +allowFrom ${id}`)
+        .join("\n");
+      const notice = [
+        "",
+        `⚠️ discipline: ${threshold}/${threshold} — 自律觸發，停止回應`,
+        "",
+        "恢復指令：",
+        restoreCmds,
+      ].join("\n");
+      return { content: event.content + notice };
+    }
+
+    return { content: event.content + `\n\n📊 discipline: ${count}/${threshold}` };
+  });
+
+  api.on("message_sent", async () => {
+    if (!pendingRestart) return;
+    pendingRestart = null;
+    await restartGateway();
   });
 }
