@@ -462,30 +462,63 @@ function handleGroupList(config: any): string {
 }
 
 async function handleGroupAdd(id: string, flags: string): Promise<string> {
-  if (!id) return "[FAIL] Usage: /telegram group add <id> [--bot-to-bot]";
+  if (!id) return "[FAIL] Usage: /telegram group add <id> [--bot-to-bot [<other-bot-id,...>]]";
 
   const isBotToBot = flags.includes("--bot-to-bot");
 
   if (isBotToBot) {
-    const results = await Promise.all([
-      configSet(`channels.telegram.groups.${id}.enabled`, "true"),
-      configSet(`channels.telegram.groups.${id}.requireMention`, "false"),
-      configSet(`channels.telegram.groups.${id}.groupPolicy`, "open"),
-    ]);
-    const failed = results.filter((r) => !r.ok);
-    if (failed.length > 0) {
-      return `[FAIL] Config write failed: ${failed.map((r) => r.error).join("; ")}`;
+    // Extract comma-separated bot IDs (e.g. "--bot-to-bot 753,890")
+    const botIdRaw = flags.replace("--bot-to-bot", "").trim();
+    const botIds = botIdRaw
+      ? botIdRaw.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : [];
+
+    // Auto-include paired DM users (owners) so they can also interact in the channel
+    const pairedUsers = readAllowFromFile().allowFrom;
+    for (const uid of pairedUsers) {
+      if (/^\d+$/.test(uid)) botIds.push(uid);
     }
-    return [
+
+    // Deduplicate
+    const allIds = [...new Set(botIds)];
+
+    const prefix = `channels.telegram.groups.${id}`;
+    const sets: Array<[string, string]> = [
+      [`${prefix}.enabled`, "true"],
+      [`${prefix}.requireMention`, "false"],
+      [`${prefix}.groupPolicy`, allIds.length > 0 ? "allowlist" : "open"],
+    ];
+    if (allIds.length > 0) {
+      sets.push([`${prefix}.allowFrom`, JSON.stringify(allIds)]);
+    }
+
+    const errors: string[] = [];
+    for (const [path, value] of sets) {
+      const result = await configSet(path, value);
+      if (!result.ok) errors.push(`${path}: ${result.error}`);
+    }
+    if (errors.length > 0) {
+      return `[FAIL] Config write failed:\n${errors.join("\n")}`;
+    }
+
+    const lines = [
       `[PASS] Group ${id} added with bot-to-bot defaults:`,
       "  enabled: true",
       "  requireMention: false",
-      "  groupPolicy: open",
+    ];
+    if (allIds.length > 0) {
+      lines.push(`  groupPolicy: allowlist`);
+      lines.push(`  allowFrom: [${allIds.join(", ")}]`);
+    } else {
+      lines.push("  groupPolicy: open");
+    }
+    lines.push(
       "",
       "Tip: ensure both bots are Channel admins with Sign Messages ON.",
       "",
       "Restart gateway to apply.",
-    ].join("\n");
+    );
+    return lines.join("\n");
   }
 
   const result = await configSet(`channels.telegram.groups.${id}.enabled`, "true");
@@ -505,6 +538,30 @@ async function handleGroupRemove(id: string): Promise<string> {
   }
 
   return `[PASS] Group ${id} removed\n\nRestart gateway to apply.`;
+}
+
+function handleGroupJoin(id: string): string {
+  if (!id) return "[FAIL] Usage: /telegram group join <group-id>";
+
+  // Extract this bot's ID from its token (format: <bot_id>:<secret>)
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return "[FAIL] TELEGRAM_BOT_TOKEN is not set";
+
+  const botId = token.split(":")[0];
+  if (!botId || !/^\d+$/.test(botId)) {
+    return "[FAIL] Could not parse bot ID from token";
+  }
+
+  const cmd = `/telegram group set ${id} +allowFrom ${botId}`;
+  const lines = [
+    "Copy this command and run it on the OTHER bot's OpenClaw,",
+    "so that bot can see this bot's messages in the group:",
+    "",
+    cmd,
+    "",
+    `This bot's ID: ${botId}`,
+  ];
+  return lines.join("\n");
 }
 
 function handleGroupShow(id: string, config: any): string {
@@ -557,10 +614,54 @@ async function handleGroupSet(id: string, keyAndValue: string): Promise<string> 
     return "[FAIL] Usage: /telegram group set <id> <key> <value>";
   }
 
-  const key = keyAndValue.substring(0, spaceIdx).trim();
+  const rawKey = keyAndValue.substring(0, spaceIdx).trim();
   const rawValue = keyAndValue.substring(spaceIdx + 1).trim();
 
+  // Detect +key / -key prefix for incremental array operations
+  const ARRAY_KEYS = ["allowFrom", "groupAllowFrom", "skills"];
+  const addMode = rawKey.startsWith("+");
+  const removeMode = rawKey.startsWith("-") && !rawKey.startsWith("-1"); // avoid matching negative IDs
+  const key = (addMode || removeMode) ? rawKey.slice(1) : rawKey;
+
   if (!rawValue) return `[FAIL] Missing value for key "${key}"`;
+
+  if ((addMode || removeMode) && ARRAY_KEYS.includes(key)) {
+    const items = rawValue.split(",").map((s: string) => s.trim()).filter(Boolean);
+    const config = runtime.config.loadConfig();
+    const existing: string[] =
+      (config?.channels?.telegram?.groups?.[id]?.[key] ?? [])
+        .map((v: unknown) => String(v));
+
+    let updated: string[];
+    if (addMode) {
+      updated = [...new Set([...existing, ...items])];
+    } else {
+      const removeSet = new Set(items);
+      updated = existing.filter((v: string) => !removeSet.has(v));
+    }
+
+    const jsonArray = JSON.stringify(updated);
+    const result = await configSet(`channels.telegram.groups.${id}.${key}`, jsonArray);
+    if (!result.ok) return `[FAIL] ${result.error}`;
+    const op = addMode ? "Added" : "Removed";
+    return `[PASS] ${op} ${items.join(", ")} → ${key} = ${jsonArray}\n\nRestart gateway to apply.`;
+  }
+
+  // Detect JSON array/object values — pass through to configSet (JSON5-aware)
+  if (rawValue.startsWith("[") || rawValue.startsWith("{")) {
+    const result = await configSet(`channels.telegram.groups.${id}.${key}`, rawValue);
+    if (!result.ok) return `[FAIL] ${result.error}`;
+    return `[PASS] Group ${id}: ${key} = ${rawValue}\n\nRestart gateway to apply.`;
+  }
+
+  // Detect comma-separated values for known array keys — auto-wrap as JSON array
+  if (ARRAY_KEYS.includes(key) && !rawValue.startsWith("[")) {
+    const items = rawValue.split(",").map((s: string) => s.trim()).filter(Boolean);
+    const jsonArray = JSON.stringify(items);
+    const result = await configSet(`channels.telegram.groups.${id}.${key}`, jsonArray);
+    if (!result.ok) return `[FAIL] ${result.error}`;
+    return `[PASS] Group ${id}: ${key} = ${jsonArray}\n\nRestart gateway to apply.`;
+  }
 
   const result = await configSet(`channels.telegram.groups.${id}.${key}`, rawValue);
   if (!result.ok) {
@@ -760,10 +861,15 @@ function showHelp(): string {
     "Group/channel management:",
     "  /telegram group                  — List configured groups",
     "  /telegram group add <id>         — Add a group config",
-    "  /telegram group add <id> --bot-to-bot — Bot-to-bot defaults",
+    "  /telegram group add <id> --bot-to-bot — Bot-to-bot (open policy)",
+    "  /telegram group add <id> --bot-to-bot <id,...> — Bot-to-bot (allowlist + owner)",
+    "  /telegram group join <id>        — Generate +allowFrom command for paired users",
     "  /telegram group remove <id>      — Remove a group config",
     "  /telegram group show <id>        — Show group details",
     "  /telegram group set <id> <k> <v> — Set a per-group config key",
+    "  /telegram group set <id> +<k> <v> — Append to array key",
+    "  /telegram group set <id> -<k> <v> — Remove from array key",
+    "    Array keys: allowFrom, groupAllowFrom, skills (comma-separated or JSON)",
     "",
     "Mention patterns:",
     "  /telegram mention                — List mention patterns",
@@ -847,6 +953,9 @@ export default function register(api: any) {
                 break;
               case "set":
                 text = await handleGroupSet(groupId, groupRest);
+                break;
+              case "join":
+                text = handleGroupJoin(groupId);
                 break;
               case "list":
               case "":
