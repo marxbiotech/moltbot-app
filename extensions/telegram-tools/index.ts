@@ -564,6 +564,101 @@ function handleGroupJoin(id: string): string {
   return lines.join("\n");
 }
 
+async function restartGateway(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const result = await runtime.system.runCommandWithTimeout(
+      ["openclaw", "gateway", "restart"],
+      CLI_TIMEOUT_MS,
+    );
+    if (result.code === 0) return { ok: true };
+    return { ok: false, error: result.stderr?.trim() || result.stdout?.trim() || "Unknown error" };
+  } catch (e: any) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function extractGroupIdFromContext(ctx: any): string | undefined {
+  // ctx.from format: "telegram:<chatId>" or "telegram:<chatId>:topic:<threadId>"
+  const from = ctx.from as string | undefined;
+  if (!from) return undefined;
+  const match = from.match(/^telegram:(-\d+)/);
+  return match?.[1];
+}
+
+async function handleMute(args: string, ctx: any): Promise<string> {
+  const parts = args.split(/\s+/).filter(Boolean);
+  const senderId = parts[0];
+  if (!senderId || !/^\d+$/.test(senderId)) {
+    return "[FAIL] Usage: /telegram mute <sender-id> [<group-id>]";
+  }
+
+  const groupId = parts[1] || extractGroupIdFromContext(ctx);
+  if (!groupId) {
+    return "[FAIL] Could not detect group ID. Usage: /telegram mute <sender-id> <group-id>";
+  }
+
+  // Read current allowFrom
+  const config = runtime.config.loadConfig();
+  const existing: string[] =
+    (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? [])
+      .map((v: unknown) => String(v));
+
+  if (!existing.includes(senderId)) {
+    return `[PASS] Sender ${senderId} is not in allowFrom for group ${groupId}. No change needed.`;
+  }
+
+  const updated = existing.filter((v: string) => v !== senderId);
+  const result = await configSet(
+    `channels.telegram.groups.${groupId}.allowFrom`,
+    JSON.stringify(updated),
+  );
+  if (!result.ok) return `[FAIL] Config write failed: ${result.error}`;
+
+  // Auto-restart gateway for immediate effect
+  const restart = await restartGateway();
+  const restartStatus = restart.ok
+    ? "Gateway restarting..."
+    : `[WARN] Config saved but gateway restart failed: ${restart.error}`;
+
+  return `[PASS] Muted sender ${senderId} in group ${groupId}\nallowFrom: ${JSON.stringify(updated)}\n\n${restartStatus}`;
+}
+
+async function handleUnmute(args: string, ctx: any): Promise<string> {
+  const parts = args.split(/\s+/).filter(Boolean);
+  const senderId = parts[0];
+  if (!senderId || !/^\d+$/.test(senderId)) {
+    return "[FAIL] Usage: /telegram unmute <sender-id> [<group-id>]";
+  }
+
+  const groupId = parts[1] || extractGroupIdFromContext(ctx);
+  if (!groupId) {
+    return "[FAIL] Could not detect group ID. Usage: /telegram unmute <sender-id> <group-id>";
+  }
+
+  const config = runtime.config.loadConfig();
+  const existing: string[] =
+    (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? [])
+      .map((v: unknown) => String(v));
+
+  if (existing.includes(senderId)) {
+    return `[PASS] Sender ${senderId} is already in allowFrom for group ${groupId}. No change needed.`;
+  }
+
+  const updated = [...existing, senderId];
+  const result = await configSet(
+    `channels.telegram.groups.${groupId}.allowFrom`,
+    JSON.stringify(updated),
+  );
+  if (!result.ok) return `[FAIL] Config write failed: ${result.error}`;
+
+  const restart = await restartGateway();
+  const restartStatus = restart.ok
+    ? "Gateway restarting..."
+    : `[WARN] Config saved but gateway restart failed: ${restart.error}`;
+
+  return `[PASS] Unmuted sender ${senderId} in group ${groupId}\nallowFrom: ${JSON.stringify(updated)}\n\n${restartStatus}`;
+}
+
 function handleGroupShow(id: string, config: any): string {
   if (!id) return "[FAIL] Usage: /telegram group show <id>";
 
@@ -863,13 +958,18 @@ function showHelp(): string {
     "  /telegram group add <id>         — Add a group config",
     "  /telegram group add <id> --bot-to-bot — Bot-to-bot (open policy)",
     "  /telegram group add <id> --bot-to-bot <id,...> — Bot-to-bot (allowlist + owner)",
-    "  /telegram group join <id>        — Generate +allowFrom command for paired users",
+    "  /telegram group join <id>        — Generate +allowFrom command with this bot's ID",
     "  /telegram group remove <id>      — Remove a group config",
     "  /telegram group show <id>        — Show group details",
     "  /telegram group set <id> <k> <v> — Set a per-group config key",
     "  /telegram group set <id> +<k> <v> — Append to array key",
     "  /telegram group set <id> -<k> <v> — Remove from array key",
     "    Array keys: allowFrom, groupAllowFrom, skills (comma-separated or JSON)",
+    "",
+    "Moderation:",
+    "  /telegram mute <sender-id> [<group-id>]   — Remove sender from allowFrom + restart",
+    "  /telegram unmute <sender-id> [<group-id>] — Add sender back to allowFrom + restart",
+    "    group-id auto-detected when run in a channel/group",
     "",
     "Mention patterns:",
     "  /telegram mention                — List mention patterns",
@@ -990,6 +1090,14 @@ export default function register(api: any) {
 
           case "chatid":
             text = handleChatId(ctx);
+            break;
+
+          case "mute":
+            text = await handleMute(`${sub} ${rest}`.trim(), ctx);
+            break;
+
+          case "unmute":
+            text = await handleUnmute(`${sub} ${rest}`.trim(), ctx);
             break;
 
           case "config":

@@ -19,6 +19,9 @@
   - [Telegram Bot API 限制](#telegram-bot-api-限制)
   - [群組內 Bot-to-Bot 的可能替代方案](#群組內-bot-to-bot-的可能替代方案)
   - [解法 A：使用 Telegram Channel（最簡單）](#解法-a使用-telegram-channel最簡單)
+    - [設定步驟](#設定步驟)
+    - [新增 Bot 到已有的 Channel](#新增-bot-到已有的-channel)
+    - [進階 Per-Group 設定](#進階-per-group-設定)
   - [防止無限循環](#防止無限循環)
   - [進階：同一 OpenClaw 實例跑多個 Bot](#進階同一-openclaw-實例跑多個-bot)
   - [替代方案](#替代方案)
@@ -537,41 +540,199 @@ OpenClaw 已實作 `channel_post` handler（`src/telegram/bot-handlers.ts`），
 
 #### 設定步驟
 
-1. **建立 Telegram Channel**
-   - 在 Telegram 建立一個新的 Channel（公開或私人皆可）
-   - 將兩個 bot 都加為 Channel 的 **管理員**（需要「發送訊息」權限）
-   - **啟用 Sign Messages**：Channel 設定 → Administrators → 每個 bot → 開啟「Sign messages」。未啟用時 `channel_post` 的 `from` 為空，bot 無法辨識訊息發送者身份
+##### Step 1：建立 Telegram Channel
 
-2. **取得 Channel ID**
-   - 將 bot 加入 channel 後，在 channel 中發送一則訊息
-   - 透過 Telegram Bot API `getUpdates` 取得 channel ID（通常格式為 `-100xxxxxxxxxx`）
-   - 或使用 [@userinfobot](https://t.me/userinfobot) 等工具
-   - 或在 Telegram Web 中打開 channel，URL 中的數字即為 ID
+1. 在 Telegram 建立一個新的 Channel（公開或私人皆可）
+2. 將所有參與的 bot 加為 Channel 的 **管理員**（需要「發送訊息」權限）
+3. **啟用 Sign Messages**：Channel 設定 → Administrators → 每個 bot → 開啟「Sign messages」。未啟用時 `channel_post` 的 `from` 為空，bot 無法辨識訊息發送者身份
 
-3. **設定兩個 Bot 的 OpenClaw config**
+##### Step 2：取得 Channel ID
 
-   Bot A 和 Bot B 的 config 結構相同，只需替換 `<channel_id>`：
+- 在 channel 中發送一則訊息，透過 `/telegram chatid` 或 Telegram Bot API `getUpdates` 取得 channel ID（通常格式為 `-100xxxxxxxxxx`）
+- 或在 Telegram Web 中打開 channel，URL 中的數字即為 ID
 
-   ```json
-   {
-     "channels": {
-       "telegram": {
-         "groups": {
-           "-100xxxxxxxxxx": {
-             "enabled": true,
-             "requireMention": false,
-             "groupPolicy": "open"
-           }
-         }
-       }
-     }
-   }
+##### Step 3：在每個 Bot 上設定 Channel
+
+在每個 bot 的 OpenClaw DM 中執行：
+
+```
+/telegram group add <channel-id> --bot-to-bot
+```
+
+此指令會自動設定：
+- `enabled: true`
+- `requireMention: false`
+- `groupPolicy: allowlist`（使用 allowlist 而非 open，精確控制誰能觸發回應）
+- `allowFrom`：自動包含所有已配對的 DM 使用者（owner）
+
+##### Step 4：互相加入對方的 Bot ID（allowFrom 雙向設定）
+
+每對 bot 之間需要**雙向**設定 allowFrom，讓彼此能看到對方的訊息：
+
+- **A 能看到 B 的訊息** → B 的 bot ID 必須在 A 的 `allowFrom` 裡
+- **B 能看到 A 的訊息** → A 的 bot ID 必須在 B 的 `allowFrom` 裡
+
+**操作方式：** 在每個 bot 上執行 `/telegram group join <channel-id>`，此指令會產生一條 `+allowFrom` 指令，將該指令複製到**其他所有 bot** 上執行。
+
+範例：假設 Channel 中有 Bot A（ID: `111`）和 Bot B（ID: `222`）
+
+1. 在 Bot A 上執行：
+   ```
+   /telegram group join -100xxxxxxxxxx
+   ```
+   輸出：
+   ```
+   Copy this command and run it on the OTHER bot's OpenClaw,
+   so that bot can see this bot's messages in the group:
+
+   /telegram group set -100xxxxxxxxxx +allowFrom 111
+
+   This bot's ID: 111
    ```
 
-4. **兩個關鍵設定**
-   - `requireMention: false` — 不需要 @mention 就回應（否則 bot 不會互相 tag）
-   - `groupPolicy: "open"` — 允許所有發送者（包括其他 bot）
-   - `enabled: true` — 啟用此 channel（`channel_post` handler 需要 `requireConfiguredGroup: true`）
+2. 把產生的指令 `/telegram group set -100xxxxxxxxxx +allowFrom 111` 貼到 **Bot B** 上執行
+
+3. 在 Bot B 上同樣執行 `/telegram group join -100xxxxxxxxxx`，把產生的指令貼到 **Bot A** 上執行
+
+4. 完成後在任一 bot 上驗證：
+   ```
+   /telegram group show -100xxxxxxxxxx
+   ```
+   應看到 `allowFrom` 包含對方的 bot ID 和自己的 user ID。
+
+##### Step 5：重啟 Gateway
+
+每個 bot 修改 config 後需要重啟 gateway 才能生效：
+
+```
+/telegram restart
+```
+
+##### 新增 Bot 到已有的 Channel
+
+如果 Channel 已有 Bot A、Bot B，現在要加入 Bot C：
+
+1. 在 Telegram 將 Bot C 加為 Channel 管理員，啟用 Sign Messages
+2. 在 Bot C 上執行 `/telegram group add <channel-id> --bot-to-bot`
+3. 在 Bot C 上執行 `/telegram group join <channel-id>`，把產生的指令分別貼到 Bot A 和 Bot B 上執行
+4. 在 Bot A 和 Bot B 上各執行 `/telegram group join <channel-id>`，把產生的指令都貼到 Bot C 上執行
+5. 所有 bot 執行 `/telegram restart`
+
+##### allowFrom 管理
+
+```
+/telegram group set <id> +allowFrom <bot-id1>,<bot-id2>   # 增量加入
+/telegram group set <id> -allowFrom <bot-id>               # 移除
+/telegram group show <id>                                   # 查看目前設定
+```
+
+##### 關鍵設定說明
+
+| 設定 | 值 | 說明 |
+|---|---|---|
+| `enabled` | `true` | 啟用此 channel（`channel_post` handler 需要 `requireConfiguredGroup: true`） |
+| `requireMention` | `false` | 不需要 @mention 就回應（bot 之間不會互相 tag） |
+| `groupPolicy` | `allowlist` | 只允許 `allowFrom` 中的 sender 觸發回應，防止未授權的 bot 加入對話 |
+| `allowFrom` | `["bot-id-1", "bot-id-2", "owner-id"]` | 允許的 sender ID 列表，包含其他 bot 和 owner |
+
+##### 進階 Per-Group 設定
+
+除了基礎設定外，OpenClaw 支援以下 per-group 設定來精細控制 bot 在 Channel 中的行為：
+
+| 設定 | 類型 | CLI 指令 | 說明 |
+|---|---|---|---|
+| `systemPrompt` | `string` | `/telegram group set <id> systemPrompt "..."` | 額外系統提示（**追加**到 global/agent prompt，不覆蓋） |
+| `skills` | `string[]` | `/telegram group set <id> skills '["skill1"]'` | 技能白名單。省略=全部可用；`[]`=停用所有技能 |
+| `tools` | `{allow?, alsoAllow?, deny?}` | 需直接修改 config | Tool 白名單/黑名單 |
+| `toolsBySender` | `Record<sender, ToolPolicy>` | 需直接修改 config | Per-sender tool 權限覆蓋 |
+| `topics` | `Record<id, TopicConfig>` | 需直接修改 config | Per-forum-topic 覆蓋（含 systemPrompt、skills、allowFrom 等） |
+
+**systemPrompt 注入方式：**
+
+Group `systemPrompt` 是**追加**到現有 prompt，不會覆蓋 bot 原有的人格設定。注入順序：
+
+```
+global agent system prompt（原有人格、指令）
+  + inboundMetaPrompt（訊息 metadata）
+  + groupChatContext（群組上下文）
+  + groupIntro（群組介紹）
+  + groupSystemPrompt（← 你設定的 per-group prompt）
+  + topicSystemPrompt（如果是 forum topic）
+```
+
+這代表你可以放心在 group level 加入行為約束（如「不要主動回覆其他 bot」），不用重複定義 bot 的完整人格。
+
+**skills 過濾：**
+
+```bash
+# 只允許 code_review 和 debugging 技能
+/telegram group set <channel-id> skills '["code_review","debugging"]'
+
+# 停用所有技能（純對話模式）
+/telegram group set <channel-id> skills '[]'
+
+# 恢復使用全部技能（移除限制）
+# 需直接修改 config 刪除 skills key
+```
+
+Topic-level skills 優先於 group-level（`firstDefined` 語義）。
+
+**tools 權限控制（需直接修改 config）：**
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "groups": {
+        "-100xxxxxxxxxx": {
+          "tools": {
+            "allow": ["read_file", "web_search"],
+            "deny": ["bash", "write_file"]
+          },
+          "toolsBySender": {
+            "id:123456789": {
+              "allow": ["bash", "read_file", "write_file"]
+            },
+            "*": {
+              "deny": ["bash"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`toolsBySender` 的 key 格式：`id:<telegram_user_id>`、`username:<username>`、`name:<display_name>`、`*`（所有 sender）。
+
+**不支援 per-group 覆蓋的設定：**
+
+| 設定 | 層級 | 說明 |
+|---|---|---|
+| `historyLimit` | Global（`messages.groupChat`） | 所有 group 共用 |
+| `mentionPatterns` | Global（`messages.groupChat`） | 所有 group 共用 |
+| Agent 選擇 | Routing config | 無法 per-group 指定不同 agent |
+| Model | Agent config | 無法 per-group 切換 model |
+
+##### Bot-to-Bot 推薦的完整 Per-Group 設定
+
+```bash
+# 基礎（由 group add --bot-to-bot 自動完成）
+/telegram group add <channel-id> --bot-to-bot <other-bot-id>
+
+# 防循環
+/telegram group set <channel-id> requireMention true
+
+# 行為約束（追加到現有 prompt）
+/telegram group set <channel-id> systemPrompt "你在這個 Channel 中與其他 AI bot 共存。\n規則：\n1. 只在被點名或遇到你專長的問題時回應\n2. 不要與其他 bot 進行無限來回對話\n3. 如果不確定是否該回應，保持沉默\n4. 回覆保持簡潔"
+
+# 限制 context 深度（全域設定）
+# 需直接修改 openclaw.json: messages.groupChat.historyLimit = 5
+
+# 限制可用技能（選用）
+/telegram group set <channel-id> skills '["code_review"]'
+```
 
 #### channel_post 內部運作原理
 
@@ -635,25 +796,26 @@ Telegram 送出 channel_post update
 
 ### 防止無限循環
 
-兩個 bot 如果都設定 `requireMention: false`，它們會互相回覆形成無限循環。**OpenClaw 目前沒有內建的 bot-to-bot 防循環機制**，需要靠設定來控制。
+兩個 bot 如果都設定 `requireMention: false` + `groupPolicy: "open"`，它們會互相回覆形成無限循環。以下是防護層，**建議至少使用方法 1 + 方法 2**。
 
-以下是可用的防護層，建議組合使用：
+#### 方法 1：allowlist 精確控制（基礎防護）
 
-#### 方法 1：mentionPatterns 觸發（推薦）
+使用 `groupPolicy: "allowlist"` 搭配 `allowFrom`，只允許特定 sender 觸發回應。`/telegram group add --bot-to-bot` 預設就使用此模式。
 
-設定 `requireMention: true`，搭配自訂 regex pattern 作為觸發條件。mentionPatterns 支援完整 regex，case-insensitive 匹配。
+這不能單獨防止循環（因為雙方都在對方的 allowFrom 裡），但能防止未授權的 bot 或使用者加入對話。
+
+#### 方法 2：requireMention + mentionPatterns（推薦，有效防循環）
+
+設定 `requireMention: true`，搭配自訂 regex pattern 作為觸發條件。**bot 之間不會自動互相 @mention，因此 `requireMention: true` 本身就能阻止大部分循環。** 加上 mentionPatterns 可以讓人類使用者用名稱觸發特定 bot。
+
+```
+/telegram group set <channel-id> requireMention true
+```
+
+mentionPatterns 透過 `openclaw.json` 設定（目前無 CLI 指令）：
 
 ```json
 {
-  "channels": {
-    "telegram": {
-      "groups": {
-        "-100xxxxxxxxxx": {
-          "requireMention": true
-        }
-      }
-    }
-  },
   "messages": {
     "groupChat": {
       "mentionPatterns": ["\\bask\\s+BotA\\b", "\\b@bot_a_username\\b"]
@@ -682,71 +844,43 @@ Telegram 送出 channel_post update
 | `\b(help\|question)\b` | "help", "question" | 關鍵字觸發 |
 | `🤖` | 🤖 | Emoji 觸發 |
 
-**範例情境：** Bot A 設定 pattern `\b@?BotA\b`，Bot B 設定 pattern `\b@?BotB\b`。Bot B 回覆時如果文字中包含 "BotA"，Bot A 才會回應。
+**範例情境：** Bot A 設定 pattern `\b@?BotA\b`，Bot B 設定 pattern `\b@?BotB\b`。人類使用者在 Channel 中提到 "BotA" 時只有 Bot A 回應，提到 "BotB" 時只有 Bot B 回應。Bot 互相回覆時不會包含對方名稱，因此不會觸發循環。
 
-#### 方法 2：system prompt 行為約束
+#### 方法 3：system prompt 行為約束
 
 透過 per-group `systemPrompt` 指示 bot 何時該回覆、何時不該：
 
-```json
-{
-  "channels": {
-    "telegram": {
-      "groups": {
-        "-100xxxxxxxxxx": {
-          "requireMention": false,
-          "groupPolicy": "open",
-          "systemPrompt": "You are Bot A (an AI coding assistant) in a shared channel with Bot B (an AI writing assistant).\n\nRules:\n1. Only respond when the message is directed at you or asks a coding question.\n2. If Bot B is answering a writing question, do NOT respond.\n3. If you are unsure whether to respond, stay silent.\n4. Never respond to a message that is clearly Bot B talking to a human.\n5. Keep responses concise to avoid triggering unnecessary back-and-forth."
-        }
-      }
-    }
-  }
-}
+```
+/telegram group set <channel-id> systemPrompt "You are Bot A (an AI coding assistant) in a shared channel with Bot B (an AI writing assistant).\n\nRules:\n1. Only respond when the message is directed at you or asks a coding question.\n2. If Bot B is answering a writing question, do NOT respond.\n3. If you are unsure whether to respond, stay silent.\n4. Never respond to a message that is clearly Bot B talking to a human.\n5. Keep responses concise to avoid triggering unnecessary back-and-forth."
 ```
 
 > system prompt 完全取代預設 prompt，請確保包含足夠的角色設定。
 
-#### 方法 3：historyLimit 限制 context
+#### 方法 4：historyLimit 限制 context
 
 限制 bot 能看到的歷史訊息量，避免 context window 膨脹和過度回應：
 
-```json
-{
-  "channels": {
-    "telegram": {
-      "groups": {
-        "-100xxxxxxxxxx": {
-          "historyLimit": 3
-        }
-      }
-    }
-  }
-}
+```
+/telegram group set <channel-id> historyLimit 3
 ```
 
 `historyLimit` 限制的是送給 AI model 的歷史 context 條數，不影響 bot 是否接收訊息。
 
-#### 方法 4：組合策略（推薦的完整設定）
+#### 推薦的組合策略
 
-最穩健的做法是結合 mentionPatterns + systemPrompt + historyLimit：
+最穩健的做法是 **allowlist + requireMention + mentionPatterns + systemPrompt + historyLimit**：
 
-**Bot A（coding assistant）的 config：**
+```
+# 在每個 bot 上執行
+/telegram group set <channel-id> requireMention true
+/telegram group set <channel-id> historyLimit 5
+/telegram group set <channel-id> systemPrompt "You are CodeBot, a coding assistant.\nYou share this channel with WriteBot.\nOnly respond to coding questions or when explicitly addressed.\nNever engage in back-and-forth with WriteBot unless a human asks you to."
+```
+
+搭配 `openclaw.json` 中的 mentionPatterns：
 
 ```json
 {
-  "channels": {
-    "telegram": {
-      "groups": {
-        "-100xxxxxxxxxx": {
-          "enabled": true,
-          "requireMention": true,
-          "groupPolicy": "open",
-          "historyLimit": 5,
-          "systemPrompt": "You are CodeBot, a coding assistant.\nYou share this channel with WriteBot (@write_bot).\nOnly respond to coding questions or when explicitly addressed.\nNever engage in back-and-forth conversation with WriteBot unless a human asks you to."
-        }
-      }
-    }
-  },
   "messages": {
     "groupChat": {
       "mentionPatterns": ["\\b@?CodeBot\\b", "\\b@?code_bot\\b", "\\bcoding\\b"]
@@ -755,30 +889,15 @@ Telegram 送出 channel_post update
 }
 ```
 
-**Bot B（writing assistant）的 config：**
+**防循環效果總結：**
 
-```json
-{
-  "channels": {
-    "telegram": {
-      "groups": {
-        "-100xxxxxxxxxx": {
-          "enabled": true,
-          "requireMention": true,
-          "groupPolicy": "open",
-          "historyLimit": 5,
-          "systemPrompt": "You are WriteBot, a writing assistant.\nYou share this channel with CodeBot (@code_bot).\nOnly respond to writing questions or when explicitly addressed.\nNever engage in back-and-forth conversation with CodeBot unless a human asks you to."
-        }
-      }
-    }
-  },
-  "messages": {
-    "groupChat": {
-      "mentionPatterns": ["\\b@?WriteBot\\b", "\\b@?write_bot\\b", "\\bwriting\\b"]
-    }
-  }
-}
-```
+| 方法 | 能否單獨防循環 | 說明 |
+|---|---|---|
+| `groupPolicy: allowlist` | 否 | 只控制誰能觸發，雙方在對方名單裡仍會循環 |
+| `requireMention: true` | **是** | bot 不會自動 @mention 對方，有效阻斷循環 |
+| mentionPatterns | **是**（配合 requireMention） | 精確控制觸發條件，只有人類使用者能觸發 |
+| systemPrompt | 部分 | 依賴 AI 遵守指令，非硬性阻斷 |
+| historyLimit | 否 | 只限制 context 長度，不阻止觸發 |
 
 ### 現有的內建防護
 
@@ -886,8 +1005,17 @@ npm run deploy                             # 重建 container image
 
 ### Bot-to-Bot 對談沒反應
 
-1. 確認使用的是 **Channel**，不是 Group
-2. 確認兩個 bot 都是 Channel 的管理員
-3. 確認 `requireMention: false`
-4. 確認 `groupPolicy: "open"` 或 `allowFrom` 包含對方 bot 的 user ID
-5. 確認 BotFather 的 `/setjoingroups` 是 Enable
+1. 確認使用的是 **Channel**，不是 Group（Group 中 bot 收不到其他 bot 的訊息）
+2. 確認所有 bot 都是 Channel 的管理員，且啟用了 **Sign Messages**
+3. 確認 Channel 已設定：`/telegram group show <channel-id>` 應顯示 `enabled: true`
+4. 確認 `allowFrom` 包含對方 bot 的 ID：`/telegram group show <channel-id>` 查看
+5. 如果 `requireMention: true`，確認有設定 mentionPatterns 讓人類能觸發 bot
+6. 確認 gateway 已重啟：修改 config 後需執行 `/telegram restart`
+7. 確認 BotFather 的 `/setjoingroups` 是 Enable
+
+**快速診斷指令：**
+```
+/telegram group show <channel-id>    # 查看 channel 設定和 allowFrom
+/telegram webhook verify             # 確認 webhook 正常
+/telegram status                     # 確認 gateway 運作中
+```
