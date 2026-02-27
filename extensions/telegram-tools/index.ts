@@ -357,8 +357,6 @@ interface DisciplineFile {
 
 const disciplineTracker: Map<string, { count: number }> = new Map();
 
-let pendingRestart: { groupId: string; removedBotIds: string[] } | null = null;
-
 function getDisciplineFilePath(): string {
   return `${getCredDir()}/telegram-discipline.json`;
 }
@@ -963,27 +961,17 @@ async function handleDiscipline(channelId: string, threshold: number): Promise<s
   return [
     `[PASS] 已啟用 discipline (group: ${channelId}, threshold: ${threshold})`,
     `連續 ${threshold} 則 bot 訊息後自動停止回應。人類發言後重置。`,
-    "每則回應會附加 discipline 狀態。",
+    "每則 bot 訊息後會發送 discipline 狀態。",
   ].join("\n");
 }
 
 function handleDisciplineShow(channelId?: string): string {
   const data = readDisciplineFile();
 
-  // Read last 10 lines of debug log
-  let debugTail = "";
-  try {
-    const raw = readFileSync("/tmp/discipline-debug.log", "utf8");
-    const lines = raw.trim().split("\n");
-    debugTail = "\n\nDebug log (last 10):\n" + lines.slice(-10).join("\n");
-  } catch {
-    debugTail = "\n\n(no debug log yet)";
-  }
-
   if (channelId) {
     const cfg = data.groups[channelId];
     if (!cfg) {
-      return `[WARN] Discipline 未設定 (group: ${channelId})` + debugTail;
+      return `[WARN] Discipline 未設定 (group: ${channelId})`;
     }
     const tracker = disciplineTracker.get(channelId);
     const count = tracker?.count ?? 0;
@@ -992,7 +980,7 @@ function handleDisciplineShow(channelId?: string): string {
       `  enabled: ${cfg.enabled}`,
       `  threshold: ${cfg.threshold}`,
       `  current count: ${count}/${cfg.threshold}`,
-    ].join("\n") + debugTail;
+    ].join("\n");
   }
 
   const entries = Object.entries(data.groups);
@@ -1188,16 +1176,12 @@ export default function register(api: any) {
   });
 
   // ── Discipline hooks ────────────────────────────────────────
-
-  const debugLogPath = "/tmp/discipline-debug.log";
-  const debugLog = (msg: string) => {
-    try { writeFileSync(debugLogPath, `${new Date().toISOString()} ${msg}\n`, { flag: "a" }); } catch {}
-  };
+  // Telegram streaming bypasses deliver.ts, so message_sending/message_sent
+  // hooks never fire. We use message_received (which does fire) and send
+  // discipline status as a separate Telegram message via the Bot API.
 
   api.on("message_received", async (event: any, ctx: any) => {
-    debugLog(`received: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.from=${event.from} metadata.to=${event.metadata?.to} senderId=${event.metadata?.senderId}`);
     const groupId = extractGroupIdFromHookCtx(event, ctx);
-    debugLog(`extracted groupId=${groupId}`);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
@@ -1217,7 +1201,12 @@ export default function register(api: any) {
     tracker.count++;
     disciplineTracker.set(groupId, tracker);
 
-    if (tracker.count >= groupCfg.threshold) {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const { count } = tracker;
+    const { threshold } = groupCfg;
+
+    if (count >= threshold) {
+      // Threshold reached — restrict allowFrom to humans only + schedule restart
       const config = runtime.config.loadConfig();
       const currentAllowFrom: string[] =
         (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? []).map(String);
@@ -1229,44 +1218,34 @@ export default function register(api: any) {
         JSON.stringify(humanOnly),
       );
 
-      pendingRestart = { groupId, removedBotIds };
+      // Send trigger notice via Telegram
+      if (token) {
+        const restoreCmds = removedBotIds
+          .map((id: string) => `/telegram group set ${groupId} +allowFrom ${id}`)
+          .join("\n");
+        const notice = [
+          `⚠️ discipline: ${threshold}/${threshold} — 自律觸發，停止回應`,
+          "",
+          "恢復指令：",
+          restoreCmds,
+        ].join("\n");
+        try {
+          await telegramApi(token, "sendMessage", { chat_id: groupId, text: notice });
+        } catch {}
+      }
+
+      // Delay restart to let the current AI response finish
+      setTimeout(() => {
+        restartGateway();
+      }, 5000);
+    } else if (token) {
+      // Send discipline status as a separate message
+      try {
+        await telegramApi(token, "sendMessage", {
+          chat_id: groupId,
+          text: `📊 discipline: ${count}/${threshold}`,
+        });
+      } catch {}
     }
-  });
-
-  api.on("message_sending", async (event: any, ctx: any) => {
-    debugLog(`sending: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.to=${event.to}`);
-    const groupId = extractGroupIdFromHookCtx(event, ctx);
-    debugLog(`sending extracted groupId=${groupId}`);
-    if (!groupId) return;
-
-    const monitorConfig = readDisciplineFile();
-    const groupCfg = monitorConfig.groups?.[groupId];
-    if (!groupCfg?.enabled) return;
-
-    const tracker = disciplineTracker.get(groupId);
-    const count = tracker?.count ?? 0;
-    const threshold = groupCfg.threshold;
-
-    if (pendingRestart?.groupId === groupId) {
-      const restoreCmds = pendingRestart.removedBotIds
-        .map((id: string) => `/telegram group set ${groupId} +allowFrom ${id}`)
-        .join("\n");
-      const notice = [
-        "",
-        `⚠️ discipline: ${threshold}/${threshold} — 自律觸發，停止回應`,
-        "",
-        "恢復指令：",
-        restoreCmds,
-      ].join("\n");
-      return { content: event.content + notice };
-    }
-
-    return { content: event.content + `\n\n📊 discipline: ${count}/${threshold}` };
-  });
-
-  api.on("message_sent", async () => {
-    if (!pendingRestart) return;
-    pendingRestart = null;
-    await restartGateway();
   });
 }
