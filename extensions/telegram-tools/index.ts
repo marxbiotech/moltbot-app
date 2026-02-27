@@ -943,9 +943,10 @@ function showHelp(): string {
 
 // ── Discipline subcommands ───────────────────────────────────
 
-function extractGroupIdFromChannelId(channelId: string): string | undefined {
-  const match = channelId?.match(/^telegram:(-\d+)/);
-  return match?.[1];
+function extractGroupIdFromHookCtx(event: any, ctx: any): string | undefined {
+  if (ctx.channelId !== "telegram") return undefined;
+  const raw = String(ctx.conversationId ?? event.to ?? event.metadata?.to ?? "");
+  return /^-\d+$/.test(raw) ? raw : undefined;
 }
 
 async function handleDiscipline(channelId: string, threshold: number): Promise<string> {
@@ -1177,7 +1178,7 @@ export default function register(api: any) {
   // ── Discipline hooks ────────────────────────────────────────
 
   api.on("message_received", async (event: any, ctx: any) => {
-    const groupId = extractGroupIdFromChannelId(ctx.channelId);
+    const groupId = extractGroupIdFromHookCtx(event, ctx);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
@@ -1214,7 +1215,7 @@ export default function register(api: any) {
   });
 
   api.on("message_sending", async (event: any, ctx: any) => {
-    const groupId = extractGroupIdFromChannelId(ctx.channelId);
+    const groupId = extractGroupIdFromHookCtx(event, ctx);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
