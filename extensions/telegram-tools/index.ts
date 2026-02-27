@@ -1180,7 +1180,9 @@ export default function register(api: any) {
   // ── Discipline hooks ────────────────────────────────────────
 
   api.on("message_received", async (event: any, ctx: any) => {
+    console.log(`[telegram-tools] message_received hook fired: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.to=${event.to} metadata.to=${event.metadata?.to}`);
     const groupId = extractGroupIdFromHookCtx(event, ctx);
+    console.log(`[telegram-tools] extracted groupId=${groupId}`);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
@@ -1217,7 +1219,9 @@ export default function register(api: any) {
   });
 
   api.on("message_sending", async (event: any, ctx: any) => {
+    console.log(`[telegram-tools] message_sending hook fired: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.to=${event.to}`);
     const groupId = extractGroupIdFromHookCtx(event, ctx);
+    console.log(`[telegram-tools] sending extracted groupId=${groupId}`);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
