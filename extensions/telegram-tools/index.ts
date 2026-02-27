@@ -945,8 +945,10 @@ function showHelp(): string {
 
 function extractGroupIdFromHookCtx(event: any, ctx: any): string | undefined {
   if (ctx.channelId !== "telegram") return undefined;
+  // conversationId / event.to format: "telegram:-1003645700926" (with prefix)
   const raw = String(ctx.conversationId ?? event.to ?? event.metadata?.to ?? "");
-  return /^-\d+$/.test(raw) ? raw : undefined;
+  const match = raw.match(/^(?:telegram:)?(-\d+)$/);
+  return match?.[1];
 }
 
 async function handleDiscipline(channelId: string, threshold: number): Promise<string> {
