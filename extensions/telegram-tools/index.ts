@@ -970,10 +970,20 @@ async function handleDiscipline(channelId: string, threshold: number): Promise<s
 function handleDisciplineShow(channelId?: string): string {
   const data = readDisciplineFile();
 
+  // Read last 10 lines of debug log
+  let debugTail = "";
+  try {
+    const raw = readFileSync("/tmp/discipline-debug.log", "utf8");
+    const lines = raw.trim().split("\n");
+    debugTail = "\n\nDebug log (last 10):\n" + lines.slice(-10).join("\n");
+  } catch {
+    debugTail = "\n\n(no debug log yet)";
+  }
+
   if (channelId) {
     const cfg = data.groups[channelId];
     if (!cfg) {
-      return `[WARN] Discipline 未設定 (group: ${channelId})`;
+      return `[WARN] Discipline 未設定 (group: ${channelId})` + debugTail;
     }
     const tracker = disciplineTracker.get(channelId);
     const count = tracker?.count ?? 0;
@@ -982,7 +992,7 @@ function handleDisciplineShow(channelId?: string): string {
       `  enabled: ${cfg.enabled}`,
       `  threshold: ${cfg.threshold}`,
       `  current count: ${count}/${cfg.threshold}`,
-    ].join("\n");
+    ].join("\n") + debugTail;
   }
 
   const entries = Object.entries(data.groups);
@@ -1179,10 +1189,15 @@ export default function register(api: any) {
 
   // ── Discipline hooks ────────────────────────────────────────
 
+  const debugLogPath = "/tmp/discipline-debug.log";
+  const debugLog = (msg: string) => {
+    try { writeFileSync(debugLogPath, `${new Date().toISOString()} ${msg}\n`, { flag: "a" }); } catch {}
+  };
+
   api.on("message_received", async (event: any, ctx: any) => {
-    console.log(`[telegram-tools] message_received hook fired: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.to=${event.to} metadata.to=${event.metadata?.to}`);
+    debugLog(`received: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.from=${event.from} metadata.to=${event.metadata?.to} senderId=${event.metadata?.senderId}`);
     const groupId = extractGroupIdFromHookCtx(event, ctx);
-    console.log(`[telegram-tools] extracted groupId=${groupId}`);
+    debugLog(`extracted groupId=${groupId}`);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
@@ -1219,9 +1234,9 @@ export default function register(api: any) {
   });
 
   api.on("message_sending", async (event: any, ctx: any) => {
-    console.log(`[telegram-tools] message_sending hook fired: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.to=${event.to}`);
+    debugLog(`sending: channelId=${ctx.channelId} conversationId=${ctx.conversationId} event.to=${event.to}`);
     const groupId = extractGroupIdFromHookCtx(event, ctx);
-    console.log(`[telegram-tools] sending extracted groupId=${groupId}`);
+    debugLog(`sending extracted groupId=${groupId}`);
     if (!groupId) return;
 
     const monitorConfig = readDisciplineFile();
