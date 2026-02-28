@@ -731,6 +731,10 @@ async function handleGroupSet(id: string, keyAndValue: string): Promise<string> 
       const pairedUsers = readAllowFromFile().allowFrom;
       const hasBotId = items.some((item: string) => !pairedUsers.includes(item));
       if (hasBotId) {
+        // Reset discipline state so threshold re-arms for new conversation
+        disciplineTracker.delete(id);
+        disciplineTriggered.delete(id);
+
         const groupCfg = config?.channels?.telegram?.groups?.[id] ?? {};
         if (!groupCfg.requireMention) {
           await configSet(`channels.telegram.groups.${id}.requireMention`, "true");
