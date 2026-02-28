@@ -356,6 +356,7 @@ interface DisciplineFile {
 }
 
 const disciplineTracker: Map<string, { count: number }> = new Map();
+const disciplineTriggered: Set<string> = new Set();
 
 function getDisciplineFilePath(): string {
   return `${getCredDir()}/telegram-discipline.json`;
@@ -1011,6 +1012,7 @@ async function handleDisciplineOff(channelId: string): Promise<string> {
   delete data.groups[channelId];
   writeDisciplineFile(data);
   disciplineTracker.delete(channelId);
+  disciplineTriggered.delete(channelId);
 
   return `[PASS] 已停用 discipline (group: ${channelId})`;
 }
@@ -1184,6 +1186,9 @@ export default function register(api: any) {
     const groupId = extractGroupIdFromHookCtx(event, ctx);
     if (!groupId) return;
 
+    // Already triggered for this group — skip everything
+    if (disciplineTriggered.has(groupId)) return;
+
     const monitorConfig = readDisciplineFile();
     const groupCfg = monitorConfig.groups?.[groupId];
     if (!groupCfg?.enabled) return;
@@ -1193,6 +1198,7 @@ export default function register(api: any) {
 
     if (pairedUsers.includes(senderId)) {
       disciplineTracker.delete(groupId);
+      disciplineTriggered.delete(groupId);
       return;
     }
 
@@ -1206,7 +1212,10 @@ export default function register(api: any) {
     const { threshold } = groupCfg;
 
     if (count >= threshold) {
-      // Threshold reached — restrict allowFrom to humans only + schedule restart
+      // Mark as triggered to prevent re-entry
+      disciplineTriggered.add(groupId);
+
+      // Restrict allowFrom to humans only
       const config = runtime.config.loadConfig();
       const currentAllowFrom: string[] =
         (config?.channels?.telegram?.groups?.[groupId]?.allowFrom ?? []).map(String);
@@ -1234,10 +1243,8 @@ export default function register(api: any) {
         } catch {}
       }
 
-      // Delay restart to let the current AI response finish
-      setTimeout(() => {
-        restartGateway();
-      }, 5000);
+      // Immediate restart
+      await restartGateway();
     } else if (token) {
       // Send discipline status as a separate message
       try {
