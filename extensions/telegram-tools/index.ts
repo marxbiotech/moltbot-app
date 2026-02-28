@@ -1002,12 +1002,15 @@ function handleDisciplineShow(channelId?: string): string {
     }
     const tracker = disciplineTracker.get(channelId);
     const count = tracker?.count ?? 0;
-    return [
+    const triggered = disciplineTriggered.has(channelId);
+    const lines = [
       `Discipline 設定 (group: ${channelId}):`,
       `  enabled: ${cfg.enabled}`,
       `  threshold: ${cfg.threshold}`,
       `  current count: ${count}/${cfg.threshold}`,
-    ].join("\n");
+    ];
+    if (triggered) lines.push(`  status: ⚠️ TRIGGERED`);
+    return lines.join("\n");
   }
 
   const entries = Object.entries(data.groups);
@@ -1205,8 +1208,9 @@ export default function register(api: any) {
 
   // ── Discipline hooks ────────────────────────────────────────
   // Telegram streaming bypasses deliver.ts, so message_sending/message_sent
-  // hooks never fire. We use message_received (which does fire) and send
-  // discipline status as a separate Telegram message via the Bot API.
+  // hooks never fire. We use message_received (which does fire) to track
+  // consecutive bot messages. No messages are sent to the channel to avoid
+  // polluting group history / AI context. On trigger, owner is notified via DM.
 
   api.on("message_received", async (event: any, ctx: any) => {
     const groupId = extractGroupIdFromHookCtx(event, ctx);
@@ -1227,11 +1231,6 @@ export default function register(api: any) {
       disciplineTriggered.delete(groupId);
       return;
     }
-
-    // Skip discipline status messages (meta-messages from our own plugin).
-    // Status: "📊 discipline: N/M", Trigger: "⚠️ discipline: N/M — ..."
-    const msgText = String(event.content ?? "").trim();
-    if (/^(\u{1F4CA}|\u26A0\uFE0F?)\s*discipline:\s*\d+\/\d+/u.test(msgText)) return;
 
     // Bot message → increment
     const tracker = disciplineTracker.get(groupId) ?? { count: 0 };
@@ -1258,32 +1257,26 @@ export default function register(api: any) {
         JSON.stringify(humanOnly),
       );
 
-      // Send trigger notice via Telegram
+      // DM trigger notice to owner (paired users)
       if (token) {
         const restoreCmds = removedBotIds
           .map((id: string) => `/telegram group set ${groupId} +allowFrom ${id}`)
           .join("\n");
         const notice = [
-          `⚠️ discipline: ${threshold}/${threshold} — 自律觸發，停止回應`,
+          `⚠️ discipline: ${threshold}/${threshold} — 自律觸發，停止回應 (group: ${groupId})`,
           "",
           "恢復指令：",
           restoreCmds,
         ].join("\n");
-        try {
-          await telegramApi(token, "sendMessage", { chat_id: groupId, text: notice });
-        } catch {}
+        for (const userId of pairedUsers) {
+          try {
+            await telegramApi(token, "sendMessage", { chat_id: userId, text: notice });
+          } catch {}
+        }
       }
 
       // Immediate restart
       await restartGateway();
-    } else if (token) {
-      // Send discipline status as a separate message
-      try {
-        await telegramApi(token, "sendMessage", {
-          chat_id: groupId,
-          text: `📊 discipline: ${count}/${threshold}`,
-        });
-      } catch {}
     }
   });
 }
