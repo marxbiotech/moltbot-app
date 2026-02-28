@@ -850,7 +850,9 @@ echo "Exec approvals: written $APPROVALS_FILE (security=full, autoAllowSkills=tr
 openclaw config set tools.profile full 2>/dev/null || true
 openclaw config set tools.exec.security full 2>/dev/null || true
 openclaw config set tools.exec.ask off 2>/dev/null || true
-echo "CLI config set: tools.profile=full, exec.security=full, exec.ask=off"
+openclaw config set channels.telegram.streaming off 2>/dev/null || true
+openclaw config set channels.telegram.replyToMode all 2>/dev/null || true
+echo "CLI config set: tools.profile=full, exec.security=full, exec.ask=off, telegram.streaming=off, telegram.replyToMode=all"
 
 # ============================================================
 # BEDROCK MODEL DISCOVERY + MANUAL PROVIDER SETUP
