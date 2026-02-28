@@ -1228,6 +1228,11 @@ export default function register(api: any) {
       return;
     }
 
+    // Skip discipline status messages (meta-messages from our own plugin).
+    // Status: "📊 discipline: N/M", Trigger: "⚠️ discipline: N/M — ..."
+    const msgText = String(event.content ?? "").trim();
+    if (/^(\u{1F4CA}|\u26A0\uFE0F?)\s*discipline:\s*\d+\/\d+/u.test(msgText)) return;
+
     // Bot message → increment
     const tracker = disciplineTracker.get(groupId) ?? { count: 0 };
     tracker.count++;
