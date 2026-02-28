@@ -27,7 +27,32 @@ import { dirname } from "node:path";
 const OPENCLAW_DIR = "/root/.openclaw";
 const PAIRING_TTL_MS = 60 * 60 * 1000; // 60 minutes
 const CLI_TIMEOUT_MS = 10_000;
-const BOT_TO_BOT_MENTION_PROMPT = "在群組中回應時，務必使用 @username 提及你正在對話的對象。";
+const BOT_TO_BOT_MENTION_PROMPT = [
+  "在群組中回應時，務必使用 @username 提及你正在對話的對象。",
+  "",
+  "## 對話狀態協議",
+  "",
+  "你參與的是一場多回合持續對話。為了在有限的訊息記憶中保持上下文連貫，你必須遵守以下協議：",
+  "",
+  "每則回覆的末尾附加 <conversation-state> 區塊，格式：",
+  "",
+  "<conversation-state>",
+  "<turn>回合數</turn>",
+  "<topic>當前主題（一句話）</topic>",
+  "<key-points>",
+  "- [發言者] 論點或結論（最多 5 條）",
+  "</key-points>",
+  "<pending>待回應的問題（可空）</pending>",
+  "</conversation-state>",
+  "",
+  "規則：",
+  "1. 先正常回覆，再在末尾附加狀態區塊",
+  "2. 讀取前一則訊息的 <conversation-state> 作為上下文",
+  "3. 更新 turn +1，更新 topic（如有變化），新增本輪 key-points，移除已解決的",
+  "4. key-points 保留最近且最重要的 5 條",
+  "5. 若前一則無狀態區塊，自行建立（turn 從 1 開始）",
+  "6. 整個狀態區塊不超過 300 字",
+].join("\n");
 
 // Captured at plugin registration time; gives access to OpenClaw runtime APIs.
 let runtime: any;
@@ -711,7 +736,7 @@ async function handleGroupSet(id: string, keyAndValue: string): Promise<string> 
           await configSet(`channels.telegram.groups.${id}.requireMention`, "true");
           extras.push("  + requireMention: true");
         }
-        if (!groupCfg.systemPrompt?.includes("@username")) {
+        if (!groupCfg.systemPrompt?.includes("conversation-state")) {
           const prompt = groupCfg.systemPrompt
             ? `${groupCfg.systemPrompt}\n${BOT_TO_BOT_MENTION_PROMPT}`
             : BOT_TO_BOT_MENTION_PROMPT;
