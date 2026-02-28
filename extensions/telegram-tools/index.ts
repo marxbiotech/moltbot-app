@@ -27,6 +27,7 @@ import { dirname } from "node:path";
 const OPENCLAW_DIR = "/root/.openclaw";
 const PAIRING_TTL_MS = 60 * 60 * 1000; // 60 minutes
 const CLI_TIMEOUT_MS = 10_000;
+const BOT_TO_BOT_MENTION_PROMPT = "在群組中回應時，務必使用 @username 提及你正在對話的對象。";
 
 // Captured at plugin registration time; gives access to OpenClaw runtime APIs.
 let runtime: any;
@@ -516,8 +517,9 @@ async function handleGroupAdd(id: string, flags: string): Promise<string> {
     const prefix = `channels.telegram.groups.${id}`;
     const sets: Array<[string, string]> = [
       [`${prefix}.enabled`, "true"],
-      [`${prefix}.requireMention`, "false"],
+      [`${prefix}.requireMention`, "true"],
       [`${prefix}.groupPolicy`, allIds.length > 0 ? "allowlist" : "open"],
+      [`${prefix}.systemPrompt`, BOT_TO_BOT_MENTION_PROMPT],
     ];
     if (allIds.length > 0) {
       sets.push([`${prefix}.allowFrom`, JSON.stringify(allIds)]);
@@ -535,7 +537,8 @@ async function handleGroupAdd(id: string, flags: string): Promise<string> {
     const lines = [
       `[PASS] Group ${id} added with bot-to-bot defaults:`,
       "  enabled: true",
-      "  requireMention: false",
+      "  requireMention: true",
+      `  systemPrompt: "${BOT_TO_BOT_MENTION_PROMPT}"`,
     ];
     if (allIds.length > 0) {
       lines.push(`  groupPolicy: allowlist`);
@@ -696,7 +699,30 @@ async function handleGroupSet(id: string, keyAndValue: string): Promise<string> 
     const result = await configSet(`channels.telegram.groups.${id}.${key}`, jsonArray);
     if (!result.ok) return `[FAIL] ${result.error}`;
     const op = addMode ? "Added" : "Removed";
-    return `[PASS] ${op} ${items.join(", ")} → ${key} = ${jsonArray}\n\nRestart gateway to apply.`;
+
+    // Auto-enable requireMention + systemPrompt when adding a bot to allowFrom
+    const extras: string[] = [];
+    if (addMode && key === "allowFrom") {
+      const pairedUsers = readAllowFromFile().allowFrom;
+      const hasBotId = items.some((item: string) => !pairedUsers.includes(item));
+      if (hasBotId) {
+        const groupCfg = config?.channels?.telegram?.groups?.[id] ?? {};
+        if (!groupCfg.requireMention) {
+          await configSet(`channels.telegram.groups.${id}.requireMention`, "true");
+          extras.push("  + requireMention: true");
+        }
+        if (!groupCfg.systemPrompt?.includes("@username")) {
+          const prompt = groupCfg.systemPrompt
+            ? `${groupCfg.systemPrompt}\n${BOT_TO_BOT_MENTION_PROMPT}`
+            : BOT_TO_BOT_MENTION_PROMPT;
+          await configSet(`channels.telegram.groups.${id}.systemPrompt`, prompt);
+          extras.push(`  + systemPrompt: "${BOT_TO_BOT_MENTION_PROMPT}"`);
+        }
+      }
+    }
+
+    const extraInfo = extras.length > 0 ? `\n\nAuto-configured for bot-to-bot:\n${extras.join("\n")}` : "";
+    return `[PASS] ${op} ${items.join(", ")} → ${key} = ${jsonArray}${extraInfo}\n\nRestart gateway to apply.`;
   }
 
   // Detect JSON array/object values — pass through to configSet (JSON5-aware)
