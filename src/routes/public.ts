@@ -225,10 +225,14 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   } else {
     // Cold path: enqueue for reliable delivery + notify owner
     console.log('[TELEGRAM] Container cold, enqueuing message');
+    console.log('[TELEGRAM] TELEGRAM_QUEUE binding exists:', !!c.env.TELEGRAM_QUEUE);
 
     if (c.env.TELEGRAM_QUEUE) {
+      console.log('[TELEGRAM] Sending to queue...');
       c.executionCtx.waitUntil(
-        c.env.TELEGRAM_QUEUE.send({ body: bodyString, headers: queueHeaders }).catch((err) => {
+        c.env.TELEGRAM_QUEUE.send({ body: bodyString, headers: queueHeaders }).then(() => {
+          console.log('[TELEGRAM] Message enqueued successfully');
+        }).catch((err) => {
           console.error('[TELEGRAM] Queue send failed:', err);
         })
       );

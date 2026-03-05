@@ -466,14 +466,18 @@ export default {
   fetch: app.fetch,
 
   async queue(batch: MessageBatch<TelegramQueueMessage>, env: MoltbotEnv) {
+    console.log(`[QUEUE] Consumer triggered, batch size: ${batch.messages.length}`);
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
     // Start gateway once for the whole batch
+    console.log('[QUEUE] Waiting for gateway...');
     await ensureMoltbotGateway(sandbox, env);
+    console.log('[QUEUE] Gateway ready, delivering messages...');
 
     for (const msg of batch.messages) {
       try {
+        console.log(`[QUEUE] Delivering message to port ${TELEGRAM_WEBHOOK_PORT}...`);
         const res = await sandbox.containerFetch(
           new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
             method: 'POST',
