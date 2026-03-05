@@ -476,7 +476,7 @@ export default {
       console.log('[QUEUE] Ensuring gateway...');
       await Promise.race([
         ensureMoltbotGateway(sandbox, env),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15_000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 120_000)),
       ]);
       console.log('[QUEUE] Gateway ready');
     } catch (err) {
