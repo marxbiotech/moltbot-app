@@ -178,9 +178,15 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   }
 
   const sandbox = c.get('sandbox');
-  const forwardHeaders: Record<string, string> = {
+
+  // Headers for queue messages (serializable subset)
+  const queueHeaders: Record<string, string> = {
     'content-type': c.req.header('content-type') || 'application/json',
   };
+  const webhookSecret = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+  if (webhookSecret) {
+    queueHeaders['X-Telegram-Bot-Api-Secret-Token'] = webhookSecret;
+  }
 
   // Check if gateway is already running
   const existingProcess = await findExistingMoltbotProcess(sandbox);
@@ -195,7 +201,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
         sandbox.containerFetch(
           new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
             method: 'POST',
-            headers: forwardHeaders,
+            headers: c.req.raw.headers,
             body: bodyString,
           }),
           TELEGRAM_WEBHOOK_PORT,
@@ -222,7 +228,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
 
     if (c.env.TELEGRAM_QUEUE) {
       c.executionCtx.waitUntil(
-        c.env.TELEGRAM_QUEUE.send({ body: bodyString, headers: forwardHeaders }).catch((err) => {
+        c.env.TELEGRAM_QUEUE.send({ body: bodyString, headers: queueHeaders }).catch((err) => {
           console.error('[TELEGRAM] Queue send failed:', err);
         })
       );
@@ -234,7 +240,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
           sandbox.containerFetch(
             new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
               method: 'POST',
-              headers: forwardHeaders,
+              headers: c.req.raw.headers,
               body: bodyString,
             }),
             TELEGRAM_WEBHOOK_PORT,
