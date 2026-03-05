@@ -1,6 +1,14 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 
 /**
+ * Queue message for Telegram webhook payloads (used during cold start)
+ */
+export interface TelegramQueueMessage {
+  body: string;
+  headers: Record<string, string>;
+}
+
+/**
  * Environment bindings for the Moltbot Worker
  */
 export interface MoltbotEnv {
@@ -29,6 +37,8 @@ export interface MoltbotEnv {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_DM_POLICY?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;  // Secret for validating Telegram webhook requests
+  TELEGRAM_LIFECYCLE_CHAT_ID?: string; // Bot owner chat ID for lifecycle notifications
+  TELEGRAM_QUEUE?: Queue<TelegramQueueMessage>; // Queue for webhook messages during cold start
   DISCORD_BOT_TOKEN?: string;
   DISCORD_DM_POLICY?: string;
   SLACK_BOT_TOKEN?: string;

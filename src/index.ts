@@ -21,10 +21,11 @@
  */
 
 import { Hono } from 'hono';
-import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
+import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
-import type { AppEnv, MoltbotEnv } from './types';
-import { MOLTBOT_PORT } from './config';
+import type { AppEnv, MoltbotEnv, TelegramQueueMessage } from './types';
+import { MoltbotSandbox } from './sandbox';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from './config';
 import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
@@ -63,7 +64,7 @@ function transformErrorMessage(message: string, host: string): string {
   return message;
 }
 
-export { Sandbox };
+export { MoltbotSandbox as Sandbox };
 
 /**
  * Validate required environment variables.
@@ -463,4 +464,30 @@ app.all('*', async (c) => {
 
 export default {
   fetch: app.fetch,
+
+  async queue(batch: MessageBatch<TelegramQueueMessage>, env: MoltbotEnv) {
+    const options = buildSandboxOptions(env);
+    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
+
+    // Start gateway once for the whole batch
+    await ensureMoltbotGateway(sandbox, env);
+
+    for (const msg of batch.messages) {
+      try {
+        const res = await sandbox.containerFetch(
+          new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+            method: 'POST',
+            headers: msg.body.headers,
+            body: msg.body.body,
+          }),
+          TELEGRAM_WEBHOOK_PORT,
+        );
+        console.log(`[QUEUE] Delivered message, status: ${res.status}`);
+        msg.ack();
+      } catch (err) {
+        console.error('[QUEUE] Delivery failed:', err);
+        msg.retry();
+      }
+    }
+  },
 };
