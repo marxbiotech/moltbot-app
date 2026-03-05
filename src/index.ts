@@ -470,11 +470,25 @@ export default {
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    // Start gateway once for the whole batch
-    console.log('[QUEUE] Waiting for gateway...');
-    await ensureMoltbotGateway(sandbox, env);
-    console.log('[QUEUE] Gateway ready, delivering messages...');
+    // Check if gateway is ready (don't wait for full startup — consumer has limited time)
+    const existingProcess = await findExistingMoltbotProcess(sandbox);
+    if (!existingProcess) {
+      console.log('[QUEUE] No gateway process found, retrying all messages');
+      for (const msg of batch.messages) msg.retry();
+      return;
+    }
 
+    // Quick port check with short timeout
+    try {
+      console.log('[QUEUE] Checking if gateway port is ready...');
+      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 10_000 });
+    } catch {
+      console.log('[QUEUE] Gateway not ready yet, retrying all messages');
+      for (const msg of batch.messages) msg.retry();
+      return;
+    }
+
+    console.log('[QUEUE] Gateway ready, delivering messages...');
     for (const msg of batch.messages) {
       try {
         console.log(`[QUEUE] Delivering message to port ${TELEGRAM_WEBHOOK_PORT}...`);
