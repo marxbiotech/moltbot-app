@@ -204,7 +204,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   if (c.env.TELEGRAM_QUEUE) {
     // All messages go through queue for guaranteed delivery and FIFO ordering.
     // Delay based on state to avoid wasting retries during cold start.
-    const delaySeconds = isCold ? 180 : 0;
+    const delaySeconds = isCold ? 180 : isHot ? 0 : 120;
     console.log(`[TELEGRAM] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
     c.executionCtx.waitUntil(
       c.env.TELEGRAM_QUEUE.send(
