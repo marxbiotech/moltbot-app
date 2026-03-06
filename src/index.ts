@@ -21,10 +21,11 @@
  */
 
 import { Hono } from 'hono';
-import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
+import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
-import type { AppEnv, MoltbotEnv } from './types';
-import { MOLTBOT_PORT } from './config';
+import type { AppEnv, MoltbotEnv, TelegramQueueMessage } from './types';
+import { MoltbotSandbox } from './sandbox';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from './config';
 import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
@@ -63,7 +64,7 @@ function transformErrorMessage(message: string, host: string): string {
   return message;
 }
 
-export { Sandbox };
+export { MoltbotSandbox as Sandbox };
 
 /**
  * Validate required environment variables.
@@ -463,4 +464,71 @@ app.all('*', async (c) => {
 
 export default {
   fetch: app.fetch,
+
+  async queue(batch: MessageBatch<TelegramQueueMessage>, env: MoltbotEnv) {
+    console.log(`[QUEUE] Consumer triggered, batch size: ${batch.messages.length}`);
+    const options = buildSandboxOptions(env);
+    const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
+
+    // Quick readiness check — rather than blocking a consumer invocation for the
+    // full 60-90s cold start, we check port readiness with a short timeout and
+    // retry via the queue if not ready. This keeps consumer invocations fast and
+    // avoids exhausting the queue's max_retries during a single cold start.
+    // The webhook handler's waitUntil already kicked off ensureMoltbotGateway.
+    let process;
+    try {
+      process = await findExistingMoltbotProcess(sandbox);
+    } catch (err) {
+      console.error('[QUEUE] findExistingMoltbotProcess failed:', err);
+      for (const msg of batch.messages) msg.retry();
+      return;
+    }
+    if (!process) {
+      // No process at all — kick off startup and retry
+      console.log('[QUEUE] No process found, starting gateway and retrying...');
+      try {
+        await ensureMoltbotGateway(sandbox, env);
+      } catch (err) {
+        console.error('[QUEUE] Gateway startup failed:', err);
+      }
+      for (const msg of batch.messages) msg.retry();
+      return;
+    }
+
+    // Process exists — check if both ports are ready with a short timeout
+    try {
+      console.log(`[QUEUE] Process ${process.id} (${process.status}), checking ports ${MOLTBOT_PORT} and ${TELEGRAM_WEBHOOK_PORT}...`);
+      await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 10_000 });
+      await process.waitForPort(TELEGRAM_WEBHOOK_PORT, { mode: 'tcp', timeout: 5_000 });
+      console.log('[QUEUE] Gateway ready');
+    } catch {
+      console.log('[QUEUE] Port not ready yet, retrying...');
+      for (const msg of batch.messages) msg.retry();
+      return;
+    }
+
+    for (const msg of batch.messages) {
+      try {
+        console.log(`[QUEUE] Delivering message to port ${TELEGRAM_WEBHOOK_PORT}...`);
+        const res = await sandbox.containerFetch(
+          new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+            method: 'POST',
+            headers: msg.body.headers,
+            body: msg.body.body,
+          }),
+          TELEGRAM_WEBHOOK_PORT,
+        );
+        if (res.ok) {
+          console.log(`[QUEUE] Delivered message, status: ${res.status}`);
+          msg.ack();
+        } else {
+          console.error(`[QUEUE] Delivery returned error status ${res.status}, retrying...`);
+          msg.retry();
+        }
+      } catch (err) {
+        console.error('[QUEUE] Delivery failed:', err);
+        msg.retry();
+      }
+    }
+  },
 };

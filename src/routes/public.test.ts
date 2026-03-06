@@ -7,10 +7,10 @@ import { publicRoutes } from './public';
 // Mock the gateway module
 vi.mock('../gateway/process', () => ({
   ensureMoltbotGateway: vi.fn().mockResolvedValue(undefined),
-  findExistingMoltbotProcess: vi.fn(),
+  findExistingMoltbotProcess: vi.fn().mockResolvedValue(null),
 }));
 
-import { ensureMoltbotGateway } from '../gateway/process';
+import { ensureMoltbotGateway, findExistingMoltbotProcess } from '../gateway/process';
 
 function createApp(env: ReturnType<typeof createMockEnv>, sandbox: ReturnType<typeof createMockSandbox>) {
   const app = new Hono<AppEnv>();
@@ -77,6 +77,7 @@ describe('POST /telegram/webhook', () => {
   });
 
   it('returns 200 immediately and proxies in background via waitUntil', async () => {
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running', waitForPort: vi.fn().mockResolvedValue(undefined) } as any);
     const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
     const mock = createMockSandbox();
     mock.containerFetchMock.mockResolvedValue(new Response('{"ok":true}', {
@@ -105,6 +106,7 @@ describe('POST /telegram/webhook', () => {
   });
 
   it('sends ⏳ ack reaction for channel_post', async () => {
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running', waitForPort: vi.fn().mockResolvedValue(undefined) } as any);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}'));
     const env = createMockEnv({
       TELEGRAM_WEBHOOK_SECRET: 'my-secret',
@@ -142,6 +144,7 @@ describe('POST /telegram/webhook', () => {
   });
 
   it('returns 200 even when container proxy fails (error is logged)', async () => {
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running', waitForPort: vi.fn().mockResolvedValue(undefined) } as any);
     const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
     const mock = createMockSandbox();
     mock.containerFetchMock.mockRejectedValue(new Error('container unavailable'));
@@ -159,7 +162,8 @@ describe('POST /telegram/webhook', () => {
     await flushWaitUntil();
   });
 
-  it('returns 200 even when ensureMoltbotGateway throws (error is logged)', async () => {
+  it('returns 200 even when ensureMoltbotGateway throws on cold start (error is logged)', async () => {
+    // Cold path: findExistingMoltbotProcess returns null (default mock)
     const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
     const mock = createMockSandbox();
     vi.mocked(ensureMoltbotGateway).mockRejectedValue(new Error('gateway startup failed'));

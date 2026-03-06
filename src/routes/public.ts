@@ -68,7 +68,7 @@ publicRoutes.get('/_admin/assets/*', async (c) => {
   return c.env.ASSETS.fetch(new Request(assetUrl.toString(), c.req.raw));
 });
 
-/** Send a ⚡️ reaction to acknowledge receipt before cold start / LLM processing. */
+/** Send a ⚡️ reaction to acknowledge receipt before processing. */
 function sendAckReaction(botToken: string, chatId: number, messageId: number): Promise<void> {
   return fetch(`https://api.telegram.org/bot${botToken}/setMessageReaction`, {
     method: 'POST',
@@ -157,7 +157,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   }
 
   // Buffer the body before returning — the request stream closes once we respond
-  const body = await c.req.arrayBuffer();
+  const bodyString = await c.req.text();
 
   // Parse update for ack reaction and group allowlist hint
   const botToken = c.env.TELEGRAM_BOT_TOKEN;
@@ -165,7 +165,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   let chatType: string | undefined;
   if (botToken) {
     try {
-      const update = JSON.parse(new TextDecoder().decode(body));
+      const update = JSON.parse(bodyString);
       const msg = update.message || update.channel_post;
       if (msg?.chat?.id && msg?.message_id) {
         chatId = msg.chat.id;
@@ -177,33 +177,95 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     }
   }
 
-  // Fire-and-forget: start gateway + proxy in background so Telegram gets 200 immediately.
-  // ensureMoltbotGateway can take 60-120s on cold start, exceeding Telegram's 60s timeout.
   const sandbox = c.get('sandbox');
-  const gatewayReady = ensureMoltbotGateway(sandbox, c.env);
 
-  c.executionCtx.waitUntil(
-    gatewayReady.then(() =>
-      sandbox.containerFetch(
-        new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+  // Headers for queue messages (serializable subset)
+  const queueHeaders: Record<string, string> = {
+    'content-type': c.req.header('content-type') || 'application/json',
+  };
+  const webhookSecret = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+  if (webhookSecret) {
+    queueHeaders['X-Telegram-Bot-Api-Secret-Token'] = webhookSecret;
+  }
+
+  // Determine container state: cold / warming / hot
+  let existingProcess = null;
+  try {
+    existingProcess = await findExistingMoltbotProcess(sandbox);
+  } catch (err) {
+    console.error('[TELEGRAM] Failed to check process state, treating as cold:', err);
+  }
+  let isHot = false;
+  if (existingProcess?.status === 'running') {
+    try {
+      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 2_000 });
+      isHot = true;
+    } catch {
+      // Process exists but port not ready — still booting
+    }
+  }
+  const isCold = !existingProcess;
+
+  if (c.env.TELEGRAM_QUEUE) {
+    // All messages go through queue for at-least-once delivery.
+    // Delay based on state to avoid wasting retries during cold start.
+    const delaySeconds = isHot ? 0 : 180;
+    console.log(`[TELEGRAM] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
+    c.executionCtx.waitUntil(
+      c.env.TELEGRAM_QUEUE.send(
+        { body: bodyString, headers: queueHeaders },
+        { delaySeconds },
+      ).catch((err) => {
+        console.error('[TELEGRAM] Queue send failed:', err);
+      })
+    );
+  } else {
+    // Fallback: no queue configured, use fire-and-forget (old behavior)
+    console.warn('[TELEGRAM] TELEGRAM_QUEUE not configured, falling back to fire-and-forget');
+    c.executionCtx.waitUntil(
+      ensureMoltbotGateway(sandbox, c.env).then(() =>
+        sandbox.containerFetch(
+          new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+            method: 'POST',
+            headers: c.req.raw.headers,
+            body: bodyString,
+          }),
+          TELEGRAM_WEBHOOK_PORT,
+        )
+      ).catch((err) => {
+        console.error('[TELEGRAM] Webhook proxy failed:', err);
+      })
+    );
+  }
+
+  // Cold or warming: notify owner + trigger container startup
+  if (!isHot) {
+    const lifecycleChatId = c.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+    if (botToken && lifecycleChatId) {
+      const text = isCold ? '\u{23F3} 開機中\u{2026}' : '\u{23F3} 開機中\u{2026}\u{2026}';
+      c.executionCtx.waitUntil(
+        fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
           method: 'POST',
-          headers: c.req.raw.headers,
-          body,
-        }),
-        TELEGRAM_WEBHOOK_PORT,
-      )
-    ).catch((err) => {
-      console.error('[TELEGRAM] Webhook proxy failed:', err);
-    })
-  );
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: lifecycleChatId, text }),
+        }).catch((err) => {
+          console.error('[TELEGRAM] Lifecycle notification failed:', err);
+        })
+      );
+    }
 
-  // Fire-and-forget: hint unconfigured groups with their chat ID
-  if (botToken && chatId && chatType && chatType !== 'private') {
+    c.executionCtx.waitUntil(
+      ensureMoltbotGateway(sandbox, c.env).catch((err) => {
+        console.error('[TELEGRAM] Gateway startup failed:', err);
+      })
+    );
+  }
+
+  // Group allowlist hint (only when gateway is reachable)
+  if (isHot && botToken && chatId && chatType && chatType !== 'private') {
     const hintChatId = chatId;
     c.executionCtx.waitUntil(
-      gatewayReady.then(() =>
-        sendGroupAllowlistHint(sandbox, botToken, hintChatId)
-      ).catch((err) => {
+      sendGroupAllowlistHint(sandbox, botToken, hintChatId).catch((err) => {
         console.error('[TELEGRAM] Allowlist hint failed:', err);
       })
     );
