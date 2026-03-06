@@ -230,7 +230,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     if (c.env.TELEGRAM_QUEUE) {
       console.log('[TELEGRAM] Sending to queue...');
       c.executionCtx.waitUntil(
-        c.env.TELEGRAM_QUEUE.send({ body: bodyString, headers: queueHeaders }).then(() => {
+        c.env.TELEGRAM_QUEUE.send({ body: bodyString, headers: queueHeaders }, { delaySeconds: 180 }).then(() => {
           console.log('[TELEGRAM] Message enqueued successfully');
         }).catch((err) => {
           console.error('[TELEGRAM] Queue send failed:', err);
