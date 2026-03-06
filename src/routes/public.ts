@@ -204,7 +204,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   if (c.env.TELEGRAM_QUEUE) {
     // All messages go through queue for guaranteed delivery and FIFO ordering.
     // Delay based on state to avoid wasting retries during cold start.
-    const delaySeconds = isCold ? 180 : isHot ? 0 : 120;
+    const delaySeconds = isHot ? 0 : 180;
     console.log(`[TELEGRAM] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
     c.executionCtx.waitUntil(
       c.env.TELEGRAM_QUEUE.send(
@@ -242,6 +242,27 @@ publicRoutes.post('/telegram/webhook', async (c) => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: lifecycleChatId, text: '\u{23F3} 開機中\u{2026}' }),
+        }).catch((err) => {
+          console.error('[TELEGRAM] Lifecycle notification failed:', err);
+        })
+      );
+    }
+
+    c.executionCtx.waitUntil(
+      ensureMoltbotGateway(sandbox, c.env).catch(() => {})
+    );
+  }
+
+  // Warming: process exists but gateway not ready — notify + ensure startup
+  const isWarming = !isCold && !isHot;
+  if (isWarming) {
+    const lifecycleChatId = c.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+    if (botToken && lifecycleChatId) {
+      c.executionCtx.waitUntil(
+        fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: lifecycleChatId, text: '\u{23F3} 開機中\u{2026}\u{2026}' }),
         }).catch((err) => {
           console.error('[TELEGRAM] Lifecycle notification failed:', err);
         })
