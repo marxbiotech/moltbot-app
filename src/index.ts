@@ -470,19 +470,26 @@ export default {
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
-    // Try to ensure gateway is ready — this also starts the process if not running.
-    // Use a short timeout race so we don't block beyond the consumer's execution limit.
+    // Quick readiness check — the stateless consumer has a ~60s platform limit,
+    // but gateway cold start can take 60-90s. Instead of blocking the full startup,
+    // we check port readiness with a short timeout and retry via the queue if not ready.
+    // The webhook handler's waitUntil already kicked off ensureMoltbotGateway.
+    const process = await findExistingMoltbotProcess(sandbox);
+    if (!process) {
+      // No process at all — kick off startup and retry
+      console.log('[QUEUE] No process found, starting gateway and retrying...');
+      ensureMoltbotGateway(sandbox, env).catch(() => {});
+      for (const msg of batch.messages) msg.retry();
+      return;
+    }
+
+    // Process exists — check if port is ready with a short timeout
     try {
-      console.log('[QUEUE] Ensuring gateway...');
-      await Promise.race([
-        ensureMoltbotGateway(sandbox, env),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 120_000)),
-      ]);
+      console.log(`[QUEUE] Process ${process.id} (${process.status}), checking port ${MOLTBOT_PORT}...`);
+      await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 10_000 });
       console.log('[QUEUE] Gateway ready');
-    } catch (err) {
-      // Gateway not ready yet — retry all messages. ensureMoltbotGateway already
-      // kicked off startProcess, so the gateway should be ready on the next retry.
-      console.log(`[QUEUE] Gateway not ready (${err instanceof Error ? err.message : err}), retrying all messages`);
+    } catch {
+      console.log('[QUEUE] Port not ready yet, retrying...');
       for (const msg of batch.messages) msg.retry();
       return;
     }
