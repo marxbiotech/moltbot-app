@@ -77,7 +77,7 @@ describe('POST /telegram/webhook', () => {
   });
 
   it('returns 200 immediately and proxies in background via waitUntil', async () => {
-    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running' } as any);
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running', waitForPort: vi.fn().mockResolvedValue(undefined) } as any);
     const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
     const mock = createMockSandbox();
     mock.containerFetchMock.mockResolvedValue(new Response('{"ok":true}', {
@@ -106,7 +106,7 @@ describe('POST /telegram/webhook', () => {
   });
 
   it('sends ⏳ ack reaction for channel_post', async () => {
-    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running' } as any);
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running', waitForPort: vi.fn().mockResolvedValue(undefined) } as any);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}'));
     const env = createMockEnv({
       TELEGRAM_WEBHOOK_SECRET: 'my-secret',
@@ -144,7 +144,7 @@ describe('POST /telegram/webhook', () => {
   });
 
   it('returns 200 even when container proxy fails (error is logged)', async () => {
-    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running' } as any);
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue({ status: 'running', waitForPort: vi.fn().mockResolvedValue(undefined) } as any);
     const env = createMockEnv({ TELEGRAM_WEBHOOK_SECRET: 'my-secret' });
     const mock = createMockSandbox();
     mock.containerFetchMock.mockRejectedValue(new Error('container unavailable'));

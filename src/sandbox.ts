@@ -11,6 +11,9 @@ import type { MoltbotEnv } from './types';
 export class MoltbotSandbox extends Sandbox<MoltbotEnv> {
   override onStart() {
     super.onStart();
+    // Design Decision: notifyOwner is intentionally fire-and-forget here because
+    // notifyOwner has its own internal try-catch, so no unhandled rejection is possible.
+    // onStart is a sync override from Sandbox base class, so we cannot await here.
     this.notifyOwner('\u{1F7E2} Container 已啟動');
   }
 

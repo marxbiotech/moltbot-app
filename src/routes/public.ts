@@ -189,7 +189,12 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   }
 
   // Determine container state: cold / warming / hot
-  const existingProcess = await findExistingMoltbotProcess(sandbox);
+  let existingProcess = null;
+  try {
+    existingProcess = await findExistingMoltbotProcess(sandbox);
+  } catch (err) {
+    console.error('[TELEGRAM] Failed to check process state, treating as cold:', err);
+  }
   let isHot = false;
   if (existingProcess?.status === 'running') {
     try {
@@ -202,7 +207,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   const isCold = !existingProcess;
 
   if (c.env.TELEGRAM_QUEUE) {
-    // All messages go through queue for guaranteed delivery and FIFO ordering.
+    // All messages go through queue for guaranteed at-least-once delivery.
     // Delay based on state to avoid wasting retries during cold start.
     const delaySeconds = isHot ? 0 : 180;
     console.log(`[TELEGRAM] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
@@ -233,15 +238,16 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     );
   }
 
-  // Cold start: notify owner + trigger container startup
-  if (isCold) {
+  // Cold or warming: notify owner + trigger container startup
+  if (!isHot) {
     const lifecycleChatId = c.env.TELEGRAM_LIFECYCLE_CHAT_ID;
     if (botToken && lifecycleChatId) {
+      const text = isCold ? '\u{23F3} 開機中\u{2026}' : '\u{23F3} 開機中\u{2026}\u{2026}';
       c.executionCtx.waitUntil(
         fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: lifecycleChatId, text: '\u{23F3} 開機中\u{2026}' }),
+          body: JSON.stringify({ chat_id: lifecycleChatId, text }),
         }).catch((err) => {
           console.error('[TELEGRAM] Lifecycle notification failed:', err);
         })
@@ -249,28 +255,9 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     }
 
     c.executionCtx.waitUntil(
-      ensureMoltbotGateway(sandbox, c.env).catch(() => {})
-    );
-  }
-
-  // Warming: process exists but gateway not ready — notify + ensure startup
-  const isWarming = !isCold && !isHot;
-  if (isWarming) {
-    const lifecycleChatId = c.env.TELEGRAM_LIFECYCLE_CHAT_ID;
-    if (botToken && lifecycleChatId) {
-      c.executionCtx.waitUntil(
-        fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: lifecycleChatId, text: '\u{23F3} 開機中\u{2026}\u{2026}' }),
-        }).catch((err) => {
-          console.error('[TELEGRAM] Lifecycle notification failed:', err);
-        })
-      );
-    }
-
-    c.executionCtx.waitUntil(
-      ensureMoltbotGateway(sandbox, c.env).catch(() => {})
+      ensureMoltbotGateway(sandbox, c.env).catch((err) => {
+        console.error('[TELEGRAM] Gateway startup failed:', err);
+      })
     );
   }
 
