@@ -68,7 +68,7 @@ publicRoutes.get('/_admin/assets/*', async (c) => {
   return c.env.ASSETS.fetch(new Request(assetUrl.toString(), c.req.raw));
 });
 
-/** Send a ⚡️ reaction to acknowledge receipt before cold start / LLM processing. */
+/** Send a ⚡️ reaction to acknowledge receipt before processing. */
 function sendAckReaction(botToken: string, chatId: number, messageId: number): Promise<void> {
   return fetch(`https://api.telegram.org/bot${botToken}/setMessageReaction`, {
     method: 'POST',
@@ -207,7 +207,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   const isCold = !existingProcess;
 
   if (c.env.TELEGRAM_QUEUE) {
-    // All messages go through queue for guaranteed at-least-once delivery.
+    // All messages go through queue for at-least-once delivery.
     // Delay based on state to avoid wasting retries during cold start.
     const delaySeconds = isHot ? 0 : 180;
     console.log(`[TELEGRAM] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
