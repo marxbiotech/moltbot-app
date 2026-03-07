@@ -160,5 +160,20 @@ describe('MoltbotSandbox', () => {
 
       expect(fetchSpy).not.toHaveBeenCalled();
     });
+
+    it('sends version update notification for version rollout errors', () => {
+      const instance = createInstance({
+        TELEGRAM_BOT_TOKEN: 'bot123',
+        TELEGRAM_LIFECYCLE_CHAT_ID: '456',
+      });
+
+      instance.onError(new Error('Runtime signalled the container to exit due to a new version rollout: 0'));
+
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [, init] = fetchSpy.mock.calls[0];
+      const body = JSON.parse(init!.body as string);
+      expect(body.text).toContain('版本更新');
+      expect(body.text).not.toContain('錯誤');
+    });
   });
 });
