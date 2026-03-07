@@ -24,7 +24,11 @@ export class MoltbotSandbox extends Sandbox<MoltbotEnv> {
 
   override onError(error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    this.notifyOwner(`\u{26A0}\u{FE0F} Container 錯誤: ${msg}`);
+    if (msg.includes('new version rollout')) {
+      this.notifyOwner('\u{1F504} Container 版本更新');
+    } else {
+      this.notifyOwner(`\u{26A0}\u{FE0F} Container 錯誤: ${msg}`);
+    }
     super.onError(error);
   }
 
@@ -42,7 +46,7 @@ export class MoltbotSandbox extends Sandbox<MoltbotEnv> {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
+        body: JSON.stringify({ chat_id: chatId, text, disable_notification: true }),
       });
       if (!res.ok) {
         console.error(`[LIFECYCLE] Telegram API error: ${res.status}`);
