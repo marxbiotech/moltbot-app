@@ -42,7 +42,7 @@ export class MoltbotSandbox extends Sandbox<MoltbotEnv> {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
+        body: JSON.stringify({ chat_id: chatId, text, disable_notification: true }),
       });
       if (!res.ok) {
         console.error(`[LIFECYCLE] Telegram API error: ${res.status}`);
