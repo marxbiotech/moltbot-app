@@ -161,4 +161,17 @@ describe('MoltbotSandbox', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('onActivityExpired', () => {
+    it('does NOT call Telegram API to avoid resetting DO activity timer', async () => {
+      const instance = createInstance({
+        TELEGRAM_BOT_TOKEN: 'bot123',
+        TELEGRAM_LIFECYCLE_CHAT_ID: '456',
+      });
+
+      await instance.onActivityExpired();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -29,7 +29,11 @@ export class MoltbotSandbox extends Sandbox<MoltbotEnv> {
   }
 
   override async onActivityExpired() {
-    await this.notifyOwner('\u{1F4A4} Container 即將休眠');
+    // Log only — do NOT call notifyOwner() here.
+    // An outbound fetch inside onActivityExpired resets the DO activity timer,
+    // preventing the container from actually sleeping and creating an infinite
+    // 10-minute alarm loop.
+    console.log('[LIFECYCLE] Container 即將休眠');
     await super.onActivityExpired();
   }
 
