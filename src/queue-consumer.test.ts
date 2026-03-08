@@ -26,11 +26,16 @@ vi.mock('./assets/config-error.html', () => ({ default: '<html>error</html>' }))
 
 import { getSandbox } from '@cloudflare/sandbox';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
+import type { WebhookSource } from './types';
 import worker from './index';
 
-function createQueueMessage(body: string = '{"update_id":1}', headers: Record<string, string> = {}) {
+function createQueueMessage(
+  source: WebhookSource = 'telegram',
+  body: string = '{"update_id":1}',
+  headers: Record<string, string> = {},
+) {
   return {
-    body: { body, headers },
+    body: { source, body, headers },
     ack: vi.fn(),
     retry: vi.fn(),
     id: 'msg-' + Math.random().toString(36).slice(2),
@@ -42,7 +47,7 @@ function createQueueMessage(body: string = '{"update_id":1}', headers: Record<st
 function createBatch(messages: ReturnType<typeof createQueueMessage>[]) {
   return {
     messages,
-    queue: 'telegram-webhook',
+    queue: 'webhook-queue',
     ackAll: vi.fn(),
     retryAll: vi.fn(),
   } as any;
@@ -63,8 +68,8 @@ describe('queue consumer', () => {
 
   it('retries all messages and calls ensureMoltbotGateway when no process found', async () => {
     vi.mocked(findExistingMoltbotProcess).mockResolvedValue(null);
-    const msg1 = createQueueMessage();
-    const msg2 = createQueueMessage();
+    const msg1 = createQueueMessage('telegram');
+    const msg2 = createQueueMessage('telegram');
     const batch = createBatch([msg1, msg2]);
     const env = createMockEnv();
 
@@ -85,21 +90,22 @@ describe('queue consumer', () => {
     };
     vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
 
-    const msg1 = createQueueMessage();
-    const msg2 = createQueueMessage();
+    const msg1 = createQueueMessage('telegram');
+    const msg2 = createQueueMessage('telegram');
     const batch = createBatch([msg1, msg2]);
     const env = createMockEnv();
 
     await worker.queue(batch, env);
 
-    expect(mockProcess.waitForPort).toHaveBeenCalledWith(18789, { mode: 'tcp', timeout: 10_000 });
+    // Telegram needs ports 8787 + 18789; first failure triggers retry for all
+    expect(mockProcess.waitForPort).toHaveBeenCalledWith(8787, { mode: 'tcp', timeout: 10_000 });
     expect(msg1.retry).toHaveBeenCalledOnce();
     expect(msg2.retry).toHaveBeenCalledOnce();
     expect(msg1.ack).not.toHaveBeenCalled();
     expect(ensureMoltbotGateway).not.toHaveBeenCalled();
   });
 
-  it('acks message on successful delivery (res.ok)', async () => {
+  it('acks telegram message on successful delivery', async () => {
     const mockProcess = {
       id: 'proc-1',
       status: 'running' as Process['status'],
@@ -108,7 +114,7 @@ describe('queue consumer', () => {
     vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
     mockSandbox.containerFetchMock.mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
 
-    const msg = createQueueMessage('{"update_id":42}', { 'content-type': 'application/json' });
+    const msg = createQueueMessage('telegram', '{"update_id":42}', { 'content-type': 'application/json' });
     const batch = createBatch([msg]);
     const env = createMockEnv();
 
@@ -117,10 +123,37 @@ describe('queue consumer', () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
 
-    // Verify the request was made to the correct port and path
     const [req, port] = mockSandbox.containerFetchMock.mock.calls[0];
     expect(port).toBe(8787);
     expect(req.url).toBe('http://localhost:8787/telegram-webhook');
+    expect(req.method).toBe('POST');
+  });
+
+  it('acks slack message on successful delivery', async () => {
+    const mockProcess = {
+      id: 'proc-1',
+      status: 'running' as Process['status'],
+      waitForPort: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
+    mockSandbox.containerFetchMock.mockResolvedValue(new Response('', { status: 200 }));
+
+    const msg = createQueueMessage('slack', '{"event":{"type":"message"}}', {
+      'content-type': 'application/json',
+      'X-Slack-Request-Timestamp': '1234567890',
+      'X-Slack-Signature': 'v0=abc123',
+    });
+    const batch = createBatch([msg]);
+    const env = createMockEnv();
+
+    await worker.queue(batch, env);
+
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+
+    const [req, port] = mockSandbox.containerFetchMock.mock.calls[0];
+    expect(port).toBe(18789);
+    expect(req.url).toBe('http://localhost:18789/slack/events');
     expect(req.method).toBe('POST');
   });
 
@@ -133,7 +166,7 @@ describe('queue consumer', () => {
     vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
     mockSandbox.containerFetchMock.mockResolvedValue(new Response('error', { status: 500 }));
 
-    const msg = createQueueMessage();
+    const msg = createQueueMessage('telegram');
     const batch = createBatch([msg]);
     const env = createMockEnv();
 
@@ -152,7 +185,7 @@ describe('queue consumer', () => {
     vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
     mockSandbox.containerFetchMock.mockRejectedValue(new Error('network error'));
 
-    const msg = createQueueMessage();
+    const msg = createQueueMessage('telegram');
     const batch = createBatch([msg]);
     const env = createMockEnv();
 
@@ -160,5 +193,24 @@ describe('queue consumer', () => {
 
     expect(msg.retry).toHaveBeenCalledOnce();
     expect(msg.ack).not.toHaveBeenCalled();
+  });
+
+  it('acks message with unknown source', async () => {
+    const mockProcess = {
+      id: 'proc-1',
+      status: 'running' as Process['status'],
+      waitForPort: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
+
+    const msg = createQueueMessage('unknown' as any);
+    const batch = createBatch([msg]);
+    const env = createMockEnv();
+
+    await worker.queue(batch, env);
+
+    // Unknown source should be acked (dropped) to avoid infinite retries
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
   });
 });

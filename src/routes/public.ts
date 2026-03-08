@@ -206,14 +206,16 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   }
   const isCold = !existingProcess;
 
-  if (c.env.TELEGRAM_QUEUE) {
+  // WEBHOOK_QUEUE (new) → TELEGRAM_QUEUE (deprecated) → fire-and-forget
+  const telegramQueue = c.env.WEBHOOK_QUEUE ?? c.env.TELEGRAM_QUEUE;
+  if (telegramQueue) {
     // All messages go through queue for at-least-once delivery.
     // Delay based on state to avoid wasting retries during cold start.
     const delaySeconds = isHot ? 0 : 180;
     console.log(`[TELEGRAM] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
     c.executionCtx.waitUntil(
-      c.env.TELEGRAM_QUEUE.send(
-        { body: bodyString, headers: queueHeaders },
+      telegramQueue.send(
+        { source: 'telegram', body: bodyString, headers: queueHeaders },
         { delaySeconds },
       ).catch((err) => {
         console.error('[TELEGRAM] Queue send failed:', err);
@@ -221,7 +223,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     );
   } else {
     // Fallback: no queue configured, use fire-and-forget (old behavior)
-    console.warn('[TELEGRAM] TELEGRAM_QUEUE not configured, falling back to fire-and-forget');
+    console.warn('[TELEGRAM] No queue configured, falling back to fire-and-forget');
     c.executionCtx.waitUntil(
       ensureMoltbotGateway(sandbox, c.env).then(() =>
         sandbox.containerFetch(
@@ -267,6 +269,105 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     c.executionCtx.waitUntil(
       sendGroupAllowlistHint(sandbox, botToken, hintChatId).catch((err) => {
         console.error('[TELEGRAM] Allowlist hint failed:', err);
+      })
+    );
+  }
+
+  return c.json({ ok: true });
+});
+
+// POST /slack/events - Slack Events API webhook endpoint (no CF Access)
+// Signing verification is handled by OpenClaw's @slack/bolt HTTPReceiver inside the container.
+// Worker's job: proxy to container gateway port 18789, handle cold start via queue.
+publicRoutes.post('/slack/events', async (c) => {
+  if (!c.env.SLACK_SIGNING_SECRET) {
+    console.error('[SLACK] SLACK_SIGNING_SECRET not configured');
+    return c.json({ error: 'Slack webhook not configured' }, 500);
+  }
+
+  // Buffer body before any async work — request stream closes once we respond
+  const bodyString = await c.req.text();
+
+  // Handle url_verification challenge directly (works even during cold start).
+  // This only happens once when setting the Request URL in Slack admin.
+  try {
+    const payload = JSON.parse(bodyString);
+    if (payload.type === 'url_verification') {
+      console.log('[SLACK] url_verification challenge received');
+      return c.json({ challenge: payload.challenge });
+    }
+  } catch {
+    // Not JSON — continue with proxy
+  }
+
+  const sandbox = c.get('sandbox');
+
+  // Serializable headers for queue messages
+  const queueHeaders: Record<string, string> = {
+    'content-type': c.req.header('content-type') || 'application/json',
+  };
+  // Slack signing headers — required by Bolt's HTTPReceiver for HMAC verification
+  const slackTimestamp = c.req.header('X-Slack-Request-Timestamp');
+  const slackSignature = c.req.header('X-Slack-Signature');
+  if (slackTimestamp) queueHeaders['X-Slack-Request-Timestamp'] = slackTimestamp;
+  if (slackSignature) queueHeaders['X-Slack-Signature'] = slackSignature;
+
+  // Determine container state: cold / warming / hot
+  let existingProcess = null;
+  try {
+    existingProcess = await findExistingMoltbotProcess(sandbox);
+  } catch (err) {
+    console.error('[SLACK] Failed to check process state, treating as cold:', err);
+  }
+  let isHot = false;
+  if (existingProcess?.status === 'running') {
+    try {
+      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 2_000 });
+      isHot = true;
+    } catch {
+      // Process exists but port not ready — still booting
+    }
+  }
+  const isCold = !existingProcess;
+
+  if (c.env.WEBHOOK_QUEUE) {
+    // Queue mode: at-least-once delivery with delay for cold containers.
+    // Slack retries events that don't get a 200 within 3s, but the queue
+    // gives us control over delivery timing during cold starts.
+    const delaySeconds = isHot ? 0 : 180;
+    console.log(`[SLACK] Enqueuing (${isCold ? 'cold' : isHot ? 'hot' : 'warming'}, delay=${delaySeconds}s)`);
+    c.executionCtx.waitUntil(
+      c.env.WEBHOOK_QUEUE.send(
+        { source: 'slack', body: bodyString, headers: queueHeaders },
+        { delaySeconds },
+      ).catch((err) => {
+        console.error('[SLACK] Queue send failed:', err);
+      })
+    );
+  } else {
+    // No queue: fire-and-forget proxy (old behavior)
+    console.warn('[SLACK] WEBHOOK_QUEUE not configured, falling back to fire-and-forget');
+    c.executionCtx.waitUntil(
+      ensureMoltbotGateway(sandbox, c.env).then(() =>
+        sandbox.containerFetch(
+          new Request(`http://localhost:${MOLTBOT_PORT}/slack/events`, {
+            method: 'POST',
+            headers: queueHeaders,
+            body: bodyString,
+          }),
+          MOLTBOT_PORT,
+        )
+      ).catch((err) => {
+        console.error('[SLACK] Webhook proxy failed:', err);
+      })
+    );
+  }
+
+  // Cold or warming: trigger container startup
+  if (!isHot) {
+    c.executionCtx.waitUntil(
+      ensureMoltbotGateway(sandbox, c.env).catch((err) => {
+        console.error('[SLACK] Gateway startup failed:', err);
       })
     );
   }

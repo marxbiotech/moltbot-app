@@ -1,12 +1,22 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 
 /**
- * Queue message for Telegram webhook payloads (buffered via queue for at-least-once delivery)
+ * Webhook source identifier for queue message routing.
  */
-export interface TelegramQueueMessage {
+export type WebhookSource = 'telegram' | 'slack';
+
+/**
+ * Queue message for webhook payloads (buffered via queue for at-least-once delivery).
+ * A single queue handles all webhook sources; `source` determines delivery target.
+ */
+export interface WebhookQueueMessage {
+  source: WebhookSource;
   body: string;
   headers: Record<string, string>;
 }
+
+/** @deprecated Use WebhookQueueMessage — kept for backward compat */
+export type TelegramQueueMessage = WebhookQueueMessage;
 
 /**
  * Environment bindings for the Moltbot Worker
@@ -38,11 +48,14 @@ export interface MoltbotEnv {
   TELEGRAM_DM_POLICY?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;  // Secret for validating Telegram webhook requests
   TELEGRAM_LIFECYCLE_CHAT_ID?: string; // Bot owner chat ID for lifecycle notifications
-  TELEGRAM_QUEUE?: Queue<TelegramQueueMessage>; // Queue for reliable Telegram webhook delivery (delays messages during container startup)
+  WEBHOOK_QUEUE?: Queue<WebhookQueueMessage>; // Unified queue for all webhook delivery (Telegram, Slack)
+  /** @deprecated Use WEBHOOK_QUEUE — kept for backward compat during migration */
+  TELEGRAM_QUEUE?: Queue<WebhookQueueMessage>;
   DISCORD_BOT_TOKEN?: string;
   DISCORD_DM_POLICY?: string;
   SLACK_BOT_TOKEN?: string;
   SLACK_APP_TOKEN?: string;
+  SLACK_SIGNING_SECRET?: string;  // Signing secret for validating Slack HTTP Events API requests
   // AWS Bedrock MFA auth (zero standing privileges)
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;

@@ -47,6 +47,7 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.DISCORD_DM_POLICY) envVars.DISCORD_DM_POLICY = env.DISCORD_DM_POLICY;
   if (env.SLACK_BOT_TOKEN) envVars.SLACK_BOT_TOKEN = env.SLACK_BOT_TOKEN;
   if (env.SLACK_APP_TOKEN) envVars.SLACK_APP_TOKEN = env.SLACK_APP_TOKEN;
+  if (env.SLACK_SIGNING_SECRET) envVars.SLACK_SIGNING_SECRET = env.SLACK_SIGNING_SECRET;
   if (env.DEFAULT_MODEL) envVars.DEFAULT_MODEL = env.DEFAULT_MODEL;
   if (env.CF_AI_GATEWAY_MODEL) envVars.CF_AI_GATEWAY_MODEL = env.CF_AI_GATEWAY_MODEL;
   if (env.CF_ACCOUNT_ID) envVars.CF_ACCOUNT_ID = env.CF_ACCOUNT_ID;

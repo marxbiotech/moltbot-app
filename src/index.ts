@@ -23,7 +23,7 @@
 import { Hono } from 'hono';
 import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
-import type { AppEnv, MoltbotEnv, TelegramQueueMessage } from './types';
+import type { AppEnv, MoltbotEnv, WebhookQueueMessage } from './types';
 import { MoltbotSandbox } from './sandbox';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from './config';
 import { createAccessMiddleware } from './auth';
@@ -462,10 +462,30 @@ app.all('*', async (c) => {
   });
 });
 
+/** Delivery target config per webhook source */
+interface DeliveryTarget {
+  port: number;
+  path: string;
+  /** Extra ports to check before delivering (e.g. Telegram's dedicated webhook port) */
+  extraPorts?: number[];
+}
+
+const DELIVERY_TARGETS: Record<string, DeliveryTarget> = {
+  telegram: {
+    port: TELEGRAM_WEBHOOK_PORT,
+    path: '/telegram-webhook',
+    extraPorts: [MOLTBOT_PORT],
+  },
+  slack: {
+    port: MOLTBOT_PORT,
+    path: '/slack/events',
+  },
+};
+
 export default {
   fetch: app.fetch,
 
-  async queue(batch: MessageBatch<TelegramQueueMessage>, env: MoltbotEnv) {
+  async queue(batch: MessageBatch<WebhookQueueMessage>, env: MoltbotEnv) {
     console.log(`[QUEUE] Consumer triggered, batch size: ${batch.messages.length}`);
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
@@ -495,11 +515,24 @@ export default {
       return;
     }
 
-    // Process exists — check if both ports are ready with a short timeout
+    // Collect unique ports needed across all messages in this batch.
+    // Legacy messages (from old TELEGRAM_QUEUE) may lack `source` — default to 'telegram'.
+    const portsNeeded = new Set<number>();
+    for (const msg of batch.messages) {
+      const target = DELIVERY_TARGETS[msg.body.source ?? 'telegram'];
+      if (target) {
+        portsNeeded.add(target.port);
+        for (const p of target.extraPorts ?? []) portsNeeded.add(p);
+      }
+    }
+
+    // Check all required ports are ready
     try {
-      console.log(`[QUEUE] Process ${process.id} (${process.status}), checking ports ${MOLTBOT_PORT} and ${TELEGRAM_WEBHOOK_PORT}...`);
-      await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 10_000 });
-      await process.waitForPort(TELEGRAM_WEBHOOK_PORT, { mode: 'tcp', timeout: 5_000 });
+      const ports = [...portsNeeded];
+      console.log(`[QUEUE] Process ${process.id} (${process.status}), checking ports ${ports.join(', ')}...`);
+      for (const port of ports) {
+        await process.waitForPort(port, { mode: 'tcp', timeout: 10_000 });
+      }
       console.log('[QUEUE] Gateway ready');
     } catch {
       console.log('[QUEUE] Port not ready yet, retrying...');
@@ -508,25 +541,33 @@ export default {
     }
 
     for (const msg of batch.messages) {
+      const source = msg.body.source ?? 'telegram';
+      const target = DELIVERY_TARGETS[source];
+      if (!target) {
+        console.error(`[QUEUE] Unknown source: ${source}, acking message`);
+        msg.ack();
+        continue;
+      }
+
       try {
-        console.log(`[QUEUE] Delivering message to port ${TELEGRAM_WEBHOOK_PORT}...`);
+        console.log(`[QUEUE:${source}] Delivering to port ${target.port}${target.path}...`);
         const res = await sandbox.containerFetch(
-          new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+          new Request(`http://localhost:${target.port}${target.path}`, {
             method: 'POST',
             headers: msg.body.headers,
             body: msg.body.body,
           }),
-          TELEGRAM_WEBHOOK_PORT,
+          target.port,
         );
         if (res.ok) {
-          console.log(`[QUEUE] Delivered message, status: ${res.status}`);
+          console.log(`[QUEUE:${source}] Delivered, status: ${res.status}`);
           msg.ack();
         } else {
-          console.error(`[QUEUE] Delivery returned error status ${res.status}, retrying...`);
+          console.error(`[QUEUE:${source}] Error status ${res.status}, retrying...`);
           msg.retry();
         }
       } catch (err) {
-        console.error('[QUEUE] Delivery failed:', err);
+        console.error(`[QUEUE:${source}] Delivery failed:`, err);
         msg.retry();
       }
     }
