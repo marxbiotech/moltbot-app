@@ -56,6 +56,7 @@ export interface MoltbotEnv {
   SLACK_BOT_TOKEN?: string;
   SLACK_APP_TOKEN?: string;
   SLACK_SIGNING_SECRET?: string;  // Signing secret for validating Slack HTTP Events API requests
+  SLACK_DM_POLICY?: string;
   // AWS Bedrock MFA auth (zero standing privileges)
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;

@@ -561,19 +561,31 @@ if (process.env.DISCORD_BOT_TOKEN) {
 // HTTP mode: SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET (webhook via Worker proxy)
 // Socket mode: SLACK_BOT_TOKEN + SLACK_APP_TOKEN (direct WebSocket)
 if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
+    const dmPolicy = process.env.SLACK_DM_POLICY || 'pairing';
+    const dm = { policy: dmPolicy };
+    if (dmPolicy === 'open') {
+        dm.allowFrom = ['*'];
+    }
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
         signingSecret: process.env.SLACK_SIGNING_SECRET,
         mode: 'http',
         webhookPath: '/slack/events',
         enabled: true,
+        dm: dm,
     };
     console.log('Slack HTTP mode configured (webhookPath: /slack/events)');
 } else if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
+    const dmPolicy = process.env.SLACK_DM_POLICY || 'pairing';
+    const dm = { policy: dmPolicy };
+    if (dmPolicy === 'open') {
+        dm.allowFrom = ['*'];
+    }
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
         appToken: process.env.SLACK_APP_TOKEN,
         enabled: true,
+        dm: dm,
     };
     console.log('Slack Socket mode configured');
 }
