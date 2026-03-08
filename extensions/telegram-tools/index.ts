@@ -1235,6 +1235,35 @@ export default function register(api: any) {
     },
   });
 
+  // ── Gateway lifecycle notifications ─────────────────────────
+  // Notify owner via Telegram when gateway starts or stops (covers restart too).
+
+  api.on("gateway_stop", async () => {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+    if (!token || !chatId) return;
+    try {
+      await telegramApi(token, "sendMessage", {
+        chat_id: chatId,
+        text: "Gateway stopping...",
+        disable_notification: true,
+      });
+    } catch {}
+  });
+
+  api.on("gateway_start", async () => {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+    if (!token || !chatId) return;
+    try {
+      await telegramApi(token, "sendMessage", {
+        chat_id: chatId,
+        text: "Gateway started.",
+        disable_notification: true,
+      });
+    } catch {}
+  });
+
   // ── Discipline hooks ────────────────────────────────────────
   // Telegram streaming bypasses deliver.ts, so message_sending/message_sent
   // hooks never fire. We use message_received (which does fire) to track
