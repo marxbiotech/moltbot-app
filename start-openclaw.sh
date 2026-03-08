@@ -568,6 +568,7 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     }
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
+        appToken: process.env.SLACK_APP_TOKEN || 'xapp-http-mode-placeholder',
         signingSecret: process.env.SLACK_SIGNING_SECRET,
         mode: 'http',
         webhookPath: '/slack/events',
