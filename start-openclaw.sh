@@ -1,11 +1,8 @@
 #!/bin/bash
 # Startup script for OpenClaw in Cloudflare Sandbox
-# This script:
-# 1. Restores config/workspace from R2 via rclone (if configured)
-# 2. Runs openclaw onboard --non-interactive to configure from env vars
-# 3. Patches config for features onboard doesn't cover (channels, gateway auth)
-# 4. Starts a background sync loop (rclone, watches for file changes)
-# 5. Starts the gateway
+# Bootstraps the container: restores state from R2, installs skills/plugins,
+# sets up credentials (GitHub Apps, AWS), configures the gateway, then starts
+# a background sync loop and the gateway process. See section headers below.
 
 set -e
 
@@ -201,20 +198,36 @@ fi
 # Decodes GITHUB_APPS JSON env var → ~/.github-apps/<name>/{app-id, private-key.pem, installation-id}
 # Used by gh_app_token script to generate installation tokens via openssl JWT + curl.
 if [ -n "$GITHUB_APPS" ]; then
-    node -e "
-        const apps = JSON.parse(process.env.GITHUB_APPS);
-        const fs = require('fs');
-        const path = require('path');
-        for (const [name, cfg] of Object.entries(apps)) {
-            const dir = path.join(process.env.HOME, '.github-apps', name);
-            fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(path.join(dir, 'app-id'), cfg.appId);
-            fs.writeFileSync(path.join(dir, 'installation-id'), cfg.installationId);
-            fs.writeFileSync(path.join(dir, 'private-key.pem'), Buffer.from(cfg.privateKey, 'base64').toString());
-            fs.chmodSync(path.join(dir, 'private-key.pem'), 0o600);
+    if node -e "
+        try {
+            const apps = JSON.parse(process.env.GITHUB_APPS);
+            const fs = require('fs');
+            const path = require('path');
+            const required = ['appId', 'installationId', 'privateKey'];
+            for (const [name, cfg] of Object.entries(apps)) {
+                for (const field of required) {
+                    if (cfg[field] == null || cfg[field] === '') {
+                        console.error('ERROR: GitHub App \"' + name + '\" is missing required field \"' + field + '\"');
+                        process.exit(1);
+                    }
+                }
+                const dir = path.join(process.env.HOME, '.github-apps', name);
+                fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(path.join(dir, 'app-id'), String(cfg.appId));
+                fs.writeFileSync(path.join(dir, 'installation-id'), String(cfg.installationId));
+                fs.writeFileSync(path.join(dir, 'private-key.pem'), Buffer.from(String(cfg.privateKey), 'base64').toString());
+                fs.chmodSync(path.join(dir, 'private-key.pem'), 0o600);
+            }
+            console.log('GitHub Apps configured:', Object.keys(apps).join(', '));
+        } catch (err) {
+            console.error('ERROR: Failed to parse GITHUB_APPS:', err.message);
+            process.exit(1);
         }
-        console.log('GitHub Apps configured:', Object.keys(apps).join(', '));
-    "
+    "; then
+        :
+    else
+        echo "WARNING: GitHub Apps credential setup failed (see error above). Continuing startup without GitHub Apps."
+    fi
 fi
 
 # ============================================================

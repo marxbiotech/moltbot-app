@@ -53,6 +53,10 @@ MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
 # AWS_MFA_SERIAL=arn:aws:iam::123456789012:mfa/user
 # AWS_ROLE_ARN=arn:aws:iam::123456789012:role/bedrock-role
 
+# === GitHub Apps (optional) ===
+# JSON: { "<config-name>": { "appId": "...", "installationId": "...", "privateKey": "<base64-pem>" } }
+# GITHUB_APPS={"mbow-ra":{"appId":"123456","installationId":"789012","privateKey":"base64..."}}
+
 # === R2 persistent storage (optional) ===
 # R2_ACCESS_KEY_ID=your-r2-access-key
 # R2_SECRET_ACCESS_KEY=your-r2-secret-key

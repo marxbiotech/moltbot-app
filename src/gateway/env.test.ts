@@ -168,6 +168,22 @@ describe('buildEnvVars', () => {
     expect(result.DEFAULT_MODEL).toBe('google/gemini-3-flash-preview');
   });
 
+  // GitHub Apps credentials
+  it('passes GITHUB_APPS to container', () => {
+    const appsJson = JSON.stringify({
+      'mbow-ra': { appId: '12345', installationId: '67890', privateKey: 'base64key' },
+    });
+    const env = createMockEnv({ GITHUB_APPS: appsJson });
+    const result = buildEnvVars(env);
+    expect(result.GITHUB_APPS).toBe(appsJson);
+  });
+
+  it('does not include GITHUB_APPS when not set', () => {
+    const env = createMockEnv();
+    const result = buildEnvVars(env);
+    expect(result.GITHUB_APPS).toBeUndefined();
+  });
+
   it('combines all env vars correctly', () => {
     const env = createMockEnv({
       ANTHROPIC_API_KEY: 'sk-key',

@@ -40,6 +40,13 @@ b64url() {
     openssl base64 -A | tr '+/' '-_' | tr -d '='
 }
 
+# Validate PEM key before signing
+if ! openssl rsa -in "$PRIVATE_KEY" -check -noout 2>/dev/null; then
+    echo "Error: Invalid RSA private key at $PRIVATE_KEY" >&2
+    echo "Verify that GITHUB_APPS.$APP_NAME.privateKey is a valid base64-encoded PEM RSA key" >&2
+    exit 1
+fi
+
 HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
 PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$IAT" "$EXP" "$APP_ID" | b64url)
 
@@ -50,22 +57,32 @@ SIGNATURE=$(printf '%s.%s' "$HEADER" "$PAYLOAD" \
 JWT="${HEADER}.${PAYLOAD}.${SIGNATURE}"
 
 # --- Exchange JWT for Installation Token ---
-RESPONSE=$(curl -s -X POST \
+HTTP_CODE=$(curl -s -o /tmp/gh_app_response -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $JWT" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/app/installations/$INSTALLATION_ID/access_tokens")
+RESPONSE=$(cat /tmp/gh_app_response 2>/dev/null)
+rm -f /tmp/gh_app_response
+
+if [ "$HTTP_CODE" != "201" ]; then
+    echo "Error: GitHub API returned HTTP $HTTP_CODE for app '$APP_NAME'" >&2
+    if command -v jq &>/dev/null; then
+        MSG=$(echo "$RESPONSE" | jq -r '.message // empty')
+        [ -n "$MSG" ] && echo "Message: $MSG" >&2
+    fi
+    exit 1
+fi
 
 # Extract token — try jq first, fall back to grep
 if command -v jq &>/dev/null; then
     TOKEN=$(echo "$RESPONSE" | jq -r '.token // empty')
 else
-    TOKEN=$(echo "$RESPONSE" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)
+    TOKEN=$(echo "$RESPONSE" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 fi
 
 if [ -z "$TOKEN" ]; then
-    echo "Error: Failed to get installation token" >&2
-    echo "Response: $RESPONSE" >&2
+    echo "Error: Failed to extract token from response" >&2
     exit 1
 fi
 

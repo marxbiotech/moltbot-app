@@ -24,8 +24,9 @@ function runScript(
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: timeoutMs, env: process.env }, (err, stdout, stderr) => {
       const output = (stdout || "") + (stderr ? `\n${stderr}` : "");
-      if (err && !output.trim()) {
-        resolve({ text: `❌ ${bin} failed: ${err.message}` });
+      if (err) {
+        const detail = output.trim() || err.message;
+        resolve({ text: `❌ ${bin} failed: ${detail}` });
       } else {
         resolve({ text: output.trim() || "✅ Done." });
       }
@@ -43,16 +44,22 @@ function listApps(): { text: string } {
         try {
           const appId = readFileSync(appIdFile, "utf-8").trim();
           return `  ${e.name}  (app-id: ${appId})`;
-        } catch {
-          return `  ${e.name}  (app-id: unknown)`;
+        } catch (err: any) {
+          if (err?.code === "ENOENT") {
+            return `  ${e.name}  (app-id: missing)`;
+          }
+          return `  ${e.name}  (app-id: error — ${err?.code || err?.message})`;
         }
       });
     if (apps.length === 0) {
       return { text: "No GitHub Apps configured in ~/.github-apps/" };
     }
     return { text: `GitHub Apps:\n${apps.join("\n")}` };
-  } catch {
-    return { text: "No GitHub Apps configured (directory ~/.github-apps/ not found)" };
+  } catch (err: any) {
+    if (err?.code === "ENOENT") {
+      return { text: "No GitHub Apps configured (directory ~/.github-apps/ not found)" };
+    }
+    return { text: `Error listing GitHub Apps: ${err?.message || err}` };
   }
 }
 
@@ -75,6 +82,9 @@ export default function register(api: any) {
         const appName = parts[1];
         if (!appName) {
           return { text: "Usage: /gh_apps token <app-name>" };
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(appName)) {
+          return { text: "Invalid app name. Use only alphanumeric characters, hyphens, and underscores." };
         }
         return runScript("gh_app_token", [appName], 30_000);
       }
