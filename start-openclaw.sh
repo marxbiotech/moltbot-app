@@ -582,6 +582,8 @@ if (process.env.DISCORD_BOT_TOKEN) {
 }
 
 // Slack configuration
+// Merge env-driven keys into existing config to preserve runtime changes
+// (channels, groups, etc.) while ensuring env vars always take precedence.
 // HTTP mode: SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET (webhook via Worker proxy)
 // Socket mode: SLACK_BOT_TOKEN + SLACK_APP_TOKEN (direct WebSocket)
 if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
@@ -590,7 +592,9 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     if (dmPolicy === 'open') {
         dm.allowFrom = ['*'];
     }
+    const existingSlack = config.channels.slack || {};
     config.channels.slack = {
+        ...existingSlack,
         botToken: process.env.SLACK_BOT_TOKEN,
         // Design Decision: appToken placeholder is required because OpenClaw's onboarding
         // isConfigured check requires appToken regardless of mode. The provider correctly
@@ -609,7 +613,9 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     if (dmPolicy === 'open') {
         dm.allowFrom = ['*'];
     }
+    const existingSlack = config.channels.slack || {};
     config.channels.slack = {
+        ...existingSlack,
         botToken: process.env.SLACK_BOT_TOKEN,
         appToken: process.env.SLACK_APP_TOKEN,
         enabled: true,
