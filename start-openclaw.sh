@@ -201,7 +201,7 @@ if [ -n "$GITHUB_APPS" ]; then
     decode_github_apps || {
         echo "================================================================" >&2
         echo "ERROR: GitHub Apps credential setup FAILED (see error above)." >&2
-        echo "  gh_app_token and dependent skills (web_deploy) will NOT work." >&2
+        echo "  gh_app_token and dependent skills will NOT work." >&2
         echo "  Check GITHUB_APPS JSON format and base64-encoded private keys." >&2
         echo "================================================================" >&2
     }

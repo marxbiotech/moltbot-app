@@ -50,8 +50,9 @@ COPY build-version.txt /build-version.txt
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy skills to staging area (currently only cloudflare_browser).
-# start-openclaw.sh installs them to ~/.openclaw/skills/ on every boot.
+# Copy skills to staging area. Platform skills live here (e.g. cloudflare_browser).
+# Env-managed skills are injected by deploy.sh before build (from moltbot-env/skills/).
+# start-openclaw.sh installs them all to ~/.openclaw/skills/ on every boot.
 COPY skills/ /opt/openclaw-skills/
 
 # Copy all plugins to staging area.
