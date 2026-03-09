@@ -737,15 +737,27 @@ async function handleGroupSet(id: string, keyAndValue: string): Promise<string> 
 
         const groupCfg = config?.channels?.telegram?.groups?.[id] ?? {};
         if (!groupCfg.requireMention) {
-          await configSet(`channels.telegram.groups.${id}.requireMention`, "true");
-          extras.push("  + requireMention: true");
+          const r = await configSet(`channels.telegram.groups.${id}.requireMention`, "true");
+          if (r.ok) extras.push("  + requireMention: true");
+          else {
+            extras.push(`  ✗ requireMention: ${r.error}`);
+            const tToken = process.env.TELEGRAM_BOT_TOKEN;
+            const tChatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+            if (tToken && tChatId) { try { await telegramApi(tToken, "sendMessage", { chat_id: tChatId, text: `⚠️ [telegram] auto-config failed (group: ${id}): requireMention — ${r.error}`, disable_notification: true }); } catch {} }
+          }
         }
         if (!groupCfg.systemPrompt?.includes("conversation-state")) {
           const prompt = groupCfg.systemPrompt
             ? `${groupCfg.systemPrompt}\n${BOT_TO_BOT_MENTION_PROMPT}`
             : BOT_TO_BOT_MENTION_PROMPT;
-          await configSet(`channels.telegram.groups.${id}.systemPrompt`, prompt);
-          extras.push(`  + systemPrompt: "${BOT_TO_BOT_MENTION_PROMPT}"`);
+          const r = await configSet(`channels.telegram.groups.${id}.systemPrompt`, prompt);
+          if (r.ok) extras.push(`  + systemPrompt: "${BOT_TO_BOT_MENTION_PROMPT}"`);
+          else {
+            extras.push(`  ✗ systemPrompt: ${r.error}`);
+            const tToken = process.env.TELEGRAM_BOT_TOKEN;
+            const tChatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+            if (tToken && tChatId) { try { await telegramApi(tToken, "sendMessage", { chat_id: tChatId, text: `⚠️ [telegram] auto-config failed (group: ${id}): systemPrompt — ${r.error}`, disable_notification: true }); } catch {} }
+          }
         }
       }
     }
@@ -1248,7 +1260,7 @@ export default function register(api: any) {
         text: "Gateway stopping...",
         disable_notification: true,
       });
-    } catch {}
+    } catch {} // Design Decision: best-effort lifecycle notification — gateway shutdown must not be blocked by notification failure
   });
 
   api.on("gateway_start", async () => {
@@ -1261,7 +1273,7 @@ export default function register(api: any) {
         text: "Gateway started.",
         disable_notification: true,
       });
-    } catch {}
+    } catch {} // Design Decision: best-effort lifecycle notification — gateway startup must not be blocked by notification failure
   });
 
   // ── Discipline hooks ────────────────────────────────────────
@@ -1310,10 +1322,20 @@ export default function register(api: any) {
       const humanOnly = currentAllowFrom.filter((id: string) => pairedUsers.includes(id));
       const removedBotIds = currentAllowFrom.filter((id: string) => !pairedUsers.includes(id));
 
-      await configSet(
+      const setResult = await configSet(
         `channels.telegram.groups.${groupId}.allowFrom`,
         JSON.stringify(humanOnly),
       );
+      if (!setResult.ok) {
+        console.error(`[telegram-tools] discipline: configSet failed: ${setResult.error}`);
+        const tToken = process.env.TELEGRAM_BOT_TOKEN;
+        const tChatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+        if (tToken && tChatId) {
+          try {
+            await telegramApi(tToken, "sendMessage", { chat_id: tChatId, text: `⚠️ [telegram] discipline configSet failed (group: ${groupId}): ${setResult.error}`, disable_notification: true });
+          } catch {} // best-effort
+        }
+      }
 
       // DM trigger notice to owner (paired users)
       if (token) {
@@ -1329,12 +1351,22 @@ export default function register(api: any) {
         for (const userId of pairedUsers) {
           try {
             await telegramApi(token, "sendMessage", { chat_id: userId, text: notice });
-          } catch {}
+          } catch {} // Design Decision: best-effort notification — discipline core action (filter allowFrom + restart) must not be blocked by notification failure
         }
       }
 
       // Immediate restart
-      await restartGateway();
+      const restartResult = await restartGateway();
+      if (!restartResult.ok) {
+        console.error(`[telegram-tools] discipline: restartGateway failed: ${restartResult.error}`);
+        const tToken = process.env.TELEGRAM_BOT_TOKEN;
+        const tChatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+        if (tToken && tChatId) {
+          try {
+            await telegramApi(tToken, "sendMessage", { chat_id: tChatId, text: `⚠️ [telegram] discipline restartGateway failed (group: ${groupId}): ${restartResult.error}`, disable_notification: true });
+          } catch {} // best-effort
+        }
+      }
     }
   });
 }

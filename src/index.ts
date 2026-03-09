@@ -17,13 +17,13 @@
  * - MOLTBOT_GATEWAY_TOKEN: Token to protect gateway access
  * - TELEGRAM_BOT_TOKEN: Telegram bot token
  * - DISCORD_BOT_TOKEN: Discord bot token
- * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN: Slack tokens
+ * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN (socket mode) or SLACK_SIGNING_SECRET (HTTP mode)
  */
 
 import { Hono } from 'hono';
 import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
-import type { AppEnv, MoltbotEnv, WebhookQueueMessage } from './types';
+import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from './types';
 import { MoltbotSandbox } from './sandbox';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from './config';
 import { createAccessMiddleware } from './auth';
@@ -466,11 +466,11 @@ app.all('*', async (c) => {
 interface DeliveryTarget {
   port: number;
   path: string;
-  /** Extra ports to check before delivering (e.g. Telegram's dedicated webhook port) */
+  /** Extra ports that must also be ready before delivering (e.g. Telegram also needs the gateway port) */
   extraPorts?: number[];
 }
 
-const DELIVERY_TARGETS: Record<string, DeliveryTarget> = {
+const DELIVERY_TARGETS: Record<WebhookSource, DeliveryTarget> = {
   telegram: {
     port: TELEGRAM_WEBHOOK_PORT,
     path: '/telegram-webhook',
@@ -500,6 +500,13 @@ export default {
       process = await findExistingMoltbotProcess(sandbox);
     } catch (err) {
       console.error('[QUEUE] findExistingMoltbotProcess failed:', err);
+      if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+        fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue] findExistingMoltbotProcess failed: ${err}`, disable_notification: true }),
+        }).catch(() => {}); // best-effort
+      }
       for (const msg of batch.messages) msg.retry();
       return;
     }
@@ -510,6 +517,13 @@ export default {
         await ensureMoltbotGateway(sandbox, env);
       } catch (err) {
         console.error('[QUEUE] Gateway startup failed:', err);
+        if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+          fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue] Gateway startup failed: ${err}`, disable_notification: true }),
+          }).catch(() => {}); // best-effort
+        }
       }
       for (const msg of batch.messages) msg.retry();
       return;
@@ -534,8 +548,15 @@ export default {
         await process.waitForPort(port, { mode: 'tcp', timeout: 10_000 });
       }
       console.log('[QUEUE] Gateway ready');
-    } catch {
-      console.log('[QUEUE] Port not ready yet, retrying...');
+    } catch (err) {
+      console.error('[QUEUE] Port check failed, retrying...', err);
+      if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+        fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue] Port check failed: ${err}`, disable_notification: true }),
+        }).catch(() => {}); // best-effort
+      }
       for (const msg of batch.messages) msg.retry();
       return;
     }
@@ -555,7 +576,7 @@ export default {
           new Request(`http://localhost:${target.port}${target.path}`, {
             method: 'POST',
             headers: msg.body.headers,
-            body: msg.body.body,
+            body: msg.body.rawBody,
           }),
           target.port,
         );
@@ -564,10 +585,24 @@ export default {
           msg.ack();
         } else {
           console.error(`[QUEUE:${source}] Error status ${res.status}, retrying...`);
+          if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+            fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue:${source}] Delivery error status ${res.status}`, disable_notification: true }),
+            }).catch(() => {}); // best-effort
+          }
           msg.retry();
         }
       } catch (err) {
         console.error(`[QUEUE:${source}] Delivery failed:`, err);
+        if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+          fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue:${source}] Delivery failed: ${err}`, disable_notification: true }),
+          }).catch(() => {}); // best-effort
+        }
         msg.retry();
       }
     }

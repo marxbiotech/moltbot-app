@@ -35,7 +35,7 @@ function createQueueMessage(
   headers: Record<string, string> = {},
 ) {
   return {
-    body: { source, body, headers },
+    body: { source, rawBody: body, headers },
     ack: vi.fn(),
     retry: vi.fn(),
     id: 'msg-' + Math.random().toString(36).slice(2),
@@ -193,6 +193,47 @@ describe('queue consumer', () => {
 
     expect(msg.retry).toHaveBeenCalledOnce();
     expect(msg.ack).not.toHaveBeenCalled();
+  });
+
+  it('delivers mixed telegram+slack batch to correct targets', async () => {
+    const mockProcess = {
+      id: 'proc-1',
+      status: 'running' as Process['status'],
+      waitForPort: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(findExistingMoltbotProcess).mockResolvedValue(mockProcess as any);
+    mockSandbox.containerFetchMock.mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+
+    const telegramMsg = createQueueMessage('telegram', '{"update_id":1}', { 'content-type': 'application/json' });
+    const slackMsg = createQueueMessage('slack', '{"event":{"type":"message"}}', {
+      'content-type': 'application/json',
+      'X-Slack-Request-Timestamp': '1234567890',
+      'X-Slack-Signature': 'v0=abc123',
+    });
+    const batch = createBatch([telegramMsg, slackMsg]);
+    const env = createMockEnv();
+
+    await worker.queue(batch, env);
+
+    // Both ports checked (8787 for telegram target, 18789 for slack target + telegram extraPorts)
+    const portCalls = mockProcess.waitForPort.mock.calls.map(([port]: [number]) => port);
+    expect(portCalls).toContain(8787);
+    expect(portCalls).toContain(18789);
+
+    // Both messages delivered successfully
+    expect(telegramMsg.ack).toHaveBeenCalledOnce();
+    expect(slackMsg.ack).toHaveBeenCalledOnce();
+    expect(telegramMsg.retry).not.toHaveBeenCalled();
+    expect(slackMsg.retry).not.toHaveBeenCalled();
+
+    // Verify correct routing
+    expect(mockSandbox.containerFetchMock).toHaveBeenCalledTimes(2);
+    const [telegramReq, telegramPort] = mockSandbox.containerFetchMock.mock.calls[0];
+    expect(telegramPort).toBe(8787);
+    expect(telegramReq.url).toBe('http://localhost:8787/telegram-webhook');
+    const [slackReq, slackPort] = mockSandbox.containerFetchMock.mock.calls[1];
+    expect(slackPort).toBe(18789);
+    expect(slackReq.url).toBe('http://localhost:18789/slack/events');
   });
 
   it('acks message with unknown source', async () => {

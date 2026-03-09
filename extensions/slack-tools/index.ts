@@ -18,6 +18,9 @@ import { dirname } from "node:path";
  *   /slack channel add|remove|set          — manage channel config
  *   /slack channel show <id>               — show channel details
  *   /slack channel join <id>               — generate +users command with this bot's ID
+ *   /slack prompt [<id>]                   — view system prompt for channel
+ *   /slack prompt [<id>] <text>            — set system prompt
+ *   /slack prompt [<id>] --clear           — clear system prompt
  *   /slack chatid                          — show current channel/user ID
  *   /slack discipline <id> [threshold]     — enable bot loop prevention
  *   /slack discipline show [<id>]          — show settings + current count
@@ -112,6 +115,20 @@ async function slackApi(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** Best-effort Telegram notification to lifecycle chat (fire-and-forget) */
+async function notifyTelegramLifecycle(text: string): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
+  if (!token || !chatId) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, disable_notification: true }),
+    });
+  } catch {} // best-effort
 }
 
 // ── JSON file helpers (for pairing files only) ───────────────
@@ -596,19 +613,22 @@ async function handleChannelSet(id: string, keyAndValue: string): Promise<string
 
         const channelCfg = config?.channels?.slack?.channels?.[id] ?? {};
         if (!channelCfg.allowBots) {
-          await configSet(`channels.slack.channels.${id}.allowBots`, "true");
-          extras.push("  + allowBots: true");
+          const r = await configSet(`channels.slack.channels.${id}.allowBots`, "true");
+          if (r.ok) extras.push("  + allowBots: true");
+          else { extras.push(`  ✗ allowBots: ${r.error}`); await notifyTelegramLifecycle(`⚠️ [slack] auto-config failed (channel: ${id}): allowBots — ${r.error}`); }
         }
         if (!channelCfg.requireMention) {
-          await configSet(`channels.slack.channels.${id}.requireMention`, "true");
-          extras.push("  + requireMention: true");
+          const r = await configSet(`channels.slack.channels.${id}.requireMention`, "true");
+          if (r.ok) extras.push("  + requireMention: true");
+          else { extras.push(`  ✗ requireMention: ${r.error}`); await notifyTelegramLifecycle(`⚠️ [slack] auto-config failed (channel: ${id}): requireMention — ${r.error}`); }
         }
         if (!channelCfg.systemPrompt?.includes("conversation-state")) {
           const prompt = channelCfg.systemPrompt
             ? `${channelCfg.systemPrompt}\n${BOT_TO_BOT_MENTION_PROMPT}`
             : BOT_TO_BOT_MENTION_PROMPT;
-          await configSet(`channels.slack.channels.${id}.systemPrompt`, prompt);
-          extras.push(`  + systemPrompt: "${BOT_TO_BOT_MENTION_PROMPT}"`);
+          const r = await configSet(`channels.slack.channels.${id}.systemPrompt`, prompt);
+          if (r.ok) extras.push(`  + systemPrompt: "${BOT_TO_BOT_MENTION_PROMPT}"`);
+          else { extras.push(`  ✗ systemPrompt: ${r.error}`); await notifyTelegramLifecycle(`⚠️ [slack] auto-config failed (channel: ${id}): systemPrompt — ${r.error}`); }
         }
       }
     }
@@ -1059,7 +1079,11 @@ export default function register(api: any) {
       disciplineTriggered.add(channelId);
 
       // Disable allowBots to stop bot-to-bot loop
-      await configSet(`channels.slack.channels.${channelId}.allowBots`, "false");
+      const setResult = await configSet(`channels.slack.channels.${channelId}.allowBots`, "false");
+      if (!setResult.ok) {
+        console.error(`[slack-tools] discipline: configSet failed: ${setResult.error}`);
+        await notifyTelegramLifecycle(`⚠️ [slack] discipline configSet failed (channel: ${channelId}): ${setResult.error}`);
+      }
 
       // DM trigger notice to owner (paired users)
       if (token) {
@@ -1074,12 +1098,16 @@ export default function register(api: any) {
         for (const userId of pairedUsers) {
           try {
             await slackApi(token, "chat.postMessage", { channel: userId, text: notice });
-          } catch {}
+          } catch {} // Design Decision: best-effort notification — discipline core action (disable allowBots + restart) must not be blocked by notification failure
         }
       }
 
       // Immediate restart
-      await restartGateway();
+      const restartResult = await restartGateway();
+      if (!restartResult.ok) {
+        console.error(`[slack-tools] discipline: restartGateway failed: ${restartResult.error}`);
+        await notifyTelegramLifecycle(`⚠️ [slack] discipline restartGateway failed (channel: ${channelId}): ${restartResult.error}`);
+      }
     }
   });
 }

@@ -543,6 +543,8 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 }
 
 // Discord configuration
+// Design Decision: DM policy construction is repeated across Discord/Slack branches for clarity —
+// each channel config block is self-contained and easy to understand independently.
 // Discord uses a nested dm object: dm.policy, dm.allowFrom (per DiscordDmConfig)
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';

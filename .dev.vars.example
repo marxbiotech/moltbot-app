@@ -43,8 +43,9 @@ MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
 # DISCORD_BOT_TOKEN=optional
 # DISCORD_DM_POLICY=optional
 # SLACK_BOT_TOKEN=xoxb-...
-# SLACK_APP_TOKEN=xapp-...          # Socket mode (mutually exclusive with SIGNING_SECRET)
-# SLACK_SIGNING_SECRET=your-secret  # HTTP mode (mutually exclusive with APP_TOKEN)
+# SLACK_APP_TOKEN=xapp-...          # Socket mode (ignored when SIGNING_SECRET is set)
+# SLACK_SIGNING_SECRET=your-secret  # HTTP mode (takes priority over APP_TOKEN)
+# SLACK_DM_POLICY=optional
 
 # === AWS Bedrock MFA auth (optional) ===
 # AWS_ACCESS_KEY_ID=your-access-key

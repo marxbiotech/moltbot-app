@@ -11,12 +11,9 @@ export type WebhookSource = 'telegram' | 'slack';
  */
 export interface WebhookQueueMessage {
   source: WebhookSource;
-  body: string;
+  rawBody: string;
   headers: Record<string, string>;
 }
-
-/** @deprecated Use WebhookQueueMessage — kept for backward compat */
-export type TelegramQueueMessage = WebhookQueueMessage;
 
 /**
  * Environment bindings for the Moltbot Worker
