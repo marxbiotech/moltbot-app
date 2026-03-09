@@ -52,9 +52,11 @@ GH_TOKEN=$(gh_app_token mbow-ra) gh run watch <RUN_ID> \
 
 | Environment | Domain | Notes |
 |---|---|---|
-| staging | starkerneldev.com | 開發測試，自動部署 |
-| preview | preview.marxbiotech.com | 正式資料 preview，需 review |
+| staging | official2026.starkerneldev.com | 開發測試 |
+| preview | preview.marxbiotech.com | 正式資料 preview |
 | production | marxbiotech.com | 正式環境 |
+
+> **Note:** Web deploy 修改的是 `deploy-trigger.auto.tfvars`（不受 CODEOWNERS 保護），所有環境都是自動推送到 main，不需要 PR review。
 
 ## Important Notes
 

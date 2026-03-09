@@ -198,36 +198,13 @@ fi
 # Decodes GITHUB_APPS JSON env var → ~/.github-apps/<name>/{app-id, private-key.pem, installation-id}
 # Used by gh_app_token script to generate installation tokens via openssl JWT + curl.
 if [ -n "$GITHUB_APPS" ]; then
-    if node -e "
-        try {
-            const apps = JSON.parse(process.env.GITHUB_APPS);
-            const fs = require('fs');
-            const path = require('path');
-            const required = ['appId', 'installationId', 'privateKey'];
-            for (const [name, cfg] of Object.entries(apps)) {
-                for (const field of required) {
-                    if (cfg[field] == null || cfg[field] === '') {
-                        console.error('ERROR: GitHub App \"' + name + '\" is missing required field \"' + field + '\"');
-                        process.exit(1);
-                    }
-                }
-                const dir = path.join(process.env.HOME, '.github-apps', name);
-                fs.mkdirSync(dir, { recursive: true });
-                fs.writeFileSync(path.join(dir, 'app-id'), String(cfg.appId));
-                fs.writeFileSync(path.join(dir, 'installation-id'), String(cfg.installationId));
-                fs.writeFileSync(path.join(dir, 'private-key.pem'), Buffer.from(String(cfg.privateKey), 'base64').toString());
-                fs.chmodSync(path.join(dir, 'private-key.pem'), 0o600);
-            }
-            console.log('GitHub Apps configured:', Object.keys(apps).join(', '));
-        } catch (err) {
-            console.error('ERROR: Failed to parse GITHUB_APPS:', err.message);
-            process.exit(1);
-        }
-    "; then
-        :
-    else
-        echo "WARNING: GitHub Apps credential setup failed (see error above). Continuing startup without GitHub Apps."
-    fi
+    decode_github_apps || {
+        echo "================================================================" >&2
+        echo "ERROR: GitHub Apps credential setup FAILED (see error above)." >&2
+        echo "  gh_app_token and dependent skills (web_deploy) will NOT work." >&2
+        echo "  Check GITHUB_APPS JSON format and base64-encoded private keys." >&2
+        echo "================================================================" >&2
+    }
 fi
 
 # ============================================================

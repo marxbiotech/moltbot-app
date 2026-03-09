@@ -78,7 +78,11 @@ export interface MoltbotEnv {
   GITHUB_APPS?: string;
 }
 
-/** Shape of a single GitHub App credential entry in GITHUB_APPS JSON */
+/**
+ * Shape of a single GitHub App credential entry in GITHUB_APPS JSON.
+ * Companion documentation type — not imported at runtime. Decoding happens
+ * in extensions/github-apps/scripts/decode_github_apps.js.
+ */
 export interface GitHubAppCredential {
   appId: string;
   installationId: string;
@@ -86,7 +90,10 @@ export interface GitHubAppCredential {
   privateKey: string;
 }
 
-/** Parsed shape of the GITHUB_APPS env var: { "<config-name>": GitHubAppCredential } */
+/**
+ * Parsed shape of the GITHUB_APPS env var: { "<config-name>": GitHubAppCredential }.
+ * Companion documentation type — see GitHubAppCredential for details.
+ */
 export type GitHubAppsConfig = Record<string, GitHubAppCredential>;
 
 /**

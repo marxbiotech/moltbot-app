@@ -41,11 +41,12 @@ b64url() {
 }
 
 # Validate PEM key before signing
-if ! openssl rsa -in "$PRIVATE_KEY" -check -noout 2>/dev/null; then
+PEM_CHECK_ERR=$(openssl rsa -in "$PRIVATE_KEY" -check -noout 2>&1) || {
     echo "Error: Invalid RSA private key at $PRIVATE_KEY" >&2
+    echo "OpenSSL: $PEM_CHECK_ERR" >&2
     echo "Verify that GITHUB_APPS.$APP_NAME.privateKey is a valid base64-encoded PEM RSA key" >&2
     exit 1
-fi
+}
 
 HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
 PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$IAT" "$EXP" "$APP_ID" | b64url)
@@ -57,16 +58,23 @@ SIGNATURE=$(printf '%s.%s' "$HEADER" "$PAYLOAD" \
 JWT="${HEADER}.${PAYLOAD}.${SIGNATURE}"
 
 # --- Exchange JWT for Installation Token ---
-HTTP_CODE=$(curl -s -o /tmp/gh_app_response -w "%{http_code}" -X POST \
+# Design Decision: curl network errors (DNS, TLS) cause set -e to abort with no message.
+# This is acceptable because the container environment has reliable connectivity to GitHub,
+# and the generic exit-on-error is sufficient for the rare network failure case.
+TMPFILE=$(mktemp /tmp/gh_app_response.XXXXXX)
+trap 'rm -f "$TMPFILE"' EXIT
+
+HTTP_CODE=$(curl -s -o "$TMPFILE" -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $JWT" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/app/installations/$INSTALLATION_ID/access_tokens")
-RESPONSE=$(cat /tmp/gh_app_response 2>/dev/null)
-rm -f /tmp/gh_app_response
+RESPONSE=$(cat "$TMPFILE" 2>/dev/null)
 
 if [ "$HTTP_CODE" != "201" ]; then
     echo "Error: GitHub API returned HTTP $HTTP_CODE for app '$APP_NAME'" >&2
+    # Design Decision: No raw response fallback when jq is unavailable — the OpenClaw
+    # container image includes jq, so the jq-only path is sufficient for production use.
     if command -v jq &>/dev/null; then
         MSG=$(echo "$RESPONSE" | jq -r '.message // empty')
         [ -n "$MSG" ] && echo "Message: $MSG" >&2
