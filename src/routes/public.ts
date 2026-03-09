@@ -1,13 +1,12 @@
 import { Hono } from 'hono';
 import type { Sandbox } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from '../types';
-import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from '../config';
-import { timingSafeEqual } from '../utils/crypto';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from '../config';
+import { timingSafeEqual, verifySlackSignature } from '../utils/crypto';
 import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
-/** Shared webhook proxy: detect container state → queue or fire-and-forget → cold start trigger */
+/** Shared webhook proxy: detect container state → queue or fire-and-forget (+ cold start trigger in parallel) */
 async function proxyWebhook(opts: {
-  tag: string;
   source: WebhookSource;
   sandbox: Sandbox;
   env: MoltbotEnv;
@@ -18,7 +17,8 @@ async function proxyWebhook(opts: {
   proxyPort: number;
   proxyPath: string;
 }): Promise<{ isHot: boolean; isCold: boolean }> {
-  const { tag, source, sandbox, env, executionCtx, queue, bodyString, headers, proxyPort, proxyPath } = opts;
+  const { source, sandbox, env, executionCtx, queue, bodyString, headers, proxyPort, proxyPath } = opts;
+  const tag = source.toUpperCase();
 
   // Determine container state: cold / warming / hot
   let existingProcess = null;
@@ -26,6 +26,15 @@ async function proxyWebhook(opts: {
     existingProcess = await findExistingMoltbotProcess(sandbox);
   } catch (err) {
     console.error(`[${tag}] Failed to check process state, treating as cold:`, err);
+    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+      executionCtx.waitUntil(
+        fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [${tag.toLowerCase()}] findExistingMoltbotProcess failed: ${err}`, disable_notification: true }),
+        }).catch(() => {})
+      );
+    }
   }
   let isHot = false;
   if (existingProcess?.status === 'running') {
@@ -46,7 +55,24 @@ async function proxyWebhook(opts: {
         { source, rawBody: bodyString, headers },
         { delaySeconds },
       ).catch((err) => {
-        console.error(`[${tag}] Queue send failed:`, err);
+        console.error(`[${tag}] Queue send failed, falling back to fire-and-forget:`, err);
+        if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
+          fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [${tag.toLowerCase()}] Queue send failed, using fire-and-forget fallback`, disable_notification: true }),
+          }).catch(() => {});
+        }
+        return ensureMoltbotGateway(sandbox, env).then(() =>
+          sandbox.containerFetch(
+            new Request(`http://localhost:${proxyPort}${proxyPath}`, {
+              method: 'POST',
+              headers,
+              body: bodyString,
+            }),
+            proxyPort,
+          )
+        );
       })
     );
   } else {
@@ -67,7 +93,7 @@ async function proxyWebhook(opts: {
     );
   }
 
-  // Cold or warming: trigger container startup
+  // Cold or warming: trigger container startup (idempotent — safe if also called from fire-and-forget path above)
   if (!isHot) {
     executionCtx.waitUntil(
       ensureMoltbotGateway(sandbox, env).catch((err) => {
@@ -266,7 +292,6 @@ publicRoutes.post('/telegram/webhook', async (c) => {
   // WEBHOOK_QUEUE (new) → TELEGRAM_QUEUE (deprecated) → fire-and-forget
   const telegramQueue = c.env.WEBHOOK_QUEUE ?? c.env.TELEGRAM_QUEUE;
   const { isHot, isCold } = await proxyWebhook({
-    tag: 'TELEGRAM',
     source: 'telegram',
     sandbox,
     env: c.env,
@@ -274,8 +299,8 @@ publicRoutes.post('/telegram/webhook', async (c) => {
     queue: telegramQueue,
     bodyString,
     headers: queueHeaders,
-    proxyPort: TELEGRAM_WEBHOOK_PORT,
-    proxyPath: '/telegram-webhook',
+    proxyPort: WEBHOOK_ROUTES.telegram.port,
+    proxyPath: WEBHOOK_ROUTES.telegram.path,
   });
 
   // Cold or warming: notify owner
@@ -320,11 +345,24 @@ publicRoutes.post('/slack/events', async (c) => {
   // Buffer body before any async work — request stream closes once we respond
   const bodyString = await c.req.text();
 
+  // Verify Slack HMAC signature at the Worker edge.
+  // This rejects unauthenticated traffic before it reaches the queue or container,
+  // and allows the queue consumer to re-sign with a fresh timestamp for delivery.
+  const slackTimestamp = c.req.header('X-Slack-Request-Timestamp');
+  const slackSignature = c.req.header('X-Slack-Signature');
+  if (!slackTimestamp || !slackSignature) {
+    return c.json({ error: 'Missing signature headers' }, 401);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - parseInt(slackTimestamp, 10)) > 300) {
+    return c.json({ error: 'Stale request' }, 401);
+  }
+  if (!await verifySlackSignature(c.env.SLACK_SIGNING_SECRET, slackTimestamp, bodyString, slackSignature)) {
+    return c.json({ error: 'Invalid signature' }, 401);
+  }
+
   // Handle url_verification challenge directly (works even during cold start).
-  // This only happens once when setting the Request URL in Slack admin.
-  // Design Decision: No HMAC signature verification here — url_verification is a one-time
-  // Slack admin operation where the caller only gets their own challenge string echoed back,
-  // posing no security risk. Full signing verification happens in Bolt for all real events.
+  // HMAC signature was already verified above.
   try {
     const payload = JSON.parse(bodyString);
     if (payload.type === 'url_verification') {
@@ -340,15 +378,11 @@ publicRoutes.post('/slack/events', async (c) => {
   // Serializable headers for queue messages
   const queueHeaders: Record<string, string> = {
     'content-type': c.req.header('content-type') || 'application/json',
+    'X-Slack-Request-Timestamp': slackTimestamp,
+    'X-Slack-Signature': slackSignature,
   };
-  // Slack signing headers — required by Bolt's HTTPReceiver for HMAC verification
-  const slackTimestamp = c.req.header('X-Slack-Request-Timestamp');
-  const slackSignature = c.req.header('X-Slack-Signature');
-  if (slackTimestamp) queueHeaders['X-Slack-Request-Timestamp'] = slackTimestamp;
-  if (slackSignature) queueHeaders['X-Slack-Signature'] = slackSignature;
 
   await proxyWebhook({
-    tag: 'SLACK',
     source: 'slack',
     sandbox,
     env: c.env,
@@ -356,8 +390,8 @@ publicRoutes.post('/slack/events', async (c) => {
     queue: c.env.WEBHOOK_QUEUE,
     bodyString,
     headers: queueHeaders,
-    proxyPort: MOLTBOT_PORT,
-    proxyPath: '/slack/events',
+    proxyPort: WEBHOOK_ROUTES.slack.port,
+    proxyPath: WEBHOOK_ROUTES.slack.path,
   });
 
   return c.json({ ok: true });

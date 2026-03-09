@@ -25,11 +25,12 @@ import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
 import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from './types';
 import { MoltbotSandbox } from './sandbox';
-import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from './config';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from './config';
 import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
+import { signSlackRequest } from './utils/crypto';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
@@ -472,15 +473,21 @@ interface DeliveryTarget {
 
 const DELIVERY_TARGETS: Record<WebhookSource, DeliveryTarget> = {
   telegram: {
-    port: TELEGRAM_WEBHOOK_PORT,
-    path: '/telegram-webhook',
+    ...WEBHOOK_ROUTES.telegram,
     extraPorts: [MOLTBOT_PORT],
   },
-  slack: {
-    port: MOLTBOT_PORT,
-    path: '/slack/events',
-  },
+  slack: WEBHOOK_ROUTES.slack,
 };
+
+/** Awaitable lifecycle notification for queue consumer (no waitUntil available). */
+async function notifyQueueLifecycle(env: MoltbotEnv, text: string): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_LIFECYCLE_CHAT_ID) return;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text, disable_notification: true }),
+  }).catch((err) => console.warn('[QUEUE] Lifecycle notification failed:', err));
+}
 
 export default {
   fetch: app.fetch,
@@ -500,13 +507,7 @@ export default {
       process = await findExistingMoltbotProcess(sandbox);
     } catch (err) {
       console.error('[QUEUE] findExistingMoltbotProcess failed:', err);
-      if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
-        fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue] findExistingMoltbotProcess failed: ${err}`, disable_notification: true }),
-        }).catch(() => {}); // best-effort
-      }
+      await notifyQueueLifecycle(env, `⚠️ [queue] findExistingMoltbotProcess failed: ${err}`);
       for (const msg of batch.messages) msg.retry();
       return;
     }
@@ -517,13 +518,7 @@ export default {
         await ensureMoltbotGateway(sandbox, env);
       } catch (err) {
         console.error('[QUEUE] Gateway startup failed:', err);
-        if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
-          fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue] Gateway startup failed: ${err}`, disable_notification: true }),
-          }).catch(() => {}); // best-effort
-        }
+        await notifyQueueLifecycle(env, `⚠️ [queue] Gateway startup failed: ${err}`);
       }
       for (const msg of batch.messages) msg.retry();
       return;
@@ -531,6 +526,7 @@ export default {
 
     // Collect unique ports needed across all messages in this batch.
     // Legacy messages (from old TELEGRAM_QUEUE) may lack `source` — default to 'telegram'.
+    // TODO: remove `?? 'telegram'` fallback once TELEGRAM_QUEUE binding is fully removed.
     const portsNeeded = new Set<number>();
     for (const msg of batch.messages) {
       const target = DELIVERY_TARGETS[msg.body.source ?? 'telegram'];
@@ -550,13 +546,7 @@ export default {
       console.log('[QUEUE] Gateway ready');
     } catch (err) {
       console.error('[QUEUE] Port check failed, retrying...', err);
-      if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
-        fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue] Port check failed: ${err}`, disable_notification: true }),
-        }).catch(() => {}); // best-effort
-      }
+      await notifyQueueLifecycle(env, `⚠️ [queue] Port check failed: ${err}`);
       for (const msg of batch.messages) msg.retry();
       return;
     }
@@ -565,17 +555,32 @@ export default {
       const source = msg.body.source ?? 'telegram';
       const target = DELIVERY_TARGETS[source];
       if (!target) {
+        // Design Decision: unknown source is acked without operator notification — this is an
+        // extreme edge case (source mismatch during deploy) not worth adding alerting complexity for.
         console.error(`[QUEUE] Unknown source: ${source}, acking message`);
         msg.ack();
         continue;
       }
 
       try {
+        // For Slack messages, re-sign with fresh timestamp before delivery.
+        // Worker already verified the original Slack HMAC; queue delay would make
+        // the original timestamp stale (>5min), causing Bolt to reject silently.
+        const deliveryHeaders = { ...msg.body.headers };
+        if (source === 'slack' && env.SLACK_SIGNING_SECRET) {
+          const { timestamp, signature } = await signSlackRequest(
+            env.SLACK_SIGNING_SECRET,
+            msg.body.rawBody,
+          );
+          deliveryHeaders['X-Slack-Request-Timestamp'] = timestamp;
+          deliveryHeaders['X-Slack-Signature'] = signature;
+        }
+
         console.log(`[QUEUE:${source}] Delivering to port ${target.port}${target.path}...`);
         const res = await sandbox.containerFetch(
           new Request(`http://localhost:${target.port}${target.path}`, {
             method: 'POST',
-            headers: msg.body.headers,
+            headers: deliveryHeaders,
             body: msg.body.rawBody,
           }),
           target.port,
@@ -585,24 +590,12 @@ export default {
           msg.ack();
         } else {
           console.error(`[QUEUE:${source}] Error status ${res.status}, retrying...`);
-          if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
-            fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue:${source}] Delivery error status ${res.status}`, disable_notification: true }),
-            }).catch(() => {}); // best-effort
-          }
+          await notifyQueueLifecycle(env, `⚠️ [queue:${source}] Delivery error status ${res.status}`);
           msg.retry();
         }
       } catch (err) {
         console.error(`[QUEUE:${source}] Delivery failed:`, err);
-        if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_LIFECYCLE_CHAT_ID) {
-          fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text: `⚠️ [queue:${source}] Delivery failed: ${err}`, disable_notification: true }),
-          }).catch(() => {}); // best-effort
-        }
+        await notifyQueueLifecycle(env, `⚠️ [queue:${source}] Delivery failed: ${err}`);
         msg.retry();
       }
     }

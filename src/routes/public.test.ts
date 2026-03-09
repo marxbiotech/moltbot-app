@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createMockEnv, createMockSandbox, suppressConsole } from '../test-utils';
+import { signSlackRequest } from '../utils/crypto';
 import { publicRoutes } from './public';
 
 // Mock the gateway module
@@ -11,6 +12,16 @@ vi.mock('../gateway/process', () => ({
 }));
 
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from '../gateway/process';
+
+/** Generate valid Slack HMAC signing headers for a given body and secret. */
+async function slackHeaders(body: string, secret: string = 'test-secret'): Promise<Record<string, string>> {
+  const { timestamp, signature } = await signSlackRequest(secret, body);
+  return {
+    'Content-Type': 'application/json',
+    'X-Slack-Request-Timestamp': timestamp,
+    'X-Slack-Signature': signature,
+  };
+}
 
 function createApp(env: ReturnType<typeof createMockEnv>, sandbox: ReturnType<typeof createMockSandbox>) {
   const app = new Hono<AppEnv>();
@@ -207,10 +218,11 @@ describe('POST /slack/events', () => {
     const mock = createMockSandbox();
     const { fetch } = createApp(env, mock);
 
+    const body = JSON.stringify({ type: 'url_verification', challenge: 'test-challenge-123' });
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'url_verification', challenge: 'test-challenge-123' }),
+      headers: await slackHeaders(body),
+      body,
     }));
 
     expect(resp.status).toBe(200);
@@ -230,14 +242,11 @@ describe('POST /slack/events', () => {
     }));
     const { fetch, flushWaitUntil } = createApp(env, mock);
 
+    const body = JSON.stringify({ type: 'event_callback', event: { type: 'message' } });
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Slack-Request-Timestamp': '1234567890',
-        'X-Slack-Signature': 'v0=abc123',
-      },
-      body: JSON.stringify({ type: 'event_callback', event: { type: 'message' } }),
+      headers: await slackHeaders(body),
+      body,
     }));
 
     expect(resp.status).toBe(200);
@@ -262,24 +271,22 @@ describe('POST /slack/events', () => {
     mock.containerFetchMock.mockResolvedValue(new Response('{"ok":true}'));
     const { fetch, flushWaitUntil } = createApp(env, mock);
 
+    const body = JSON.stringify({ type: 'event_callback' });
+    const headers = await slackHeaders(body);
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Slack-Request-Timestamp': '1234567890',
-        'X-Slack-Signature': 'v0=abc123def456',
-      },
-      body: JSON.stringify({ type: 'event_callback' }),
+      headers,
+      body,
     }));
 
     expect(resp.status).toBe(200);
     await flushWaitUntil();
 
     const [proxiedReq] = mock.containerFetchMock.mock.calls[0];
-    const headers = proxiedReq.headers;
-    expect(headers.get('X-Slack-Request-Timestamp')).toBe('1234567890');
-    expect(headers.get('X-Slack-Signature')).toBe('v0=abc123def456');
-    expect(headers.get('content-type')).toBe('application/json');
+    const proxiedHeaders = proxiedReq.headers;
+    expect(proxiedHeaders.get('X-Slack-Request-Timestamp')).toBe(headers['X-Slack-Request-Timestamp']);
+    expect(proxiedHeaders.get('X-Slack-Signature')).toBe(headers['X-Slack-Signature']);
+    expect(proxiedHeaders.get('content-type')).toBe('application/json');
   });
 
   it('enqueues message when WEBHOOK_QUEUE is configured (hot container)', async () => {
@@ -296,13 +303,10 @@ describe('POST /slack/events', () => {
     const { fetch, flushWaitUntil } = createApp(env, mock);
 
     const body = JSON.stringify({ type: 'event_callback', event: { type: 'message' } });
+    const headers = await slackHeaders(body);
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Slack-Request-Timestamp': '1234567890',
-        'X-Slack-Signature': 'v0=sig',
-      },
+      headers,
       body,
     }));
 
@@ -317,8 +321,8 @@ describe('POST /slack/events', () => {
         rawBody: body,
         headers: {
           'content-type': 'application/json',
-          'X-Slack-Request-Timestamp': '1234567890',
-          'X-Slack-Signature': 'v0=sig',
+          'X-Slack-Request-Timestamp': headers['X-Slack-Request-Timestamp'],
+          'X-Slack-Signature': headers['X-Slack-Signature'],
         },
       },
       { delaySeconds: 0 },
@@ -341,7 +345,7 @@ describe('POST /slack/events', () => {
     const body = JSON.stringify({ type: 'event_callback' });
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await slackHeaders(body),
       body,
     }));
 
@@ -368,10 +372,11 @@ describe('POST /slack/events', () => {
     mock.containerFetchMock.mockRejectedValue(new Error('container unavailable'));
     const { fetch, flushWaitUntil } = createApp(env, mock);
 
+    const body = JSON.stringify({ type: 'event_callback' });
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'event_callback' }),
+      headers: await slackHeaders(body),
+      body,
     }));
 
     expect(resp.status).toBe(200);
@@ -389,10 +394,11 @@ describe('POST /slack/events', () => {
     vi.mocked(ensureMoltbotGateway).mockRejectedValue(new Error('gateway startup failed'));
     const { fetch, flushWaitUntil } = createApp(env, mock);
 
+    const body = JSON.stringify({ type: 'event_callback' });
     const resp = await fetch(new Request('http://localhost/slack/events', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'event_callback' }),
+      headers: await slackHeaders(body),
+      body,
     }));
 
     expect(resp.status).toBe(200);

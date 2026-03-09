@@ -570,6 +570,9 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     }
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
+        // Design Decision: appToken placeholder is required because OpenClaw's onboarding
+        // isConfigured check requires appToken regardless of mode. The provider correctly
+        // ignores appToken in HTTP mode (only used for socket mode WebSocket connection).
         appToken: process.env.SLACK_APP_TOKEN || 'xapp-http-mode-placeholder',
         signingSecret: process.env.SLACK_SIGNING_SECRET,
         mode: 'http',

@@ -129,7 +129,7 @@ describe('queue consumer', () => {
     expect(req.method).toBe('POST');
   });
 
-  it('acks slack message on successful delivery', async () => {
+  it('acks slack message on successful delivery with re-signed headers', async () => {
     const mockProcess = {
       id: 'proc-1',
       status: 'running' as Process['status'],
@@ -144,7 +144,7 @@ describe('queue consumer', () => {
       'X-Slack-Signature': 'v0=abc123',
     });
     const batch = createBatch([msg]);
-    const env = createMockEnv();
+    const env = createMockEnv({ SLACK_SIGNING_SECRET: 'test-signing-secret' });
 
     await worker.queue(batch, env);
 
@@ -155,6 +155,13 @@ describe('queue consumer', () => {
     expect(port).toBe(18789);
     expect(req.url).toBe('http://localhost:18789/slack/events');
     expect(req.method).toBe('POST');
+
+    // Verify headers were re-signed with fresh timestamp (not the original stale one)
+    const deliveredTimestamp = req.headers.get('X-Slack-Request-Timestamp');
+    const deliveredSignature = req.headers.get('X-Slack-Signature');
+    expect(deliveredTimestamp).not.toBe('1234567890');
+    expect(Number(deliveredTimestamp)).toBeGreaterThan(1234567890);
+    expect(deliveredSignature).toMatch(/^v0=[0-9a-f]{64}$/);
   });
 
   it('retries message on non-2xx response', async () => {
@@ -211,12 +218,12 @@ describe('queue consumer', () => {
       'X-Slack-Signature': 'v0=abc123',
     });
     const batch = createBatch([telegramMsg, slackMsg]);
-    const env = createMockEnv();
+    const env = createMockEnv({ SLACK_SIGNING_SECRET: 'test-signing-secret' });
 
     await worker.queue(batch, env);
 
     // Both ports checked (8787 for telegram target, 18789 for slack target + telegram extraPorts)
-    const portCalls = mockProcess.waitForPort.mock.calls.map(([port]: [number]) => port);
+    const portCalls = mockProcess.waitForPort.mock.calls.map((call) => call[0] as number);
     expect(portCalls).toContain(8787);
     expect(portCalls).toContain(18789);
 
@@ -234,6 +241,19 @@ describe('queue consumer', () => {
     const [slackReq, slackPort] = mockSandbox.containerFetchMock.mock.calls[1];
     expect(slackPort).toBe(18789);
     expect(slackReq.url).toBe('http://localhost:18789/slack/events');
+  });
+
+  it('retries all messages when findExistingMoltbotProcess throws', async () => {
+    vi.mocked(findExistingMoltbotProcess).mockRejectedValue(new Error('sandbox API error'));
+    const msg = createQueueMessage('telegram');
+    const batch = createBatch([msg]);
+    const env = createMockEnv();
+
+    await worker.queue(batch, env);
+
+    expect(msg.retry).toHaveBeenCalledOnce();
+    expect(msg.ack).not.toHaveBeenCalled();
+    expect(ensureMoltbotGateway).not.toHaveBeenCalled();
   });
 
   it('acks message with unknown source', async () => {

@@ -8,7 +8,7 @@ import { dirname } from "node:path";
  *
  * Config writes delegate to `openclaw config set/unset` CLI so schema
  * validation is handled by OpenClaw itself — no hardcoded type mappings.
- * Array operations use runtime.config.loadConfig/writeConfigFile.
+ * Array operations use runtime.config.loadConfig to read current values.
  *
  * Subcommands:
  *   /slack                                 — show help
@@ -123,15 +123,16 @@ async function notifyTelegramLifecycle(text: string): Promise<void> {
   const chatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
   if (!token || !chatId) return;
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, disable_notification: true }),
     });
+    if (!res.ok) console.warn(`[slack-tools] Telegram lifecycle notification failed: ${res.status}`);
   } catch {} // best-effort
 }
 
-// ── JSON file helpers (for pairing files only) ───────────────
+// ── JSON file helpers (pairing, discipline, allowFrom) ───────
 
 function readJsonFile(path: string): any {
   try {
@@ -373,15 +374,16 @@ function handleChannelList(config: any): string {
   const lines: string[] = [`Configured channels (${Object.keys(channels).length}):`, ""];
 
   for (const [id, cfg] of Object.entries(channels)) {
+    const c = cfg as Record<string, unknown>;
     const flags: string[] = [];
-    if ((cfg as any).enabled === true) flags.push("enabled");
-    if ((cfg as any).enabled === false) flags.push("disabled");
-    if ((cfg as any).requireMention === false) flags.push("no-mention");
-    if ((cfg as any).requireMention === true) flags.push("mention-required");
-    if ((cfg as any).allowBots === true) flags.push("allow-bots");
-    if ((cfg as any).systemPrompt) flags.push("has-prompt");
-    if ((cfg as any).users && (cfg as any).users.length > 0)
-      flags.push(`${(cfg as any).users.length} user(s)`);
+    if (c.enabled === true) flags.push("enabled");
+    if (c.enabled === false) flags.push("disabled");
+    if (c.requireMention === false) flags.push("no-mention");
+    if (c.requireMention === true) flags.push("mention-required");
+    if (c.allowBots === true) flags.push("allow-bots");
+    if (c.systemPrompt) flags.push("has-prompt");
+    if (Array.isArray(c.users) && c.users.length > 0)
+      flags.push(`${c.users.length} user(s)`);
 
     lines.push(`  ${id}  [${flags.join(", ") || "default"}]`);
   }
@@ -637,7 +639,7 @@ async function handleChannelSet(id: string, keyAndValue: string): Promise<string
     return `[PASS] ${op} ${items.join(", ")} → ${key} = ${jsonArray}${extraInfo}\n\nRestart gateway to apply.`;
   }
 
-  // Detect JSON array/object values — pass through to configSet (JSON5-aware)
+  // Detect JSON array/object values — pass through to configSet
   if (rawValue.startsWith("[") || rawValue.startsWith("{")) {
     const result = await configSet(`channels.slack.channels.${id}.${key}`, rawValue);
     if (!result.ok) return `[FAIL] ${result.error}`;
