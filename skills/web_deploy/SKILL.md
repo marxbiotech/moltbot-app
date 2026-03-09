@@ -15,15 +15,15 @@ Trigger the `web-deploy.yml` workflow in the env repo to redeploy the static web
 Use the `gh_app_token` script to get a GitHub App installation token:
 
 ```bash
-GH_TOKEN=$(gh_app_token marx-env)
+GH_TOKEN=$(gh_app_token mbow-ra)
 ```
 
-This token authenticates as the `for-gitops-env-repo` GitHub App, which has permission to trigger workflows and push to the env repo.
+This token authenticates as the `MarxBiotech Official Website RA` GitHub App (config name: `mbow-ra`), which has permission to trigger/view workflows and read content on `marxbiotech/www-marxbiotech-com-env`.
 
 ## Trigger Deploy
 
 ```bash
-GH_TOKEN=$(gh_app_token marx-env) gh workflow run web-deploy.yml \
+GH_TOKEN=$(gh_app_token mbow-ra) gh workflow run web-deploy.yml \
   --repo marxbiotech/www-marxbiotech-com-env \
   -f environment=<ENV>
 ```
@@ -35,7 +35,7 @@ Where `<ENV>` is one of: `staging`, `preview`, `production`.
 After triggering, wait a few seconds then check status:
 
 ```bash
-GH_TOKEN=$(gh_app_token marx-env) gh run list \
+GH_TOKEN=$(gh_app_token mbow-ra) gh run list \
   --repo marxbiotech/www-marxbiotech-com-env \
   --workflow web-deploy.yml \
   --limit 1
@@ -44,7 +44,7 @@ GH_TOKEN=$(gh_app_token marx-env) gh run list \
 To watch a specific run until completion:
 
 ```bash
-GH_TOKEN=$(gh_app_token marx-env) gh run watch <RUN_ID> \
+GH_TOKEN=$(gh_app_token mbow-ra) gh run watch <RUN_ID> \
   --repo marxbiotech/www-marxbiotech-com-env
 ```
 
