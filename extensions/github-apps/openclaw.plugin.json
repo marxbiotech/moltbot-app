@@ -1,0 +1,10 @@
+{
+  "id": "github-apps",
+  "name": "GitHub Apps",
+  "description": "GitHub App token management. Provides /gh_apps command.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

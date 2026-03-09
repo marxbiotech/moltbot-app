@@ -74,7 +74,27 @@ export interface MoltbotEnv {
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
+  // GitHub Apps credentials — JSON string, see GitHubAppsConfig for shape
+  GITHUB_APPS?: string;
 }
+
+/**
+ * Shape of a single GitHub App credential entry in GITHUB_APPS JSON.
+ * Companion documentation type — not imported at runtime. Decoding happens
+ * in extensions/github-apps/scripts/decode_github_apps.js.
+ */
+export interface GitHubAppCredential {
+  appId: string;
+  installationId: string;
+  /** base64-encoded RSA PEM private key */
+  privateKey: string;
+}
+
+/**
+ * Parsed shape of the GITHUB_APPS env var: { "<config-name>": GitHubAppCredential }.
+ * Companion documentation type — see GitHubAppCredential for details.
+ */
+export type GitHubAppsConfig = Record<string, GitHubAppCredential>;
 
 /**
  * Authenticated user from Cloudflare Access

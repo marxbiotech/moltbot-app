@@ -1,11 +1,8 @@
 #!/bin/bash
 # Startup script for OpenClaw in Cloudflare Sandbox
-# This script:
-# 1. Restores config/workspace from R2 via rclone (if configured)
-# 2. Runs openclaw onboard --non-interactive to configure from env vars
-# 3. Patches config for features onboard doesn't cover (channels, gateway auth)
-# 4. Starts a background sync loop (rclone, watches for file changes)
-# 5. Starts the gateway
+# Bootstraps the container: restores state from R2, installs skills/plugins,
+# sets up credentials (GitHub Apps, AWS), configures the gateway, then starts
+# a background sync loop and the gateway process. See section headers below.
 
 set -e
 
@@ -193,6 +190,21 @@ if [ -d "$PLUGIN_STAGING" ]; then
         fi
     done
     echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
+fi
+
+# ============================================================
+# GITHUB APPS CREDENTIAL SETUP
+# ============================================================
+# Decodes GITHUB_APPS JSON env var → ~/.github-apps/<name>/{app-id, private-key.pem, installation-id}
+# Used by gh_app_token script to generate installation tokens via openssl JWT + curl.
+if [ -n "$GITHUB_APPS" ]; then
+    decode_github_apps || {
+        echo "================================================================" >&2
+        echo "ERROR: GitHub Apps credential setup FAILED (see error above)." >&2
+        echo "  gh_app_token and dependent skills will NOT work." >&2
+        echo "  Check GITHUB_APPS JSON format and base64-encoded private keys." >&2
+        echo "================================================================" >&2
+    }
 fi
 
 # ============================================================
@@ -560,6 +572,8 @@ if (process.env.DISCORD_BOT_TOKEN) {
 }
 
 // Slack configuration
+// Merge env-driven keys into existing config to preserve runtime changes
+// (channels, groups, etc.) while ensuring env vars always take precedence.
 // HTTP mode: SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET (webhook via Worker proxy)
 // Socket mode: SLACK_BOT_TOKEN + SLACK_APP_TOKEN (direct WebSocket)
 if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
@@ -568,7 +582,9 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     if (dmPolicy === 'open') {
         dm.allowFrom = ['*'];
     }
+    const existingSlack = config.channels.slack || {};
     config.channels.slack = {
+        ...existingSlack,
         botToken: process.env.SLACK_BOT_TOKEN,
         // Design Decision: appToken placeholder is required because OpenClaw's onboarding
         // isConfigured check requires appToken regardless of mode. The provider correctly
@@ -587,7 +603,9 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     if (dmPolicy === 'open') {
         dm.allowFrom = ['*'];
     }
+    const existingSlack = config.channels.slack || {};
     config.channels.slack = {
+        ...existingSlack,
         botToken: process.env.SLACK_BOT_TOKEN,
         appToken: process.env.SLACK_APP_TOKEN,
         enabled: true,
