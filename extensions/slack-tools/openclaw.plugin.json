@@ -1,0 +1,10 @@
+{
+  "id": "slack-tools",
+  "name": "Slack Tools",
+  "description": "Slack management. /slack pair|channel|prompt|chatid|discipline",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -17,19 +17,20 @@
  * - MOLTBOT_GATEWAY_TOKEN: Token to protect gateway access
  * - TELEGRAM_BOT_TOKEN: Telegram bot token
  * - DISCORD_BOT_TOKEN: Discord bot token
- * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN: Slack tokens
+ * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN (socket mode) or SLACK_SIGNING_SECRET (HTTP mode)
  */
 
 import { Hono } from 'hono';
 import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
-import type { AppEnv, MoltbotEnv, TelegramQueueMessage } from './types';
+import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from './types';
 import { MoltbotSandbox } from './sandbox';
-import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT } from './config';
+import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from './config';
 import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
+import { signSlackRequest } from './utils/crypto';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
@@ -462,10 +463,36 @@ app.all('*', async (c) => {
   });
 });
 
+/** Delivery target config per webhook source */
+interface DeliveryTarget {
+  port: number;
+  path: string;
+  /** Extra ports that must also be ready before delivering (e.g. Telegram also needs the gateway port) */
+  extraPorts?: number[];
+}
+
+const DELIVERY_TARGETS: Record<WebhookSource, DeliveryTarget> = {
+  telegram: {
+    ...WEBHOOK_ROUTES.telegram,
+    extraPorts: [MOLTBOT_PORT],
+  },
+  slack: WEBHOOK_ROUTES.slack,
+};
+
+/** Awaitable lifecycle notification for queue consumer (no waitUntil available). */
+async function notifyQueueLifecycle(env: MoltbotEnv, text: string): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_LIFECYCLE_CHAT_ID) return;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: env.TELEGRAM_LIFECYCLE_CHAT_ID, text, disable_notification: true }),
+  }).catch((err) => console.warn('[QUEUE] Lifecycle notification failed:', err));
+}
+
 export default {
   fetch: app.fetch,
 
-  async queue(batch: MessageBatch<TelegramQueueMessage>, env: MoltbotEnv) {
+  async queue(batch: MessageBatch<WebhookQueueMessage>, env: MoltbotEnv) {
     console.log(`[QUEUE] Consumer triggered, batch size: ${batch.messages.length}`);
     const options = buildSandboxOptions(env);
     const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
@@ -480,6 +507,7 @@ export default {
       process = await findExistingMoltbotProcess(sandbox);
     } catch (err) {
       console.error('[QUEUE] findExistingMoltbotProcess failed:', err);
+      await notifyQueueLifecycle(env, `⚠️ [queue] findExistingMoltbotProcess failed: ${err}`);
       for (const msg of batch.messages) msg.retry();
       return;
     }
@@ -490,43 +518,87 @@ export default {
         await ensureMoltbotGateway(sandbox, env);
       } catch (err) {
         console.error('[QUEUE] Gateway startup failed:', err);
+        await notifyQueueLifecycle(env, `⚠️ [queue] Gateway startup failed: ${err}`);
       }
       for (const msg of batch.messages) msg.retry();
       return;
     }
 
-    // Process exists — check if both ports are ready with a short timeout
+    // Collect unique ports needed across all messages in this batch.
+    // Legacy messages (from old TELEGRAM_QUEUE) may lack `source` — default to 'telegram'.
+    // TODO: remove `?? 'telegram'` fallback once TELEGRAM_QUEUE binding is fully removed.
+    const portsNeeded = new Set<number>();
+    for (const msg of batch.messages) {
+      const target = DELIVERY_TARGETS[msg.body.source ?? 'telegram'];
+      if (target) {
+        portsNeeded.add(target.port);
+        for (const p of target.extraPorts ?? []) portsNeeded.add(p);
+      }
+    }
+
+    // Check all required ports are ready
     try {
-      console.log(`[QUEUE] Process ${process.id} (${process.status}), checking ports ${MOLTBOT_PORT} and ${TELEGRAM_WEBHOOK_PORT}...`);
-      await process.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: 10_000 });
-      await process.waitForPort(TELEGRAM_WEBHOOK_PORT, { mode: 'tcp', timeout: 5_000 });
+      const ports = [...portsNeeded];
+      console.log(`[QUEUE] Process ${process.id} (${process.status}), checking ports ${ports.join(', ')}...`);
+      for (const port of ports) {
+        await process.waitForPort(port, { mode: 'tcp', timeout: 10_000 });
+      }
       console.log('[QUEUE] Gateway ready');
-    } catch {
-      console.log('[QUEUE] Port not ready yet, retrying...');
+    } catch (err) {
+      console.error('[QUEUE] Port check failed, retrying...', err);
+      await notifyQueueLifecycle(env, `⚠️ [queue] Port check failed: ${err}`);
       for (const msg of batch.messages) msg.retry();
       return;
     }
 
     for (const msg of batch.messages) {
+      const source = msg.body.source ?? 'telegram';
+      const target = DELIVERY_TARGETS[source];
+      if (!target) {
+        // Design Decision: unknown source is acked without operator notification — this is an
+        // extreme edge case (source mismatch during deploy) not worth adding alerting complexity for.
+        console.error(`[QUEUE] Unknown source: ${source}, acking message`);
+        msg.ack();
+        continue;
+      }
+
       try {
-        console.log(`[QUEUE] Delivering message to port ${TELEGRAM_WEBHOOK_PORT}...`);
+        // For Slack messages, re-sign with fresh timestamp before delivery.
+        // Worker already verified the original Slack HMAC; queue delay would make
+        // the original timestamp stale (>5min), causing Bolt to reject silently.
+        const deliveryHeaders = { ...msg.body.headers };
+        // Deferred: warn when SLACK_SIGNING_SECRET is unset for Slack messages — the webhook
+        // route already returns 500 preventing new enqueues, so only pre-existing messages
+        // from before a config change would hit this path. Low priority diagnostic.
+        if (source === 'slack' && env.SLACK_SIGNING_SECRET) {
+          const { timestamp, signature } = await signSlackRequest(
+            env.SLACK_SIGNING_SECRET,
+            msg.body.rawBody,
+          );
+          deliveryHeaders['X-Slack-Request-Timestamp'] = timestamp;
+          deliveryHeaders['X-Slack-Signature'] = signature;
+        }
+
+        console.log(`[QUEUE:${source}] Delivering to port ${target.port}${target.path}...`);
         const res = await sandbox.containerFetch(
-          new Request(`http://localhost:${TELEGRAM_WEBHOOK_PORT}/telegram-webhook`, {
+          new Request(`http://localhost:${target.port}${target.path}`, {
             method: 'POST',
-            headers: msg.body.headers,
-            body: msg.body.body,
+            headers: deliveryHeaders,
+            body: msg.body.rawBody,
           }),
-          TELEGRAM_WEBHOOK_PORT,
+          target.port,
         );
         if (res.ok) {
-          console.log(`[QUEUE] Delivered message, status: ${res.status}`);
+          console.log(`[QUEUE:${source}] Delivered, status: ${res.status}`);
           msg.ack();
         } else {
-          console.error(`[QUEUE] Delivery returned error status ${res.status}, retrying...`);
+          console.error(`[QUEUE:${source}] Error status ${res.status}, retrying...`);
+          await notifyQueueLifecycle(env, `⚠️ [queue:${source}] Delivery error status ${res.status}`);
           msg.retry();
         }
       } catch (err) {
-        console.error('[QUEUE] Delivery failed:', err);
+        console.error(`[QUEUE:${source}] Delivery failed:`, err);
+        await notifyQueueLifecycle(env, `⚠️ [queue:${source}] Delivery failed: ${err}`);
         msg.retry();
       }
     }

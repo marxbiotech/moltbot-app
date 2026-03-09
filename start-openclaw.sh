@@ -543,6 +543,8 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 }
 
 // Discord configuration
+// Design Decision: DM policy construction is repeated across Discord/Slack branches for clarity —
+// each channel config block is self-contained and easy to understand independently.
 // Discord uses a nested dm object: dm.policy, dm.allowFrom (per DiscordDmConfig)
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
@@ -558,12 +560,40 @@ if (process.env.DISCORD_BOT_TOKEN) {
 }
 
 // Slack configuration
-if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
+// HTTP mode: SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET (webhook via Worker proxy)
+// Socket mode: SLACK_BOT_TOKEN + SLACK_APP_TOKEN (direct WebSocket)
+if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
+    const dmPolicy = process.env.SLACK_DM_POLICY || 'pairing';
+    const dm = { policy: dmPolicy };
+    if (dmPolicy === 'open') {
+        dm.allowFrom = ['*'];
+    }
+    config.channels.slack = {
+        botToken: process.env.SLACK_BOT_TOKEN,
+        // Design Decision: appToken placeholder is required because OpenClaw's onboarding
+        // isConfigured check requires appToken regardless of mode. The provider correctly
+        // ignores appToken in HTTP mode (only used for socket mode WebSocket connection).
+        appToken: process.env.SLACK_APP_TOKEN || 'xapp-http-mode-placeholder',
+        signingSecret: process.env.SLACK_SIGNING_SECRET,
+        mode: 'http',
+        webhookPath: '/slack/events',
+        enabled: true,
+        dm: dm,
+    };
+    console.log('Slack HTTP mode configured (webhookPath: /slack/events)');
+} else if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
+    const dmPolicy = process.env.SLACK_DM_POLICY || 'pairing';
+    const dm = { policy: dmPolicy };
+    if (dmPolicy === 'open') {
+        dm.allowFrom = ['*'];
+    }
     config.channels.slack = {
         botToken: process.env.SLACK_BOT_TOKEN,
         appToken: process.env.SLACK_APP_TOKEN,
         enabled: true,
+        dm: dm,
     };
+    console.log('Slack Socket mode configured');
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));

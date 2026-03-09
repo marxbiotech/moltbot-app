@@ -12,6 +12,12 @@ export const MOLTBOT_PORT = 18789;
 /** Port that OpenClaw's Telegram webhook HTTP server listens on inside the container */
 export const TELEGRAM_WEBHOOK_PORT = 8787;
 
+/** Webhook routing config per source — single source of truth for port/path mappings */
+export const WEBHOOK_ROUTES = {
+  telegram: { port: TELEGRAM_WEBHOOK_PORT, path: '/telegram-webhook' },
+  slack: { port: MOLTBOT_PORT, path: '/slack/events' },
+} as const;
+
 /** Maximum time to wait for Moltbot to start (3 minutes) */
 export const STARTUP_TIMEOUT_MS = 180_000;
 

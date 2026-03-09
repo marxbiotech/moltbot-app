@@ -106,19 +106,25 @@ describe('buildEnvVars', () => {
     const env = createMockEnv({
       TELEGRAM_BOT_TOKEN: 'tg-token',
       TELEGRAM_DM_POLICY: 'pairing',
+      TELEGRAM_LIFECYCLE_CHAT_ID: '123456',
       DISCORD_BOT_TOKEN: 'discord-token',
       DISCORD_DM_POLICY: 'open',
       SLACK_BOT_TOKEN: 'slack-bot',
       SLACK_APP_TOKEN: 'slack-app',
+      SLACK_SIGNING_SECRET: 'slack-signing',
+      SLACK_DM_POLICY: 'pairing',
     });
     const result = buildEnvVars(env);
 
     expect(result.TELEGRAM_BOT_TOKEN).toBe('tg-token');
     expect(result.TELEGRAM_DM_POLICY).toBe('pairing');
+    expect(result.TELEGRAM_LIFECYCLE_CHAT_ID).toBe('123456');
     expect(result.DISCORD_BOT_TOKEN).toBe('discord-token');
     expect(result.DISCORD_DM_POLICY).toBe('open');
     expect(result.SLACK_BOT_TOKEN).toBe('slack-bot');
     expect(result.SLACK_APP_TOKEN).toBe('slack-app');
+    expect(result.SLACK_SIGNING_SECRET).toBe('slack-signing');
+    expect(result.SLACK_DM_POLICY).toBe('pairing');
   });
 
   it('passes TELEGRAM_WEBHOOK_SECRET to container', () => {
