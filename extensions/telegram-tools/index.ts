@@ -1248,20 +1248,11 @@ export default function register(api: any) {
   });
 
   // ── Gateway lifecycle notifications ─────────────────────────
-  // Notify owner via Telegram when gateway starts or stops (covers restart too).
-
-  api.on("gateway_stop", async () => {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_LIFECYCLE_CHAT_ID;
-    if (!token || !chatId) return;
-    try {
-      await telegramApi(token, "sendMessage", {
-        chat_id: chatId,
-        text: "Gateway stopping...",
-        disable_notification: true,
-      });
-    } catch {} // Design Decision: best-effort lifecycle notification — gateway shutdown must not be blocked by notification failure
-  });
+  // Note: we only register gateway_start here, not gateway_stop.
+  // gateway_stop is unreliable because `openclaw gateway` spawns openclaw-gateway
+  // as a daemon child — on container shutdown the daemon is killed before the event
+  // handler can complete the Telegram API request. Stop notifications are handled
+  // reliably by MoltbotSandbox.onStop() in the Worker context instead.
 
   api.on("gateway_start", async () => {
     const token = process.env.TELEGRAM_BOT_TOKEN;
