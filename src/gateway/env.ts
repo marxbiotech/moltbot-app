@@ -72,5 +72,8 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.R2_SECRET_ACCESS_KEY) envVars.R2_SECRET_ACCESS_KEY = env.R2_SECRET_ACCESS_KEY;
   if (env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = env.R2_BUCKET_NAME;
 
+  // GitHub Apps credentials (decoded by start-openclaw.sh into ~/.github-apps/)
+  if (env.GITHUB_APPS) envVars.GITHUB_APPS = env.GITHUB_APPS;
+
   return envVars;
 }

@@ -196,6 +196,28 @@ if [ -d "$PLUGIN_STAGING" ]; then
 fi
 
 # ============================================================
+# GITHUB APPS CREDENTIAL SETUP
+# ============================================================
+# Decodes GITHUB_APPS JSON env var → ~/.github-apps/<name>/{app-id, private-key.pem, installation-id}
+# Used by gh_app_token script to generate installation tokens via openssl JWT + curl.
+if [ -n "$GITHUB_APPS" ]; then
+    node -e "
+        const apps = JSON.parse(process.env.GITHUB_APPS);
+        const fs = require('fs');
+        const path = require('path');
+        for (const [name, cfg] of Object.entries(apps)) {
+            const dir = path.join(process.env.HOME, '.github-apps', name);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, 'app-id'), cfg.appId);
+            fs.writeFileSync(path.join(dir, 'installation-id'), cfg.installationId);
+            fs.writeFileSync(path.join(dir, 'private-key.pem'), Buffer.from(cfg.privateKey, 'base64').toString());
+            fs.chmodSync(path.join(dir, 'private-key.pem'), 0o600);
+        }
+        console.log('GitHub Apps configured:', Object.keys(apps).join(', '));
+    "
+fi
+
+# ============================================================
 # ONBOARD (only if no config exists yet)
 # ============================================================
 if [ ! -f "$CONFIG_FILE" ]; then

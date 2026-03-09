@@ -74,6 +74,8 @@ export interface MoltbotEnv {
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
+  // GitHub Apps credentials (JSON: { "app-name": { appId, installationId, privateKey(base64) } })
+  GITHUB_APPS?: string;
 }
 
 /**
