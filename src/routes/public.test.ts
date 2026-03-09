@@ -213,6 +213,59 @@ describe('POST /slack/events', () => {
     expect(await resp.json()).toEqual({ error: 'Slack webhook not configured' });
   });
 
+  it('returns 401 when Slack signature headers are missing', async () => {
+    const env = createMockEnv({ SLACK_SIGNING_SECRET: 'test-secret' });
+    const mock = createMockSandbox();
+    const { fetch } = createApp(env, mock);
+
+    const resp = await fetch(new Request('http://localhost/slack/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'event_callback' }),
+    }));
+
+    expect(resp.status).toBe(401);
+    expect(await resp.json()).toEqual({ error: 'Missing signature headers' });
+  });
+
+  it('returns 401 when Slack timestamp is stale', async () => {
+    const env = createMockEnv({ SLACK_SIGNING_SECRET: 'test-secret' });
+    const mock = createMockSandbox();
+    const { fetch } = createApp(env, mock);
+
+    const resp = await fetch(new Request('http://localhost/slack/events', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Slack-Request-Timestamp': '1000000000',
+        'X-Slack-Signature': 'v0=fake',
+      },
+      body: JSON.stringify({ type: 'event_callback' }),
+    }));
+
+    expect(resp.status).toBe(401);
+    expect(await resp.json()).toEqual({ error: 'Stale request' });
+  });
+
+  it('returns 401 when Slack signature is invalid', async () => {
+    const env = createMockEnv({ SLACK_SIGNING_SECRET: 'test-secret' });
+    const mock = createMockSandbox();
+    const { fetch } = createApp(env, mock);
+
+    const resp = await fetch(new Request('http://localhost/slack/events', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Slack-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
+        'X-Slack-Signature': 'v0=0000000000000000000000000000000000000000000000000000000000000000',
+      },
+      body: JSON.stringify({ type: 'event_callback' }),
+    }));
+
+    expect(resp.status).toBe(401);
+    expect(await resp.json()).toEqual({ error: 'Invalid signature' });
+  });
+
   it('handles url_verification challenge', async () => {
     const env = createMockEnv({ SLACK_SIGNING_SECRET: 'test-secret' });
     const mock = createMockSandbox();

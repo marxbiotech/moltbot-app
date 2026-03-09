@@ -567,6 +567,9 @@ export default {
         // Worker already verified the original Slack HMAC; queue delay would make
         // the original timestamp stale (>5min), causing Bolt to reject silently.
         const deliveryHeaders = { ...msg.body.headers };
+        // Deferred: warn when SLACK_SIGNING_SECRET is unset for Slack messages — the webhook
+        // route already returns 500 preventing new enqueues, so only pre-existing messages
+        // from before a config change would hit this path. Low priority diagnostic.
         if (source === 'slack' && env.SLACK_SIGNING_SECRET) {
           const { timestamp, signature } = await signSlackRequest(
             env.SLACK_SIGNING_SECRET,

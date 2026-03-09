@@ -334,8 +334,7 @@ publicRoutes.post('/telegram/webhook', async (c) => {
 });
 
 // POST /slack/events - Slack Events API webhook endpoint (no CF Access)
-// Signing verification is handled by OpenClaw's @slack/bolt HTTPReceiver inside the container.
-// Worker's job: proxy to container via MOLTBOT_PORT, handle cold start via queue.
+// Worker verifies Slack HMAC at the edge, then proxies to container gateway via queue-based delivery.
 publicRoutes.post('/slack/events', async (c) => {
   if (!c.env.SLACK_SIGNING_SECRET) {
     console.error('[SLACK] SLACK_SIGNING_SECRET not configured');
@@ -354,6 +353,9 @@ publicRoutes.post('/slack/events', async (c) => {
     return c.json({ error: 'Missing signature headers' }, 401);
   }
   const now = Math.floor(Date.now() / 1000);
+  // Design Decision: No explicit NaN guard on parseInt — non-numeric timestamps produce NaN,
+  // which makes the > 300 check false (passing staleness), but the HMAC verification below
+  // rejects the request anyway since the computed signature incorporates the timestamp string.
   if (Math.abs(now - parseInt(slackTimestamp, 10)) > 300) {
     return c.json({ error: 'Stale request' }, 401);
   }
