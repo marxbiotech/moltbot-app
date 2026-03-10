@@ -3,6 +3,7 @@ import type { Sandbox } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from '../types';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from '../config';
 import { timingSafeEqual, verifySlackSignature } from '../utils/crypto';
+import { sanitizeCloseReason } from '../utils/ws';
 import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
 /** Shared webhook proxy: detect container state → queue or fire-and-forget (+ cold start trigger in parallel) */
@@ -397,6 +398,96 @@ publicRoutes.post('/slack/events', async (c) => {
   });
 
   return c.json({ ok: true });
+});
+
+// ALL /acp - ACP WebSocket proxy (public, gateway token auth via query param)
+// Bypasses CF Access so CLI clients can connect without CF_Authorization cookie.
+// Unlike the catch-all WS proxy: no token injection, no error transformation, target path is always /.
+publicRoutes.all('/acp', async (c) => {
+  const request = c.req.raw;
+
+  // Require WebSocket upgrade
+  if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+    return c.text('WebSocket upgrade required', 426);
+  }
+
+  const sandbox = c.get('sandbox');
+
+  // Ensure gateway is running
+  try {
+    await ensureMoltbotGateway(sandbox, c.env);
+  } catch (error) {
+    console.error('[ACP] Failed to start gateway:', error);
+    return c.json(
+      {
+        error: 'Gateway failed to start',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      503,
+    );
+  }
+
+  // Build gateway URL: always target /, forward query params (including ?token=)
+  const url = new URL(request.url);
+  const gatewayUrl = new URL(`http://localhost:${MOLTBOT_PORT}/`);
+  gatewayUrl.search = url.search;
+
+  console.log('[ACP] Proxying WebSocket connection to gateway');
+
+  // Connect to container
+  const wsRequest = new Request(gatewayUrl.toString(), request);
+  const containerResponse = await sandbox.wsConnect(wsRequest, MOLTBOT_PORT);
+  console.log('[ACP] wsConnect response status:', containerResponse.status);
+
+  const containerWs = containerResponse.webSocket;
+  if (!containerWs) {
+    console.error('[ACP] No WebSocket in container response');
+    return containerResponse;
+  }
+
+  // Create WebSocket pair for the client
+  const [clientWs, serverWs] = Object.values(new WebSocketPair());
+  serverWs.accept();
+  containerWs.accept();
+
+  // Relay: client -> container
+  serverWs.addEventListener('message', (event) => {
+    if (containerWs.readyState === WebSocket.OPEN) {
+      containerWs.send(event.data);
+    }
+  });
+
+  // Relay: container -> client (no error transformation)
+  containerWs.addEventListener('message', (event) => {
+    if (serverWs.readyState === WebSocket.OPEN) {
+      serverWs.send(event.data);
+    }
+  });
+
+  // Handle close events (sanitize only, no error transformation)
+  serverWs.addEventListener('close', (event) => {
+    containerWs.close(event.code, sanitizeCloseReason(event.reason));
+  });
+
+  containerWs.addEventListener('close', (event) => {
+    serverWs.close(event.code, sanitizeCloseReason(event.reason));
+  });
+
+  // Handle errors
+  serverWs.addEventListener('error', (event) => {
+    console.error('[ACP] Client error:', event);
+    containerWs.close(1011, 'Client error');
+  });
+
+  containerWs.addEventListener('error', (event) => {
+    console.error('[ACP] Container error:', event);
+    serverWs.close(1011, 'Container error');
+  });
+
+  return new Response(null, {
+    status: 101,
+    webSocket: clientWs,
+  });
 });
 
 export { publicRoutes };
