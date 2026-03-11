@@ -76,6 +76,9 @@ export interface MoltbotEnv {
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
   // GitHub Apps credentials — JSON string, see GitHubAppsConfig for shape
   GITHUB_APPS?: string;
+  // ACPX (Agent Control Protocol) configuration
+  ACPX_ENABLED?: string;
+  ACPX_ALLOWED_AGENTS?: string;
 }
 
 /**
