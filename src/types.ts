@@ -81,6 +81,7 @@ export interface MoltbotEnv {
   ACPX_ALLOWED_AGENTS?: string;
   // Paired node name for remote exec routing (tools.exec.node)
   EXEC_NODE_NAME?: string;
+  EXEC_NODE_WORKSPACE?: string; // Workspace path on the paired node
 }
 
 /**

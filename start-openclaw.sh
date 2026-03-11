@@ -317,7 +317,10 @@ delete config.tools.exec.askFallback;
 if (process.env.EXEC_NODE_NAME) {
     config.tools.exec.host = 'node';
     config.tools.exec.node = process.env.EXEC_NODE_NAME;
-    console.log('Exec routed to node:', process.env.EXEC_NODE_NAME);
+    if (process.env.EXEC_NODE_WORKSPACE) {
+        config.agents.defaults.workspace = process.env.EXEC_NODE_WORKSPACE;
+    }
+    console.log('Exec routed to node:', process.env.EXEC_NODE_NAME, 'workspace:', config.agents.defaults.workspace || '(default)');
 }
 
 // Layer 5: tools.exec.safeBins — binaries that bypass approval entirely
