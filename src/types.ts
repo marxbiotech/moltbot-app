@@ -79,6 +79,8 @@ export interface MoltbotEnv {
   // ACPX (Agent Control Protocol) configuration
   ACPX_ENABLED?: string;
   ACPX_ALLOWED_AGENTS?: string;
+  // Paired node name for remote exec routing (tools.exec.node)
+  EXEC_NODE_NAME?: string;
 }
 
 /**

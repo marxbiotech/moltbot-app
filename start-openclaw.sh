@@ -313,6 +313,11 @@ config.tools.exec.security = 'full';
 config.tools.exec.ask = 'off';
 // Remove any stale invalid keys that may have been written by earlier deploys
 delete config.tools.exec.askFallback;
+// Route exec to paired node (Mac) when configured
+if (process.env.EXEC_NODE_NAME) {
+    config.tools.exec.node = process.env.EXEC_NODE_NAME;
+    console.log('Exec routed to node:', process.env.EXEC_NODE_NAME);
+}
 
 // Layer 5: tools.exec.safeBins — binaries that bypass approval entirely
 // Add all skill wrapper names so command-dispatch exec calls never get blocked
