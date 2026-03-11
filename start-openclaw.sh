@@ -315,6 +315,7 @@ config.tools.exec.ask = 'off';
 delete config.tools.exec.askFallback;
 // Route exec to paired node (Mac) when configured
 if (process.env.EXEC_NODE_NAME) {
+    config.tools.exec.host = 'node';
     config.tools.exec.node = process.env.EXEC_NODE_NAME;
     console.log('Exec routed to node:', process.env.EXEC_NODE_NAME);
 }
