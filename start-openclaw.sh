@@ -614,6 +614,20 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
     console.log('Slack Socket mode configured');
 }
 
+// ACPX (Agent Control Protocol) configuration
+if (process.env.ACPX_ENABLED === 'true') {
+    const agents = (process.env.ACPX_ALLOWED_AGENTS || 'claude').split(',').map(function(s) { return s.trim(); });
+    config.acp = {
+        enabled: true,
+        dispatch: { enabled: true },
+        backend: 'acpx',
+        defaultAgent: agents[0],
+        allowedAgents: agents,
+        maxConcurrentSessions: 8,
+    };
+    console.log('ACPX enabled: defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
+}
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 
