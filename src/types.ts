@@ -82,6 +82,7 @@ export interface MoltbotEnv {
   // Paired node for claude-node plugin (Claude Code dispatch)
   CLAUDE_NODE_NAME?: string;
   CLAUDE_NODE_WORKSPACE?: string; // Workspace path on the paired node
+  CLAUDE_NODE_WORKSPACES?: string; // JSON string: workspace name→path mapping for multi-workspace ACP
 }
 
 /**

@@ -650,6 +650,27 @@ if (process.env.ACPX_ENABLED === 'true') {
         maxConcurrentSessions: 8,
     };
     console.log('ACPX enabled: backend=' + acpBackend + ' defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
+
+    // Multi-workspace: generate per-workspace agent entries from CLAUDE_NODE_WORKSPACES
+    if (process.env.CLAUDE_NODE_WORKSPACES) {
+        var workspaces = {};
+        try { workspaces = JSON.parse(process.env.CLAUDE_NODE_WORKSPACES); } catch(e) {
+            console.log('Warning: failed to parse CLAUDE_NODE_WORKSPACES: ' + e.message);
+        }
+        var wsNames = Object.keys(workspaces);
+        if (wsNames.length > 0) {
+            config.agents.list = config.agents.list || [];
+            wsNames.forEach(function(name) {
+                config.agents.list.push({
+                    id: name,
+                    runtime: { type: 'acp', acp: { agent: 'claude', cwd: workspaces[name] } }
+                });
+            });
+            config.acp.defaultAgent = wsNames[0];
+            config.acp.allowedAgents = wsNames;
+            console.log('ACP workspaces: ' + wsNames.join(', '));
+        }
+    }
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
