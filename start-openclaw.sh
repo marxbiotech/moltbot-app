@@ -318,6 +318,9 @@ config.tools.exec.security = 'full';
 config.tools.exec.ask = 'off';
 // Remove any stale invalid keys that may have been written by earlier deploys
 delete config.tools.exec.askFallback;
+// Exec runs locally in container — Mac node is only used via remote-acpx for ACP sessions
+delete config.tools.exec.host;
+delete config.tools.exec.node;
 
 // Layer 5: tools.exec.safeBins — binaries that bypass approval entirely
 // Add all skill wrapper names so command-dispatch exec calls never get blocked
@@ -337,6 +340,8 @@ delete config.tools.sandbox;
 config.agents = config.agents || {};
 config.agents.defaults = config.agents.defaults || {};
 config.agents.defaults.sandbox = { mode: 'off' };
+// Default agent workspace is inside the container (matches da-vinci baseline)
+config.agents.defaults.workspace = '/root/.openclaw/workspace';
 
 // Layer 8: Per-agent tool restrictions — R2 config may have per-agent denials
 // Clear tools restrictions on all agents in agents.list
