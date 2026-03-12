@@ -79,9 +79,9 @@ export interface MoltbotEnv {
   // ACPX (Agent Control Protocol) configuration
   ACPX_ENABLED?: string;
   ACPX_ALLOWED_AGENTS?: string;
-  // Paired node name for remote exec routing (tools.exec.node)
-  EXEC_NODE_NAME?: string;
-  EXEC_NODE_WORKSPACE?: string; // Workspace path on the paired node
+  // Paired node for claude-node plugin (Claude Code dispatch)
+  CLAUDE_NODE_NAME?: string;
+  CLAUDE_NODE_WORKSPACE?: string; // Workspace path on the paired node
 }
 
 /**

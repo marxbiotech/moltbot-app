@@ -192,6 +192,11 @@ if [ -d "$PLUGIN_STAGING" ]; then
     echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
 fi
 
+# Conditionally disable remote-acpx extension if no paired node configured
+if [ -z "${CLAUDE_NODE_NAME:-}" ]; then
+    rm -rf "$CONFIG_DIR/extensions/remote-acpx"
+fi
+
 # ============================================================
 # GITHUB APPS CREDENTIAL SETUP
 # ============================================================
@@ -313,15 +318,6 @@ config.tools.exec.security = 'full';
 config.tools.exec.ask = 'off';
 // Remove any stale invalid keys that may have been written by earlier deploys
 delete config.tools.exec.askFallback;
-// Route exec to paired node (Mac) when configured
-if (process.env.EXEC_NODE_NAME) {
-    config.tools.exec.host = 'node';
-    config.tools.exec.node = process.env.EXEC_NODE_NAME;
-    if (process.env.EXEC_NODE_WORKSPACE) {
-        config.agents.defaults.workspace = process.env.EXEC_NODE_WORKSPACE;
-    }
-    console.log('Exec routed to node:', process.env.EXEC_NODE_NAME, 'workspace:', config.agents.defaults.workspace || '(default)');
-}
 
 // Layer 5: tools.exec.safeBins — binaries that bypass approval entirely
 // Add all skill wrapper names so command-dispatch exec calls never get blocked
@@ -626,15 +622,34 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
 // ACPX (Agent Control Protocol) configuration
 if (process.env.ACPX_ENABLED === 'true') {
     const agents = (process.env.ACPX_ALLOWED_AGENTS || 'claude').split(',').map(function(s) { return s.trim(); });
+    var acpBackend = 'acpx';
+
+    // When a paired node is configured, use remote-acpx as ACP backend
+    if (process.env.CLAUDE_NODE_NAME) {
+        acpBackend = 'remote-acpx';
+        config.plugins = config.plugins || {};
+        config.plugins.entries = config.plugins.entries || {};
+        config.plugins.entries['remote-acpx'] = {
+            enabled: true,
+            config: {
+                nodeName: process.env.CLAUDE_NODE_NAME,
+                cwd: process.env.CLAUDE_NODE_WORKSPACE || undefined,
+                permissionMode: 'approve-all',
+                turnTimeoutMs: 300000
+            }
+        };
+        console.log('Remote ACPX: backend=remote-acpx, node=' + process.env.CLAUDE_NODE_NAME);
+    }
+
     config.acp = {
         enabled: true,
         dispatch: { enabled: true },
-        backend: 'acpx',
+        backend: acpBackend,
         defaultAgent: agents[0],
         allowedAgents: agents,
         maxConcurrentSessions: 8,
     };
-    console.log('ACPX enabled: defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
+    console.log('ACPX enabled: backend=' + acpBackend + ' defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
