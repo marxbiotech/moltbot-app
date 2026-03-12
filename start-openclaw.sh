@@ -666,8 +666,9 @@ if (process.env.ACPX_ENABLED === 'true') {
                     runtime: { type: 'acp', acp: { agent: 'claude', cwd: workspaces[name] } }
                 });
             });
-            config.acp.defaultAgent = wsNames[0];
-            config.acp.allowedAgents = wsNames;
+            // Append workspace names to allowedAgents; keep defaultAgent unchanged
+            // so regular Telegram sessions still use the original agent ("claude")
+            config.acp.allowedAgents = config.acp.allowedAgents.concat(wsNames);
             console.log('ACP workspaces: ' + wsNames.join(', '));
         }
     }
