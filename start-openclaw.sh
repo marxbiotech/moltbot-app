@@ -660,15 +660,22 @@ if (process.env.ACPX_ENABLED === 'true') {
         var wsNames = Object.keys(workspaces);
         if (wsNames.length > 0) {
             config.agents.list = config.agents.list || [];
+            // Remove any existing workspace entries (prevents duplicates on R2 restore)
+            config.agents.list = config.agents.list.filter(function(a) {
+                return wsNames.indexOf(a.id) === -1;
+            });
             wsNames.forEach(function(name) {
                 config.agents.list.push({
                     id: name,
                     runtime: { type: 'acp', acp: { agent: 'claude', cwd: workspaces[name] } }
                 });
             });
-            // Append workspace names to allowedAgents; keep defaultAgent unchanged
+            // Append workspace names to allowedAgents (deduplicated); keep defaultAgent unchanged
             // so regular Telegram sessions still use the original agent ("claude")
-            config.acp.allowedAgents = config.acp.allowedAgents.concat(wsNames);
+            var existing = config.acp.allowedAgents;
+            wsNames.forEach(function(name) {
+                if (existing.indexOf(name) === -1) existing.push(name);
+            });
             console.log('ACP workspaces: ' + wsNames.join(', '));
         }
     }
