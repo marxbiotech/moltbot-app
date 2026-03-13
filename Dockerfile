@@ -34,7 +34,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && aws --version
 
 # Install OpenClaw (formerly clawdbot/moltbot)
-RUN npm install -g @marxbiotech/openclaw@2026.3.11-1 \
+RUN npm install -g @marxbiotech/openclaw@2026.3.11-2 \
     && ln -s "$(npm root -g)/@marxbiotech/openclaw" "$(npm root -g)/openclaw" \
     && openclaw --version
 
