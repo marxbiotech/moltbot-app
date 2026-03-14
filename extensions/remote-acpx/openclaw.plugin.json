@@ -1,0 +1,33 @@
+{
+  "id": "remote-acpx",
+  "name": "Remote ACPX",
+  "description": "ACP runtime backend dispatching to a paired Mac node via WebSocket.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "nodeName": {
+        "type": "string",
+        "description": "Target node displayName"
+      },
+      "agentCommand": {
+        "type": "string",
+        "default": "acpx"
+      },
+      "defaultAgent": {
+        "type": "string",
+        "default": "claude"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "permissionMode": {
+        "type": "string",
+        "default": "approve-all"
+      },
+      "turnTimeoutMs": {
+        "type": "number",
+        "default": 300000
+      }
+    }
+  }
+}

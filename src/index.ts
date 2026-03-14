@@ -31,24 +31,9 @@ import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import { signSlackRequest } from './utils/crypto';
+import { sanitizeCloseReason } from './utils/ws';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
-
-/**
- * Sanitize a WebSocket close reason to be a valid ByteString (chars <= 255)
- * and at most 123 bytes (WebSocket spec limit).
- */
-function sanitizeCloseReason(reason: string): string {
-  // Replace characters outside ByteString range (> 255) with '?'
-  let sanitized = '';
-  for (const ch of reason) {
-    sanitized += ch.charCodeAt(0) > 255 ? '?' : ch;
-  }
-  if (sanitized.length > 123) {
-    sanitized = sanitized.slice(0, 120) + '...';
-  }
-  return sanitized;
-}
 
 /**
  * Transform error messages from the gateway to be more user-friendly.

@@ -192,6 +192,11 @@ if [ -d "$PLUGIN_STAGING" ]; then
     echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
 fi
 
+# Conditionally disable remote-acpx extension if no paired node configured
+if [ -z "${CLAUDE_NODE_NAME:-}" ]; then
+    rm -rf "$CONFIG_DIR/extensions/remote-acpx"
+fi
+
 # ============================================================
 # GITHUB APPS CREDENTIAL SETUP
 # ============================================================
@@ -313,6 +318,9 @@ config.tools.exec.security = 'full';
 config.tools.exec.ask = 'off';
 // Remove any stale invalid keys that may have been written by earlier deploys
 delete config.tools.exec.askFallback;
+// Exec runs locally in container — Mac node is only used via remote-acpx for ACP sessions
+delete config.tools.exec.host;
+delete config.tools.exec.node;
 
 // Layer 5: tools.exec.safeBins — binaries that bypass approval entirely
 // Add all skill wrapper names so command-dispatch exec calls never get blocked
@@ -332,6 +340,8 @@ delete config.tools.sandbox;
 config.agents = config.agents || {};
 config.agents.defaults = config.agents.defaults || {};
 config.agents.defaults.sandbox = { mode: 'off' };
+// Default agent workspace is inside the container (matches da-vinci baseline)
+config.agents.defaults.workspace = '/root/.openclaw/workspace';
 
 // Layer 8: Per-agent tool restrictions — R2 config may have per-agent denials
 // Clear tools restrictions on all agents in agents.list
@@ -612,6 +622,68 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
         dm: dm,
     };
     console.log('Slack Socket mode configured');
+}
+
+// ACPX (Agent Control Protocol) configuration
+if (process.env.ACPX_ENABLED === 'true') {
+    const agents = (process.env.ACPX_ALLOWED_AGENTS || 'claude').split(',').map(function(s) { return s.trim(); });
+    var acpBackend = 'acpx';
+
+    // When a paired node is configured, use remote-acpx as ACP backend
+    if (process.env.CLAUDE_NODE_NAME) {
+        acpBackend = 'remote-acpx';
+        config.plugins = config.plugins || {};
+        config.plugins.entries = config.plugins.entries || {};
+        config.plugins.entries['remote-acpx'] = {
+            enabled: true,
+            config: {
+                nodeName: process.env.CLAUDE_NODE_NAME,
+                cwd: process.env.CLAUDE_NODE_WORKSPACE || undefined,
+                permissionMode: 'approve-all',
+                turnTimeoutMs: 300000
+            }
+        };
+        console.log('Remote ACPX: backend=remote-acpx, node=' + process.env.CLAUDE_NODE_NAME);
+    }
+
+    config.acp = {
+        enabled: true,
+        dispatch: { enabled: true },
+        backend: acpBackend,
+        defaultAgent: agents[0],
+        allowedAgents: agents,
+        maxConcurrentSessions: 8,
+    };
+    console.log('ACPX enabled: backend=' + acpBackend + ' defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
+
+    // Multi-workspace: generate per-workspace agent entries from CLAUDE_NODE_WORKSPACES
+    if (process.env.CLAUDE_NODE_WORKSPACES) {
+        var workspaces = {};
+        try { workspaces = JSON.parse(process.env.CLAUDE_NODE_WORKSPACES); } catch(e) {
+            console.log('Warning: failed to parse CLAUDE_NODE_WORKSPACES: ' + e.message);
+        }
+        var wsNames = Object.keys(workspaces);
+        if (wsNames.length > 0) {
+            config.agents.list = config.agents.list || [];
+            // Remove any existing workspace entries (prevents duplicates on R2 restore)
+            config.agents.list = config.agents.list.filter(function(a) {
+                return wsNames.indexOf(a.id) === -1;
+            });
+            wsNames.forEach(function(name) {
+                config.agents.list.push({
+                    id: name,
+                    runtime: { type: 'acp', acp: { agent: 'claude', cwd: workspaces[name] } }
+                });
+            });
+            // Append workspace names to allowedAgents (deduplicated); keep defaultAgent unchanged
+            // so regular Telegram sessions still use the original agent ("claude")
+            var existing = config.acp.allowedAgents;
+            wsNames.forEach(function(name) {
+                if (existing.indexOf(name) === -1) existing.push(name);
+            });
+            console.log('ACP workspaces: ' + wsNames.join(', '));
+        }
+    }
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
