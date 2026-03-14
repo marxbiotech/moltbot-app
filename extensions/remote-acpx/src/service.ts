@@ -46,20 +46,21 @@ export function createRemoteAcpxService(params: {
 
       runtime = new RemoteAcpxRuntime(config, { logger: ctx.logger });
 
+      // Diagnostic: log bridge state on every health check
+      const diagHealthy = () => {
+        const bridgeKey = Symbol.for("openclaw.acpNodeEventBridgeState");
+        const state = (globalThis as any)[bridgeKey];
+        const nodeId = resolveNodeId(config.nodeName);
+        const connected = nodeId ? isAcpNodeConnected(nodeId) : false;
+        const h = runtime?.isHealthy() ?? false;
+        process.stderr.write(`[remote-acpx-diag] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}\n`);
+        return h;
+      };
+
       registerAcpRuntimeBackend({
         id: REMOTE_ACPX_BACKEND_ID,
         runtime,
-        healthy: () => {
-          const h = runtime?.isHealthy() ?? false;
-          if (!h) {
-            const nodeId = resolveNodeId(config.nodeName);
-            const connected = nodeId ? isAcpNodeConnected(nodeId) : false;
-            const bridgeKey = Symbol.for("openclaw.acpNodeEventBridgeState");
-            const state = (globalThis as any)[bridgeKey];
-            console.error(`[remote-acpx] healthy=false nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}`);
-          }
-          return h;
-        },
+        healthy: diagHealthy,
       });
 
       registerAcpNodeEventHandler(routeNodeEvent);
