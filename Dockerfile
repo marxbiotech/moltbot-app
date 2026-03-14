@@ -3,7 +3,7 @@ FROM docker.io/cloudflare/sandbox:0.7.0
 # Install Node.js 22 LTS (OpenClaw >= 2026.3.12 requires >= 22.16.0)
 # The base image has Node 20, we need to replace it with Node 22
 # Using direct binary download for reliability
-ENV NODE_VERSION=22.22.1
+ENV NODE_VERSION=22.16.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) NODE_ARCH="x64" ;; \
@@ -18,9 +18,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && npm --version
 
 # Install pnpm globally
-# Fix permissions: Node 22 tar overlay leaves /usr/local owned by uid 1000 (base image)
-RUN chown -R root:root /usr/local/lib/node_modules /usr/local/bin \
-    && npm install -g pnpm@9
+RUN npm install -g pnpm@9
 
 # Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
 RUN ARCH="$(dpkg --print-architecture)" \
