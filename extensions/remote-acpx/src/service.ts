@@ -53,7 +53,7 @@ export function createRemoteAcpxService(params: {
         const nodeId = resolveNodeId(config.nodeName);
         const connected = nodeId ? isAcpNodeConnected(nodeId) : false;
         const h = runtime?.isHealthy() ?? false;
-        ctx.logger.warn?.(`[diag] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}`);
+        console.log(`[remote-acpx-diag] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}`);
         return h;
       };
 
