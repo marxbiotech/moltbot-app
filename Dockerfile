@@ -1,9 +1,9 @@
 FROM docker.io/cloudflare/sandbox:0.7.0
 
-# Install Node.js 22 (required by OpenClaw) and rclone (for R2 persistence)
-# The base image has Node 20, we need to replace it with Node 22
+# Install Node.js 24 (required by OpenClaw >= 2026.3.12) and rclone (for R2 persistence)
+# The base image has Node 20, we need to replace it with Node 24
 # Using direct binary download for reliability
-ENV NODE_VERSION=22.13.1
+ENV NODE_VERSION=24.14.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) NODE_ARCH="x64" ;; \
