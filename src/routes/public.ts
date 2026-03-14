@@ -428,9 +428,15 @@ publicRoutes.all('/acp', async (c) => {
   }
 
   // Build gateway URL: always target /, forward query params (including ?token=)
+  // Inject gateway token so the container gateway accepts the WebSocket connection.
+  // ACP clients authenticate via the WebSocket protocol (connect frame auth.token),
+  // but the container gateway requires a valid token on the initial HTTP upgrade request.
   const url = new URL(request.url);
   const gatewayUrl = new URL(`http://localhost:${MOLTBOT_PORT}/`);
   gatewayUrl.search = url.search;
+  if (c.env.MOLTBOT_GATEWAY_TOKEN && !gatewayUrl.searchParams.has('token')) {
+    gatewayUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
+  }
 
   console.log('[ACP] Proxying WebSocket connection to gateway');
 
