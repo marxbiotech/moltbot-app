@@ -18,18 +18,9 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && npm --version
 
 # Install pnpm globally
-# Debug: check why npm crashes on Node 22
-RUN echo "=== npm location ===" && which npm && ls -la "$(which npm)" \
-    && echo "=== node version ===" && node --version \
-    && echo "=== npm version attempt ===" \
-    && (npm --version 2>&1 || true) \
-    && echo "=== global node_modules ===" && ls -la /usr/local/lib/node_modules/ \
-    && echo "=== npm entry ===" && head -5 /usr/local/bin/npm \
-    && echo "=== npmrc files ===" \
-    && find / -maxdepth 3 -name '.npmrc' 2>/dev/null \
-    && echo "=== npm package version ===" \
-    && node -e "console.log(require('/usr/local/lib/node_modules/npm/package.json').version)" \
-    && false
+# Fix permissions: Node 22 tar overlay leaves /usr/local owned by uid 1000 (base image)
+RUN chown -R root:root /usr/local/lib/node_modules /usr/local/bin \
+    && npm install -g pnpm@9
 
 # Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
 RUN ARCH="$(dpkg --print-architecture)" \
