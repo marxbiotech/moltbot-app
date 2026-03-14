@@ -18,8 +18,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && npm --version
 
 # Install pnpm globally
-# Remove base image's .npmrc which is incompatible with Node 22's npm
-RUN rm -f /container-server/.npmrc && npm install -g pnpm@9
+# Base image's WORKDIR is /container-server which has npm state from Node 20;
+# changing WORKDIR before running npm avoids the stale project context
+WORKDIR /root
+RUN npm install -g pnpm@9
+WORKDIR /container-server
 
 # Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
 RUN ARCH="$(dpkg --print-architecture)" \
