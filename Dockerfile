@@ -2,7 +2,7 @@ FROM docker.io/cloudflare/sandbox:0.7.0
 
 # Install Node.js 22 LTS (OpenClaw >= 2026.3.12 requires >= 22.16.0)
 # The base image has Node 20, we need to replace it with Node 22
-# Using direct binary download for reliability
+# Cache bust: 2026-03-14-node-upgrade
 ENV NODE_VERSION=22.16.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
