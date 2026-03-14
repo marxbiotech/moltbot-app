@@ -15,7 +15,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
     && node --version \
-    && npm --version
+    && npm --version \
+    && echo "node-$(node --version)-installed"
 
 # Install pnpm globally
 RUN npm install -g pnpm@9
