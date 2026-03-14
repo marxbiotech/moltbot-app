@@ -18,11 +18,18 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && npm --version
 
 # Install pnpm globally
-# Base image's WORKDIR is /container-server which has npm state from Node 20;
-# changing WORKDIR before running npm avoids the stale project context
-WORKDIR /root
-RUN npm install -g pnpm@9
-WORKDIR /container-server
+# Debug: check why npm crashes on Node 22
+RUN echo "=== npm location ===" && which npm && ls -la "$(which npm)" \
+    && echo "=== node version ===" && node --version \
+    && echo "=== npm version attempt ===" \
+    && (npm --version 2>&1 || true) \
+    && echo "=== global node_modules ===" && ls -la /usr/local/lib/node_modules/ \
+    && echo "=== npm entry ===" && head -5 /usr/local/bin/npm \
+    && echo "=== npmrc files ===" \
+    && find / -maxdepth 3 -name '.npmrc' 2>/dev/null \
+    && echo "=== npm package version ===" \
+    && node -e "console.log(require('/usr/local/lib/node_modules/npm/package.json').version)" \
+    && false
 
 # Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
 RUN ARCH="$(dpkg --print-architecture)" \
