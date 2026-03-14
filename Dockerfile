@@ -17,8 +17,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && node --version \
     && npm --version
 
-# Install pnpm globally
-RUN npm install -g pnpm
+# Install pnpm globally via corepack (bundled with Node 24)
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
 RUN ARCH="$(dpkg --print-architecture)" \
