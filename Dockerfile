@@ -18,7 +18,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && npm --version
 
 # Install pnpm globally
-RUN npm cache clean --force && npm install -g pnpm@9
+RUN npm install -g pnpm@9 2>&1 || (cat /root/.npm/_logs/*.log && exit 1)
 
 # Install AWS CLI v2 (required for Bedrock MFA auth via aws_auth skill)
 RUN ARCH="$(dpkg --print-architecture)" \
