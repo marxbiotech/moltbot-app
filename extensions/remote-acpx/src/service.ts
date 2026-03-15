@@ -53,7 +53,8 @@ export function createRemoteAcpxService(params: {
         const nodeId = resolveNodeId(config.nodeName);
         const connected = nodeId ? isAcpNodeConnected(nodeId) : false;
         const h = runtime?.isHealthy() ?? false;
-        console.log(`[remote-acpx-diag] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}`);
+        const msg = `[${new Date().toISOString()}] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}\n`;
+        try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log", msg); } catch {};
         return h;
       };
 
