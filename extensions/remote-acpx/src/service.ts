@@ -46,34 +46,10 @@ export function createRemoteAcpxService(params: {
 
       runtime = new RemoteAcpxRuntime(config, { logger: ctx.logger });
 
-      // Diagnostic: log bridge state on health check
-      const diagHealthy = () => {
-        try {
-          const bridgeKey = Symbol.for("openclaw.acpNodeEventBridgeState");
-          const state = (globalThis as any)[bridgeKey];
-          let nodeId: string | null = null;
-          let connected = false;
-          let resolveErr = "";
-          try {
-            nodeId = resolveNodeId(config.nodeName);
-            connected = nodeId ? isAcpNodeConnected(nodeId) : false;
-          } catch (e: any) { resolveErr = e?.message ?? String(e); }
-          let h = false;
-          let healthErr = "";
-          try { h = runtime?.isHealthy() ?? false; } catch (e: any) { healthErr = e?.message ?? String(e); }
-          const msg = `[${new Date().toISOString()}] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} resolveErr=${resolveErr} healthErr=${healthErr} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}\n`;
-          require("fs").appendFileSync("/tmp/remote-acpx-diag.log", msg);
-          return h;
-        } catch (e: any) {
-          require("fs").appendFileSync("/tmp/remote-acpx-diag.log", `[${new Date().toISOString()}] OUTER ERROR: ${e?.message ?? e}\n`);
-          return false;
-        }
-      };
-
       registerAcpRuntimeBackend({
         id: REMOTE_ACPX_BACKEND_ID,
         runtime,
-        healthy: diagHealthy,
+        healthy: () => runtime?.isHealthy() ?? false,
       });
 
       registerAcpNodeEventHandler(routeNodeEvent);
