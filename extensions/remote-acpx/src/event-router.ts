@@ -122,6 +122,9 @@ export function routeNodeEvent(
     return;
   }
 
+  try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log",
+    `[${new Date().toISOString()}] routeNodeEvent: event=${evt.event} acpSessionId=${acpSessionId} queueKeys=[${[...sessionQueues.keys()]}] spawnKeys=[${[...spawnResolvers.keys()]}]\n`); } catch {}
+
   switch (evt.event) {
     case "acp.spawned": {
       const resolver = spawnResolvers.get(acpSessionId);
