@@ -9,7 +9,32 @@ type SessionEventQueue = {
   error(err: Error): void;
 };
 
-const sessionQueues = new Map<string, SessionEventQueue>();
+type SpawnResolver = {
+  resolve: () => void;
+  reject: (err: Error) => void;
+};
+
+// Use Symbol.for globalThis to share state across module loader instances.
+// Jiti may load this module multiple times (plugin loader + gateway subsystem),
+// creating separate module-level Maps. Symbol.for ensures a single shared instance.
+type EventRouterState = {
+  sessionQueues: Map<string, SessionEventQueue>;
+  spawnResolvers: Map<string, SpawnResolver>;
+};
+
+const EVENT_ROUTER_STATE_KEY = Symbol.for("moltbot.remoteAcpxEventRouterState");
+function resolveState(): EventRouterState {
+  const g = globalThis as typeof globalThis & { [EVENT_ROUTER_STATE_KEY]?: EventRouterState };
+  if (!g[EVENT_ROUTER_STATE_KEY]) {
+    g[EVENT_ROUTER_STATE_KEY] = {
+      sessionQueues: new Map(),
+      spawnResolvers: new Map(),
+    };
+  }
+  return g[EVENT_ROUTER_STATE_KEY];
+}
+
+const sessionQueues = resolveState().sessionQueues;
 
 export function registerSessionQueue(acpSessionId: string, queue: SessionEventQueue): void {
   sessionQueues.set(acpSessionId, queue);
@@ -19,12 +44,7 @@ export function unregisterSessionQueue(acpSessionId: string): void {
   sessionQueues.delete(acpSessionId);
 }
 
-// Promise resolvers for acp.spawned responses
-type SpawnResolver = {
-  resolve: () => void;
-  reject: (err: Error) => void;
-};
-const spawnResolvers = new Map<string, SpawnResolver>();
+const spawnResolvers = resolveState().spawnResolvers;
 
 export function registerSpawnResolver(acpSessionId: string, resolver: SpawnResolver): void {
   spawnResolvers.set(acpSessionId, resolver);
