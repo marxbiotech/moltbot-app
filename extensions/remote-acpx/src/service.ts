@@ -46,16 +46,28 @@ export function createRemoteAcpxService(params: {
 
       runtime = new RemoteAcpxRuntime(config, { logger: ctx.logger });
 
-      // Diagnostic: log bridge state on health check via plugin logger (writes to gateway log file)
+      // Diagnostic: log bridge state on health check
       const diagHealthy = () => {
-        const bridgeKey = Symbol.for("openclaw.acpNodeEventBridgeState");
-        const state = (globalThis as any)[bridgeKey];
-        const nodeId = resolveNodeId(config.nodeName);
-        const connected = nodeId ? isAcpNodeConnected(nodeId) : false;
-        const h = runtime?.isHealthy() ?? false;
-        const msg = `[${new Date().toISOString()}] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}\n`;
-        try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log", msg); } catch {};
-        return h;
+        try {
+          const bridgeKey = Symbol.for("openclaw.acpNodeEventBridgeState");
+          const state = (globalThis as any)[bridgeKey];
+          let nodeId: string | null = null;
+          let connected = false;
+          let resolveErr = "";
+          try {
+            nodeId = resolveNodeId(config.nodeName);
+            connected = nodeId ? isAcpNodeConnected(nodeId) : false;
+          } catch (e: any) { resolveErr = e?.message ?? String(e); }
+          let h = false;
+          let healthErr = "";
+          try { h = runtime?.isHealthy() ?? false; } catch (e: any) { healthErr = e?.message ?? String(e); }
+          const msg = `[${new Date().toISOString()}] healthy=${h} nodeName=${config.nodeName} nodeId=${nodeId} connected=${connected} resolveErr=${resolveErr} healthErr=${healthErr} bridge={sender=${!!state?.sender},checker=${!!state?.nodeChecker},listProvider=${!!state?.nodeListProvider}}\n`;
+          require("fs").appendFileSync("/tmp/remote-acpx-diag.log", msg);
+          return h;
+        } catch (e: any) {
+          require("fs").appendFileSync("/tmp/remote-acpx-diag.log", `[${new Date().toISOString()}] OUTER ERROR: ${e?.message ?? e}\n`);
+          return false;
+        }
       };
 
       registerAcpRuntimeBackend({
