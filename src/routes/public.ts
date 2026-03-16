@@ -400,10 +400,19 @@ publicRoutes.post('/slack/events', async (c) => {
   return c.json({ ok: true });
 });
 
-// ALL /acp - ACP WebSocket proxy (public, gateway token auth via query param)
-// Bypasses CF Access so CLI clients can connect without CF_Authorization cookie.
-// Unlike the catch-all WS proxy: no token injection, no error transformation, target path is always /.
-publicRoutes.all('/acp', async (c) => {
+/**
+ * Node bypass WebSocket proxy handler.
+ * Bridges external clients (openclaw nodes) to the container gateway via WebSocket relay.
+ * Unlike the catch-all WS proxy: no token injection from CF Access, no error transformation,
+ * target path is always /. Gateway token is injected server-side if not in query params.
+ */
+export async function handleNodeBypassProxy(c: {
+  req: { raw: Request };
+  env: MoltbotEnv;
+  get(key: 'sandbox'): import('@cloudflare/sandbox').Sandbox;
+  json(data: unknown, status?: number): Response;
+  text(data: string, status?: number): Response;
+}): Promise<Response> {
   const request = c.req.raw;
 
   // Require WebSocket upgrade
@@ -417,7 +426,7 @@ publicRoutes.all('/acp', async (c) => {
   try {
     await ensureMoltbotGateway(sandbox, c.env);
   } catch (error) {
-    console.error('[ACP] Failed to start gateway:', error);
+    console.error('[NODE-BYPASS] Failed to start gateway:', error);
     return c.json(
       {
         error: 'Gateway failed to start',
@@ -438,16 +447,16 @@ publicRoutes.all('/acp', async (c) => {
     gatewayUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
   }
 
-  console.log('[ACP] Proxying WebSocket connection to gateway');
+  console.log('[NODE-BYPASS] Proxying WebSocket connection to gateway');
 
   // Connect to container
   const wsRequest = new Request(gatewayUrl.toString(), request);
   const containerResponse = await sandbox.wsConnect(wsRequest, MOLTBOT_PORT);
-  console.log('[ACP] wsConnect response status:', containerResponse.status);
+  console.log('[NODE-BYPASS] wsConnect response status:', containerResponse.status);
 
   const containerWs = containerResponse.webSocket;
   if (!containerWs) {
-    console.error('[ACP] No WebSocket in container response');
+    console.error('[NODE-BYPASS] No WebSocket in container response');
     return containerResponse;
   }
 
@@ -481,12 +490,12 @@ publicRoutes.all('/acp', async (c) => {
 
   // Handle errors
   serverWs.addEventListener('error', (event) => {
-    console.error('[ACP] Client error:', event);
+    console.error('[NODE-BYPASS] Client error:', event);
     containerWs.close(1011, 'Client error');
   });
 
   containerWs.addEventListener('error', (event) => {
-    console.error('[ACP] Container error:', event);
+    console.error('[NODE-BYPASS] Container error:', event);
     serverWs.close(1011, 'Container error');
   });
 
@@ -494,6 +503,6 @@ publicRoutes.all('/acp', async (c) => {
     status: 101,
     webSocket: clientWs,
   });
-});
+}
 
 export { publicRoutes };

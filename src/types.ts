@@ -79,6 +79,8 @@ export interface MoltbotEnv {
   // ACPX (Agent Control Protocol) configuration
   ACPX_ENABLED?: string;
   ACPX_ALLOWED_AGENTS?: string;
+  // Node bypass route for ACP/openclaw node connections (per-environment random path)
+  NODE_BYPASS_ROUTE?: string;
   // Paired node for claude-node plugin (Claude Code dispatch)
   CLAUDE_NODE_NAME?: string;
   CLAUDE_NODE_WORKSPACE?: string; // Workspace path on the paired node

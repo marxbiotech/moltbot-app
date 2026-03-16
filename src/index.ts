@@ -28,7 +28,7 @@ import { MoltbotSandbox } from './sandbox';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from './config';
 import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
-import { publicRoutes, api, adminUi, debug, cdp } from './routes';
+import { publicRoutes, handleNodeBypassProxy, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import { signSlackRequest } from './utils/crypto';
 import { sanitizeCloseReason } from './utils/ws';
@@ -156,6 +156,19 @@ app.route('/', publicRoutes);
 
 // Mount CDP routes (uses shared secret auth via query param, not CF Access)
 app.route('/cdp', cdp);
+
+// Middleware: Dynamic node bypass route (per-environment, set via NODE_BYPASS_ROUTE env var)
+// Must be before auth middleware so openclaw nodes can connect without CF Access.
+app.use('*', async (c, next) => {
+  const bypassRoute = c.env.NODE_BYPASS_ROUTE;
+  if (bypassRoute) {
+    const url = new URL(c.req.url);
+    if (url.pathname === bypassRoute) {
+      return handleNodeBypassProxy(c);
+    }
+  }
+  return next();
+});
 
 // =============================================================================
 // PROTECTED ROUTES: Cloudflare Access authentication required
