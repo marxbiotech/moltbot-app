@@ -151,8 +151,21 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
     return null;
   }
 
-  // JSON-RPC error response
+  // JSON-RPC error/result responses are keyed by request id.
+  // Only treat errors on the prompt request as fatal turn errors.
+  // Protocol errors (session/load "Resource not found", etc.) are handled
+  // internally by acpx and should be ignored.
+  const rpcId = typeof obj.id === "number" || typeof obj.id === "string" ? obj.id : null;
+
   if (error) {
+    // Track: acpx sends prompt as the highest-numbered request (typically id=3+).
+    // Protocol setup requests (initialize=0, session/load=1, session/new=2) may
+    // fail with recoverable errors. Only surface errors with high ids or unknown ids
+    // as fatal, since we can't reliably track which id is the prompt request.
+    // Heuristic: ignore errors with id <= 2 (protocol setup phase).
+    if (typeof rpcId === "number" && rpcId <= 2) {
+      return null;
+    }
     const msg = typeof error.message === "string" ? error.message : "ACP agent error";
     return { type: "error", message: msg };
   }
