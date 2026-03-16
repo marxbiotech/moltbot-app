@@ -17,6 +17,7 @@ import {
   sendAcpEventToNode,
   isAcpNodeConnected,
 } from "openclaw/plugin-sdk/remote-acpx";
+import { log } from "./log.js";
 import { resolveNodeId } from "./node-resolver.js";
 import {
   registerSessionQueue,
@@ -85,8 +86,17 @@ export class RemoteAcpxRuntime implements AcpRuntime {
   }
 
   isHealthy(): boolean {
-    const nodeId = resolveNodeId(this.config.nodeName);
-    return nodeId !== null && isAcpNodeConnected(nodeId);
+    try {
+      const nodeId = resolveNodeId(this.config.nodeName);
+      const connected = nodeId !== null && isAcpNodeConnected(nodeId);
+      if (!connected) {
+        log.warn(`isHealthy=false nodeName=${this.config.nodeName} nodeId=${nodeId}`);
+      }
+      return connected;
+    } catch (e: unknown) {
+      log.error(`isHealthy exception: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
   }
 
   async ensureSession(input: AcpRuntimeEnsureInput): Promise<AcpRuntimeHandle> {

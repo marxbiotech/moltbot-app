@@ -2,6 +2,7 @@
 // session queue by acpSessionId. Parses ndjson lines into AcpRuntimeEvent.
 
 import type { AcpRuntimeEvent } from "openclaw/plugin-sdk/remote-acpx";
+import { log } from "./log.js";
 
 type SessionEventQueue = {
   push(event: AcpRuntimeEvent): void;
@@ -192,6 +193,8 @@ export function routeNodeEvent(
     return;
   }
 
+  log.info(`routeNodeEvent: event=${evt.event} acpSessionId=${acpSessionId} queues=${sessionQueues.size} spawns=${spawnResolvers.size}`);
+
   switch (evt.event) {
     case "acp.spawned": {
       const resolver = spawnResolvers.get(acpSessionId);
@@ -211,6 +214,9 @@ export function routeNodeEvent(
         break;
       }
       const event = parseNdjsonLine(line);
+      if (!event) {
+        log.warn(`parseNdjsonLine: unrecognized line=${line.slice(0, 200)}`);
+      }
       if (event) {
         queue.push(event);
       }
