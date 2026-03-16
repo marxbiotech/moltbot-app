@@ -65,6 +65,13 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
     return null;
   }
   const obj = parsed as Record<string, unknown>;
+
+  // Handle JSON-RPC 2.0 format (acpx/claude-agent-acp output)
+  if (obj.jsonrpc === "2.0") {
+    return parseJsonRpcLine(obj);
+  }
+
+  // Handle simple event format (legacy acpx --format json output)
   const type = typeof obj.type === "string" ? obj.type : "";
   switch (type) {
     case "text_delta":
@@ -107,6 +114,56 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
       }
       return null;
   }
+}
+
+// Parse JSON-RPC 2.0 messages from acpx / claude-agent-acp
+function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null {
+  const method = typeof obj.method === "string" ? obj.method : "";
+  const params = typeof obj.params === "object" && obj.params !== null
+    ? (obj.params as Record<string, unknown>)
+    : null;
+  const result = typeof obj.result === "object" && obj.result !== null
+    ? (obj.result as Record<string, unknown>)
+    : null;
+  const error = typeof obj.error === "object" && obj.error !== null
+    ? (obj.error as Record<string, unknown>)
+    : null;
+
+  // session/update notifications
+  if (method === "session/update" && params) {
+    const update = typeof params.update === "object" && params.update !== null
+      ? (params.update as Record<string, unknown>)
+      : null;
+    if (!update) return null;
+
+    const sessionUpdate = typeof update.sessionUpdate === "string" ? update.sessionUpdate : "";
+
+    if (sessionUpdate === "agent_message_chunk") {
+      const content = typeof update.content === "object" && update.content !== null
+        ? (update.content as Record<string, unknown>)
+        : null;
+      const text = content && typeof content.text === "string" ? content.text : "";
+      if (!text) return null;
+      return { type: "text_delta", text };
+    }
+
+    // Ignore protocol/control messages (usage_update, available_commands_update, etc.)
+    return null;
+  }
+
+  // JSON-RPC error response
+  if (error) {
+    const msg = typeof error.message === "string" ? error.message : "ACP agent error";
+    return { type: "error", message: msg };
+  }
+
+  // JSON-RPC result with stopReason → done
+  if (result && typeof result.stopReason === "string") {
+    return { type: "done", stopReason: result.stopReason };
+  }
+
+  // Ignore other JSON-RPC messages (initialize, session/load, session/new, session/prompt)
+  return null;
 }
 
 export function routeNodeEvent(
