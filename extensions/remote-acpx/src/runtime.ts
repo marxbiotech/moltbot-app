@@ -85,19 +85,8 @@ export class RemoteAcpxRuntime implements AcpRuntime {
   }
 
   isHealthy(): boolean {
-    try {
-      const nodeId = resolveNodeId(this.config.nodeName);
-      const connected = nodeId !== null && isAcpNodeConnected(nodeId);
-      if (!connected) {
-        try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log",
-          `[${new Date().toISOString()}] isHealthy=false nodeName=${this.config.nodeName} nodeId=${nodeId} connected=${connected}\n`); } catch {}
-      }
-      return connected;
-    } catch (e: any) {
-      try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log",
-        `[${new Date().toISOString()}] isHealthy ERROR: ${e?.message}\n`); } catch {}
-      return false;
-    }
+    const nodeId = resolveNodeId(this.config.nodeName);
+    return nodeId !== null && isAcpNodeConnected(nodeId);
   }
 
   async ensureSession(input: AcpRuntimeEnsureInput): Promise<AcpRuntimeHandle> {

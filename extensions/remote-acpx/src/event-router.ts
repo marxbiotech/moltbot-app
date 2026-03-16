@@ -192,9 +192,6 @@ export function routeNodeEvent(
     return;
   }
 
-  try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log",
-    `[${new Date().toISOString()}] routeNodeEvent: event=${evt.event} acpSessionId=${acpSessionId} queueKeys=[${[...sessionQueues.keys()]}] spawnKeys=[${[...spawnResolvers.keys()]}]\n`); } catch {}
-
   switch (evt.event) {
     case "acp.spawned": {
       const resolver = spawnResolvers.get(acpSessionId);
@@ -214,8 +211,6 @@ export function routeNodeEvent(
         break;
       }
       const event = parseNdjsonLine(line);
-      try { require("fs").appendFileSync("/tmp/remote-acpx-diag.log",
-        `[${new Date().toISOString()}] parseNdjsonLine: line=${line.slice(0,200)} parsed=${JSON.stringify(event)}\n`); } catch {}
       if (event) {
         queue.push(event);
       }
