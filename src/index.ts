@@ -158,6 +158,31 @@ app.route('/', publicRoutes);
 app.route('/cdp', cdp);
 
 // =============================================================================
+// NODE ROUTE: Protected by CF Access Service Token (separate Access app)
+// Must be before CF Access auth middleware — the node Access app issues JWTs
+// with a different AUD than the main app, so the main app's JWT validation
+// would reject them. CDN-level Access already authenticated the Service Token.
+// =============================================================================
+
+// Reserved route prefixes — NODE_ROUTE must not collide with these
+const RESERVED_PREFIXES = ['/_admin', '/api', '/debug', '/cdp', '/sandbox-health', '/telegram', '/slack'];
+
+app.use('*', async (c, next) => {
+  const nodeRoute = c.env.NODE_ROUTE;
+  if (nodeRoute) {
+    if (!nodeRoute.startsWith('/') || RESERVED_PREFIXES.some((p) => nodeRoute.startsWith(p))) {
+      console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
+      return next();
+    }
+    const url = new URL(c.req.url);
+    if (url.pathname === nodeRoute) {
+      return handleNodeProxy(c);
+    }
+  }
+  return next();
+});
+
+// =============================================================================
 // PROTECTED ROUTES: Cloudflare Access authentication required
 // =============================================================================
 
@@ -211,25 +236,6 @@ app.use('*', async (c, next) => {
   });
 
   return middleware(c, next);
-});
-
-// Reserved route prefixes — NODE_ROUTE must not collide with these
-const RESERVED_PREFIXES = ['/_admin', '/api', '/debug', '/cdp', '/sandbox-health', '/telegram', '/slack'];
-
-// Node route for ACP/openclaw node connections (protected by CF Access Service Token)
-app.use('*', async (c, next) => {
-  const nodeRoute = c.env.NODE_ROUTE;
-  if (nodeRoute) {
-    if (!nodeRoute.startsWith('/') || RESERVED_PREFIXES.some((p) => nodeRoute.startsWith(p))) {
-      console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
-      return next();
-    }
-    const url = new URL(c.req.url);
-    if (url.pathname === nodeRoute) {
-      return handleNodeProxy(c);
-    }
-  }
-  return next();
 });
 
 // Mount API routes (protected by Cloudflare Access)
