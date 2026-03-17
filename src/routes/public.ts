@@ -432,15 +432,23 @@ export async function handleNodeProxy(c: Context<AppEnv>): Promise<Response> {
     );
   }
 
-  // Build gateway URL: always target /, forward query params (including ?token=)
-  // Inject gateway token so the container gateway accepts the WebSocket connection.
-  // ACP clients authenticate via the WebSocket protocol (connect frame auth.token),
-  // but the container gateway requires a valid token on the initial HTTP upgrade request.
+  // Build gateway URL: always target /, forward query params.
+  // Container gateway requires a valid token on the initial HTTP upgrade request.
+  // Token sources (in priority order):
+  //   1. ?token= query param (legacy, for backward compatibility)
+  //   2. Authorization: Bearer header (preferred, avoids token in URL/logs)
+  //   3. Server-side MOLTBOT_GATEWAY_TOKEN env var (for CF Access authenticated users)
   const url = new URL(request.url);
   const gatewayUrl = new URL(`http://localhost:${MOLTBOT_PORT}/`);
   gatewayUrl.search = url.search;
-  if (c.env.MOLTBOT_GATEWAY_TOKEN && !gatewayUrl.searchParams.has('token')) {
-    gatewayUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
+  if (!gatewayUrl.searchParams.has('token')) {
+    const authHeader = request.headers.get('Authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (bearerToken) {
+      gatewayUrl.searchParams.set('token', bearerToken);
+    } else if (c.env.MOLTBOT_GATEWAY_TOKEN) {
+      gatewayUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
+    }
   }
 
   console.log(`[NODE] Proxying WebSocket from ${c.req.header('CF-Connecting-IP') || 'unknown'}`);
