@@ -28,7 +28,7 @@ import { MoltbotSandbox } from './sandbox';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from './config';
 import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
-import { publicRoutes, handleNodeBypassProxy, api, adminUi, debug, cdp } from './routes';
+import { publicRoutes, handleNodeProxy, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import { signSlackRequest } from './utils/crypto';
 import { sanitizeCloseReason } from './utils/ws';
@@ -157,19 +157,6 @@ app.route('/', publicRoutes);
 // Mount CDP routes (uses shared secret auth via query param, not CF Access)
 app.route('/cdp', cdp);
 
-// Middleware: Dynamic node bypass route (per-environment, set via NODE_BYPASS_ROUTE env var)
-// Must be before auth middleware so openclaw nodes can connect without CF Access.
-app.use('*', async (c, next) => {
-  const bypassRoute = c.env.NODE_BYPASS_ROUTE;
-  if (bypassRoute) {
-    const url = new URL(c.req.url);
-    if (url.pathname === bypassRoute) {
-      return handleNodeBypassProxy(c);
-    }
-  }
-  return next();
-});
-
 // =============================================================================
 // PROTECTED ROUTES: Cloudflare Access authentication required
 // =============================================================================
@@ -224,6 +211,25 @@ app.use('*', async (c, next) => {
   });
 
   return middleware(c, next);
+});
+
+// Reserved route prefixes — NODE_ROUTE must not collide with these
+const RESERVED_PREFIXES = ['/_admin', '/api', '/debug', '/cdp', '/sandbox-health', '/telegram', '/slack'];
+
+// Node route for ACP/openclaw node connections (protected by CF Access Service Token)
+app.use('*', async (c, next) => {
+  const nodeRoute = c.env.NODE_ROUTE;
+  if (nodeRoute) {
+    if (!nodeRoute.startsWith('/') || RESERVED_PREFIXES.some((p) => nodeRoute.startsWith(p))) {
+      console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
+      return next();
+    }
+    const url = new URL(c.req.url);
+    if (url.pathname === nodeRoute) {
+      return handleNodeProxy(c);
+    }
+  }
+  return next();
 });
 
 // Mount API routes (protected by Cloudflare Access)

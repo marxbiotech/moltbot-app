@@ -39,6 +39,9 @@ type RemoteHandleState = {
 };
 
 function encodeHandle(state: RemoteHandleState): string {
+  if (!state.acpSessionId || !state.nodeId || !state.agent) {
+    throw new Error(`encodeHandle: missing required fields: acpSessionId=${state.acpSessionId}, nodeId=${state.nodeId}, agent=${state.agent}`);
+  }
   return HANDLE_PREFIX + Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
 }
 
@@ -62,7 +65,8 @@ function decodeHandle(runtimeSessionName: string): RemoteHandleState | null {
       return null;
     }
     return { acpSessionId, nodeId, agent, cwd, sessionName };
-  } catch {
+  } catch (e) {
+    log.warn(`decodeHandle: failed to decode: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
 }
@@ -228,7 +232,9 @@ export class RemoteAcpxRuntime implements AcpRuntime {
 
     // Handle abort signal
     const onAbort = () => {
-      void this.cancel({ handle: input.handle, reason: "abort-signal" }).catch(() => {});
+      void this.cancel({ handle: input.handle, reason: "abort-signal" }).catch((e) => {
+        log.error(`cancel on abort failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
     };
     if (input.signal?.aborted) {
       unregisterSessionQueue(state.acpSessionId);
@@ -245,7 +251,9 @@ export class RemoteAcpxRuntime implements AcpRuntime {
       timeoutTimer = setTimeout(() => {
         queueHandle.push({ type: "error", message: `Turn timed out after ${this.config.turnTimeoutMs}ms` });
         queueHandle.close();
-        void this.cancel({ handle: input.handle, reason: "timeout" }).catch(() => {});
+        void this.cancel({ handle: input.handle, reason: "timeout" }).catch((e) => {
+          log.error(`cancel on timeout failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
       }, this.config.turnTimeoutMs);
     }
 
@@ -319,11 +327,15 @@ export class RemoteAcpxRuntime implements AcpRuntime {
   async cancel(input: { handle: AcpRuntimeHandle; reason?: string }): Promise<void> {
     const state = decodeHandle(input.handle.runtimeSessionName);
     if (!state) {
+      log.warn("cancel: unable to decode handle, cannot send acp.kill");
       return;
     }
-    sendAcpEventToNode(state.nodeId, "acp.kill", {
+    const sent = sendAcpEventToNode(state.nodeId, "acp.kill", {
       acpSessionId: state.acpSessionId,
     });
+    if (!sent) {
+      log.error(`cancel: failed to send acp.kill to node ${state.nodeId} for session ${state.acpSessionId}`);
+    }
   }
 
   async close(input: { handle: AcpRuntimeHandle; reason: string }): Promise<void> {

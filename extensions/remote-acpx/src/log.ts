@@ -7,10 +7,11 @@ import { appendFileSync } from "node:fs";
 const LOG_PATH = "/tmp/remote-acpx.log";
 
 function write(level: string, msg: string): void {
+  const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
   try {
-    appendFileSync(LOG_PATH, `[${new Date().toISOString()}] [${level}] ${msg}\n`);
+    appendFileSync(LOG_PATH, line + "\n");
   } catch {
-    // Best-effort — /tmp may be unavailable in some environments
+    console.error(`[remote-acpx] ${line}`);
   }
 }
 

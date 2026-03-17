@@ -79,13 +79,16 @@ export interface MoltbotEnv {
   // ACPX (Agent Control Protocol) configuration
   ACPX_ENABLED?: string;
   ACPX_ALLOWED_AGENTS?: string;
-  // Node bypass route for ACP/openclaw node connections (per-environment random path)
-  NODE_BYPASS_ROUTE?: string;
+  // Node route for ACP/openclaw node connections (per-environment path, protected by CF Access Service Token)
+  NODE_ROUTE?: string;
   // Paired node for claude-node plugin (Claude Code dispatch)
   CLAUDE_NODE_NAME?: string;
   CLAUDE_NODE_WORKSPACE?: string; // Workspace path on the paired node
   CLAUDE_NODE_WORKSPACES?: string; // JSON string: workspace name→path mapping for multi-workspace ACP
 }
+
+/** Parsed shape of CLAUDE_NODE_WORKSPACES env var (workspace name → absolute path) */
+export type ClaudeNodeWorkspaces = Record<string, string>;
 
 /**
  * Shape of a single GitHub App credential entry in GITHUB_APPS JSON.

@@ -59,7 +59,8 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line) as unknown;
-  } catch {
+  } catch (e) {
+    log.warn(`parseNdjsonLine: invalid JSON: ${e instanceof Error ? e.message : String(e)} line=${line.slice(0, 200)}`);
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) {
@@ -228,8 +229,8 @@ export function routeNodeEvent(
         const exitCode =
           typeof payload.exitCode === "number" ? payload.exitCode : -1;
         const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
-        if (exitCode !== 0 && stderr) {
-          queue.push({ type: "error", message: stderr });
+        if (exitCode !== 0) {
+          queue.push({ type: "error", message: stderr || `ACP agent exited with code ${exitCode}` });
         }
         queue.push({ type: "done" });
         queue.close();
@@ -252,6 +253,8 @@ export function routeNodeEvent(
         queue.push({ type: "error", message: errorMsg });
         queue.close();
         sessionQueues.delete(acpSessionId);
+      } else {
+        log.warn(`acp.error with no handler: acpSessionId=${acpSessionId} error=${errorMsg}`);
       }
       break;
     }

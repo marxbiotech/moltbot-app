@@ -660,7 +660,8 @@ if (process.env.ACPX_ENABLED === 'true') {
     if (process.env.CLAUDE_NODE_WORKSPACES) {
         var workspaces = {};
         try { workspaces = JSON.parse(process.env.CLAUDE_NODE_WORKSPACES); } catch(e) {
-            console.log('Warning: failed to parse CLAUDE_NODE_WORKSPACES: ' + e.message);
+            console.error('ERROR: CLAUDE_NODE_WORKSPACES contains invalid JSON: ' + e.message);
+            console.error('ERROR: Multi-workspace ACP will NOT be configured. Fix the JSON and redeploy.');
         }
         var wsNames = Object.keys(workspaces);
         if (wsNames.length > 0) {

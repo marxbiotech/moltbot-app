@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Sandbox } from '@cloudflare/sandbox';
+import type { Context } from 'hono';
 import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from '../types';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from '../config';
 import { timingSafeEqual, verifySlackSignature } from '../utils/crypto';
@@ -401,18 +402,12 @@ publicRoutes.post('/slack/events', async (c) => {
 });
 
 /**
- * Node bypass WebSocket proxy handler.
- * Bridges external clients (openclaw nodes) to the container gateway via WebSocket relay.
- * Unlike the catch-all WS proxy: no token injection from CF Access, no error transformation,
- * target path is always /. Gateway token is injected server-side if not in query params.
+ * Node WebSocket proxy handler (protected by CF Access Service Token).
+ * Bridges external openclaw nodes to the container gateway via WebSocket relay.
+ * Unlike the catch-all WS proxy: no error transformation, target path is always /.
+ * Gateway token is injected server-side if not in query params.
  */
-export async function handleNodeBypassProxy(c: {
-  req: { raw: Request };
-  env: MoltbotEnv;
-  get(key: 'sandbox'): import('@cloudflare/sandbox').Sandbox;
-  json(data: unknown, status?: number): Response;
-  text(data: string, status?: number): Response;
-}): Promise<Response> {
+export async function handleNodeProxy(c: Context<AppEnv>): Promise<Response> {
   const request = c.req.raw;
 
   // Require WebSocket upgrade
@@ -426,7 +421,7 @@ export async function handleNodeBypassProxy(c: {
   try {
     await ensureMoltbotGateway(sandbox, c.env);
   } catch (error) {
-    console.error('[NODE-BYPASS] Failed to start gateway:', error);
+    console.error('[NODE] Failed to start gateway:', error);
     return c.json(
       {
         error: 'Gateway failed to start',
@@ -447,16 +442,25 @@ export async function handleNodeBypassProxy(c: {
     gatewayUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
   }
 
-  console.log('[NODE-BYPASS] Proxying WebSocket connection to gateway');
+  console.log(`[NODE] Proxying WebSocket from ${c.req.header('CF-Connecting-IP') || 'unknown'}`);
 
   // Connect to container
   const wsRequest = new Request(gatewayUrl.toString(), request);
-  const containerResponse = await sandbox.wsConnect(wsRequest, MOLTBOT_PORT);
-  console.log('[NODE-BYPASS] wsConnect response status:', containerResponse.status);
+  let containerResponse: Response;
+  try {
+    containerResponse = await sandbox.wsConnect(wsRequest, MOLTBOT_PORT);
+  } catch (error) {
+    console.error('[NODE] wsConnect failed:', error);
+    return c.json(
+      { error: 'WebSocket connection to gateway failed', details: error instanceof Error ? error.message : 'Unknown error' },
+      502,
+    );
+  }
+  console.log('[NODE] wsConnect response status:', containerResponse.status);
 
   const containerWs = containerResponse.webSocket;
   if (!containerWs) {
-    console.error('[NODE-BYPASS] No WebSocket in container response');
+    console.error('[NODE] No WebSocket in container response');
     return containerResponse;
   }
 
@@ -469,6 +473,8 @@ export async function handleNodeBypassProxy(c: {
   serverWs.addEventListener('message', (event) => {
     if (containerWs.readyState === WebSocket.OPEN) {
       containerWs.send(event.data);
+    } else {
+      console.warn('[NODE] Dropped client→container message, container readyState:', containerWs.readyState);
     }
   });
 
@@ -476,27 +482,45 @@ export async function handleNodeBypassProxy(c: {
   containerWs.addEventListener('message', (event) => {
     if (serverWs.readyState === WebSocket.OPEN) {
       serverWs.send(event.data);
+    } else {
+      console.warn('[NODE] Dropped container→client message, client readyState:', serverWs.readyState);
     }
   });
 
   // Handle close events (sanitize only, no error transformation)
   serverWs.addEventListener('close', (event) => {
-    containerWs.close(event.code, sanitizeCloseReason(event.reason));
+    try {
+      containerWs.close(event.code, sanitizeCloseReason(event.reason));
+    } catch (e) {
+      console.error('[NODE] Failed to close container WS:', e);
+    }
   });
 
   containerWs.addEventListener('close', (event) => {
-    serverWs.close(event.code, sanitizeCloseReason(event.reason));
+    try {
+      serverWs.close(event.code, sanitizeCloseReason(event.reason));
+    } catch (e) {
+      console.error('[NODE] Failed to close client WS:', e);
+    }
   });
 
   // Handle errors
   serverWs.addEventListener('error', (event) => {
-    console.error('[NODE-BYPASS] Client error:', event);
-    containerWs.close(1011, 'Client error');
+    console.error('[NODE] Client error:', event);
+    try {
+      containerWs.close(1011, 'Client error');
+    } catch (e) {
+      console.error('[NODE] Failed to close container WS after client error:', e);
+    }
   });
 
   containerWs.addEventListener('error', (event) => {
-    console.error('[NODE-BYPASS] Container error:', event);
-    serverWs.close(1011, 'Container error');
+    console.error('[NODE] Container error:', event);
+    try {
+      serverWs.close(1011, 'Container error');
+    } catch (e) {
+      console.error('[NODE] Failed to close client WS after container error:', e);
+    }
   });
 
   return new Response(null, {
