@@ -1,23 +1,7 @@
 /**
- * Moltbot + Cloudflare Sandbox
- *
- * This Worker runs Moltbot personal AI assistant in a Cloudflare Sandbox container.
- * It proxies all requests to the Moltbot Gateway's web UI and WebSocket endpoint.
- *
- * Features:
- * - Web UI (Control Dashboard + WebChat) at /
- * - WebSocket support for real-time communication
- * - Admin UI at /_admin/ for device management
- * - Configuration via environment secrets
- *
- * Required secrets (set via `wrangler secret put`):
- * - ANTHROPIC_API_KEY: Your Anthropic API key
- *
- * Optional secrets:
- * - MOLTBOT_GATEWAY_TOKEN: Token to protect gateway access
- * - TELEGRAM_BOT_TOKEN: Telegram bot token
- * - DISCORD_BOT_TOKEN: Discord bot token
- * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN (socket mode) or SLACK_SIGNING_SECRET (HTTP mode)
+ * Cloudflare Worker that runs OpenClaw in a Sandbox container.
+ * Proxies HTTP/WebSocket to the gateway, with admin UI, webhooks, and ACP node routing.
+ * See CLAUDE.md for architecture, env vars, and configuration details.
  */
 
 import { Hono } from 'hono';
@@ -26,7 +10,7 @@ import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from './types';
 import { MoltbotSandbox } from './sandbox';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from './config';
-import { createAccessMiddleware } from './auth';
+import { createAccessMiddleware, extractJWT, verifyAccessJWT } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, handleNodeProxy, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
@@ -151,7 +135,7 @@ app.use('*', async (c, next) => {
 // =============================================================================
 
 // Mount public routes first (before auth middleware)
-// Includes: /sandbox-health, /logo.png, /logo-small.png, /api/status, /_admin/assets/*
+// Includes: /sandbox-health, /logo.png, /api/status, /_admin/assets/*, /telegram/webhook, /slack/events
 app.route('/', publicRoutes);
 
 // Mount CDP routes (uses shared secret auth via query param, not CF Access)
@@ -161,21 +145,45 @@ app.route('/cdp', cdp);
 // NODE ROUTE: Protected by CF Access Service Token (separate Access app)
 // Must be before CF Access auth middleware — the node Access app issues JWTs
 // with a different AUD than the main app, so the main app's JWT validation
-// would reject them. CDN-level Access already authenticated the Service Token.
+// would reject them. When NODE_ACCESS_AUD is set, the Worker verifies the JWT
+// here using the node-specific AUD. When not set, relies on CDN-level Access only.
 // =============================================================================
 
 // Reserved route prefixes — NODE_ROUTE must not collide with these
+// Design Decision: NODE_ROUTE=`/` is not explicitly blocked — NODE_ROUTE is an operator-set env var,
+// not user input. Operators are responsible for setting a meaningful path (e.g., `/acp`).
 const RESERVED_PREFIXES = ['/_admin', '/api', '/debug', '/cdp', '/sandbox-health', '/telegram', '/slack'];
 
 app.use('*', async (c, next) => {
   const nodeRoute = c.env.NODE_ROUTE;
   if (nodeRoute) {
+    // Design Decision: Invalid NODE_ROUTE logs an error and falls through rather than failing at startup.
+    // NODE_ROUTE is operator-configured; console.error per-request is sufficient — wrangler tail surfaces it.
+    // Cloudflare Workers don't have a startup hook to validate env vars before the first request.
     if (!nodeRoute.startsWith('/') || RESERVED_PREFIXES.some((p) => nodeRoute.startsWith(p))) {
       console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
       return next();
     }
-    const url = new URL(c.req.url);
-    if (url.pathname === nodeRoute) {
+    if (c.req.path === nodeRoute) {
+      // Optional Worker-level JWT verification (defense-in-depth)
+      const nodeAud = c.env.NODE_ACCESS_AUD;
+      if (nodeAud) {
+        const teamDomain = c.env.CF_ACCESS_TEAM_DOMAIN;
+        if (!teamDomain) {
+          console.error('[NODE] NODE_ACCESS_AUD is set but CF_ACCESS_TEAM_DOMAIN is missing');
+          return c.json({ error: 'CF Access not configured for node route' }, 500);
+        }
+        const jwt = extractJWT(c);
+        if (!jwt) {
+          return c.json({ error: 'Unauthorized', hint: 'Missing CF Access JWT for node route' }, 401);
+        }
+        try {
+          await verifyAccessJWT(jwt, teamDomain, nodeAud);
+        } catch (err) {
+          console.error('[NODE] JWT verification failed:', err);
+          return c.json({ error: 'Unauthorized', details: err instanceof Error ? err.message : 'JWT verification failed' }, 401);
+        }
+      }
       return handleNodeProxy(c);
     }
   }

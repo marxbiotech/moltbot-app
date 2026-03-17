@@ -404,7 +404,8 @@ publicRoutes.post('/slack/events', async (c) => {
 /**
  * Node WebSocket proxy handler (protected by CF Access Service Token).
  * Bridges external openclaw nodes to the container gateway via WebSocket relay.
- * Unlike the catch-all WS proxy: no error transformation, target path is always /.
+ * Unlike the catch-all WS proxy: no JSON error message transformation, target path is always /.
+ * Close reasons are still sanitized for WebSocket spec compliance.
  * Gateway token is injected server-side if not in query params.
  */
 export async function handleNodeProxy(c: Context<AppEnv>): Promise<Response> {

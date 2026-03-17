@@ -165,6 +165,8 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
     // fail with recoverable errors. Only surface errors with high ids or unknown ids
     // as fatal, since we can't reliably track which id is the prompt request.
     // Heuristic: ignore errors with id <= 2 (protocol setup phase).
+    // Design Decision: suppressed errors are not logged yet — add log.warn here if debugging
+    // protocol issues. Deferred to avoid noise from expected recoverable errors.
     if (typeof rpcId === "number" && rpcId <= 2) {
       return null;
     }
@@ -191,6 +193,7 @@ export function routeNodeEvent(
   }
   const acpSessionId = typeof payload.acpSessionId === "string" ? payload.acpSessionId : "";
   if (!acpSessionId) {
+    log.warn(`routeNodeEvent: missing acpSessionId in ${evt.event} event`);
     return;
   }
 
@@ -202,12 +205,15 @@ export function routeNodeEvent(
       if (resolver) {
         spawnResolvers.delete(acpSessionId);
         resolver.resolve();
+      } else {
+        log.warn(`acp.spawned with no resolver: acpSessionId=${acpSessionId}`);
       }
       break;
     }
     case "acp.message": {
       const queue = sessionQueues.get(acpSessionId);
       if (!queue) {
+        log.warn(`acp.message with no queue: acpSessionId=${acpSessionId} (session may have timed out)`);
         break;
       }
       const line = typeof payload.line === "string" ? payload.line : "";

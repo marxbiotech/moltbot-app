@@ -324,6 +324,9 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     return { controls: [] };
   }
 
+  // Design Decision: cancel() silently returns on failure (invalid handle or send failure) rather than
+  // throwing. The remote session will self-terminate via idle timeout. Propagating errors from cancel()
+  // requires coordinating with abort/timeout handlers to push error events to the queue — deferred.
   async cancel(input: { handle: AcpRuntimeHandle; reason?: string }): Promise<void> {
     const state = decodeHandle(input.handle.runtimeSessionName);
     if (!state) {
