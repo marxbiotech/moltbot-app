@@ -76,7 +76,20 @@ export interface MoltbotEnv {
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
   // GitHub Apps credentials — JSON string, see GitHubAppsConfig for shape
   GITHUB_APPS?: string;
+  // ACPX (Agent Control Protocol) configuration
+  ACPX_ENABLED?: string;
+  ACPX_ALLOWED_AGENTS?: string;
+  // Node route for ACP/openclaw node connections (per-environment path, protected by CF Access Service Token)
+  NODE_ROUTE?: string;
+  NODE_ACCESS_AUD?: string; // CF Access Application AUD for node route — enables Worker-level JWT verification when set
+  // Paired node for claude-node plugin (Claude Code dispatch)
+  CLAUDE_NODE_NAME?: string;
+  CLAUDE_NODE_WORKSPACE?: string; // Workspace path on the paired node
+  CLAUDE_NODE_WORKSPACES?: string; // JSON string: workspace name→path mapping for multi-workspace ACP
 }
+
+/** Parsed shape of CLAUDE_NODE_WORKSPACES env var (workspace name → absolute path) */
+export type ClaudeNodeWorkspaces = Record<string, string>;
 
 /**
  * Shape of a single GitHub App credential entry in GITHUB_APPS JSON.

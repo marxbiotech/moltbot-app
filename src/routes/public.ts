@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import type { Sandbox } from '@cloudflare/sandbox';
+import type { Context } from 'hono';
 import type { AppEnv, MoltbotEnv, WebhookQueueMessage, WebhookSource } from '../types';
 import { MOLTBOT_PORT, TELEGRAM_WEBHOOK_PORT, WEBHOOK_ROUTES } from '../config';
 import { timingSafeEqual, verifySlackSignature } from '../utils/crypto';
+import { sanitizeCloseReason } from '../utils/ws';
 import { findExistingMoltbotProcess, ensureMoltbotGateway } from '../gateway';
 
 /** Shared webhook proxy: detect container state → queue or fire-and-forget (+ cold start trigger in parallel) */
@@ -398,5 +400,142 @@ publicRoutes.post('/slack/events', async (c) => {
 
   return c.json({ ok: true });
 });
+
+/**
+ * Node WebSocket proxy handler (protected by CF Access Service Token).
+ * Bridges external openclaw nodes to the container gateway via WebSocket relay.
+ * Unlike the catch-all WS proxy: no JSON error message transformation, target path is always /.
+ * Close reasons are still sanitized for WebSocket spec compliance.
+ * Gateway token is injected server-side if not in query params.
+ */
+export async function handleNodeProxy(c: Context<AppEnv>): Promise<Response> {
+  const request = c.req.raw;
+
+  // Require WebSocket upgrade
+  if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+    return c.text('WebSocket upgrade required', 426);
+  }
+
+  const sandbox = c.get('sandbox');
+
+  // Ensure gateway is running
+  try {
+    await ensureMoltbotGateway(sandbox, c.env);
+  } catch (error) {
+    console.error('[NODE] Failed to start gateway:', error);
+    return c.json(
+      {
+        error: 'Gateway failed to start',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      503,
+    );
+  }
+
+  // Build gateway URL: always target /, forward query params.
+  // Container gateway requires a valid token on the initial HTTP upgrade request.
+  // Token sources (in priority order):
+  //   1. ?token= query param (legacy, for backward compatibility)
+  //   2. Authorization: Bearer header (preferred, avoids token in URL/logs)
+  //   3. Server-side MOLTBOT_GATEWAY_TOKEN env var (for CF Access authenticated users)
+  const url = new URL(request.url);
+  const gatewayUrl = new URL(`http://localhost:${MOLTBOT_PORT}/`);
+  gatewayUrl.search = url.search;
+  if (!gatewayUrl.searchParams.has('token')) {
+    const authHeader = request.headers.get('Authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (bearerToken) {
+      gatewayUrl.searchParams.set('token', bearerToken);
+    } else if (c.env.MOLTBOT_GATEWAY_TOKEN) {
+      gatewayUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
+    }
+  }
+
+  console.log(`[NODE] Proxying WebSocket from ${c.req.header('CF-Connecting-IP') || 'unknown'}`);
+
+  // Connect to container
+  const wsRequest = new Request(gatewayUrl.toString(), request);
+  let containerResponse: Response;
+  try {
+    containerResponse = await sandbox.wsConnect(wsRequest, MOLTBOT_PORT);
+  } catch (error) {
+    console.error('[NODE] wsConnect failed:', error);
+    return c.json(
+      { error: 'WebSocket connection to gateway failed', details: error instanceof Error ? error.message : 'Unknown error' },
+      502,
+    );
+  }
+  console.log('[NODE] wsConnect response status:', containerResponse.status);
+
+  const containerWs = containerResponse.webSocket;
+  if (!containerWs) {
+    console.error('[NODE] No WebSocket in container response');
+    return containerResponse;
+  }
+
+  // Create WebSocket pair for the client
+  const [clientWs, serverWs] = Object.values(new WebSocketPair());
+  serverWs.accept();
+  containerWs.accept();
+
+  // Relay: client -> container
+  serverWs.addEventListener('message', (event) => {
+    if (containerWs.readyState === WebSocket.OPEN) {
+      containerWs.send(event.data);
+    } else {
+      console.warn('[NODE] Dropped client→container message, container readyState:', containerWs.readyState);
+    }
+  });
+
+  // Relay: container -> client (no error transformation)
+  containerWs.addEventListener('message', (event) => {
+    if (serverWs.readyState === WebSocket.OPEN) {
+      serverWs.send(event.data);
+    } else {
+      console.warn('[NODE] Dropped container→client message, client readyState:', serverWs.readyState);
+    }
+  });
+
+  // Handle close events (sanitize only, no error transformation)
+  serverWs.addEventListener('close', (event) => {
+    try {
+      containerWs.close(event.code, sanitizeCloseReason(event.reason));
+    } catch (e) {
+      console.error('[NODE] Failed to close container WS:', e);
+    }
+  });
+
+  containerWs.addEventListener('close', (event) => {
+    try {
+      serverWs.close(event.code, sanitizeCloseReason(event.reason));
+    } catch (e) {
+      console.error('[NODE] Failed to close client WS:', e);
+    }
+  });
+
+  // Handle errors
+  serverWs.addEventListener('error', (event) => {
+    console.error('[NODE] Client error:', event);
+    try {
+      containerWs.close(1011, 'Client error');
+    } catch (e) {
+      console.error('[NODE] Failed to close container WS after client error:', e);
+    }
+  });
+
+  containerWs.addEventListener('error', (event) => {
+    console.error('[NODE] Container error:', event);
+    try {
+      serverWs.close(1011, 'Container error');
+    } catch (e) {
+      console.error('[NODE] Failed to close client WS after container error:', e);
+    }
+  });
+
+  return new Response(null, {
+    status: 101,
+    webSocket: clientWs,
+  });
+}
 
 export { publicRoutes };

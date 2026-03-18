@@ -75,5 +75,12 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   // GitHub Apps credentials (decoded by start-openclaw.sh into ~/.github-apps/)
   if (env.GITHUB_APPS) envVars.GITHUB_APPS = env.GITHUB_APPS;
 
+  // ACPX (Agent Control Protocol) configuration
+  if (env.ACPX_ENABLED) envVars.ACPX_ENABLED = env.ACPX_ENABLED;
+  if (env.ACPX_ALLOWED_AGENTS) envVars.ACPX_ALLOWED_AGENTS = env.ACPX_ALLOWED_AGENTS;
+  if (env.CLAUDE_NODE_NAME) envVars.CLAUDE_NODE_NAME = env.CLAUDE_NODE_NAME;
+  if (env.CLAUDE_NODE_WORKSPACE) envVars.CLAUDE_NODE_WORKSPACE = env.CLAUDE_NODE_WORKSPACE;
+  if (env.CLAUDE_NODE_WORKSPACES) envVars.CLAUDE_NODE_WORKSPACES = env.CLAUDE_NODE_WORKSPACES;
+
   return envVars;
 }

@@ -1,4 +1,4 @@
-export { publicRoutes } from './public';
+export { publicRoutes, handleNodeProxy } from './public';
 export { api } from './api';
 export { adminUi } from './admin-ui';
 export { debug } from './debug';
