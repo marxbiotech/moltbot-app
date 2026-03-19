@@ -469,6 +469,9 @@ export async function handleNodeProxy(c: Context<AppEnv>): Promise<Response> {
 
   const containerWs = containerResponse.webSocket;
   if (!containerWs) {
+    // Design Decision: Returns raw container response rather than a controlled error. Acceptable because
+    // this path is protected by CF Access Service Token (only authorized nodes reach here) and the
+    // container's internal response does not contain user secrets — at most internal error details.
     console.error('[NODE] No WebSocket in container response');
     return containerResponse;
   }

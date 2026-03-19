@@ -77,7 +77,6 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
 
   // ACPX (Agent Control Protocol) configuration
   if (env.ACPX_ENABLED) envVars.ACPX_ENABLED = env.ACPX_ENABLED;
-  if (env.ACPX_ALLOWED_AGENTS) envVars.ACPX_ALLOWED_AGENTS = env.ACPX_ALLOWED_AGENTS;
 
   return envVars;
 }

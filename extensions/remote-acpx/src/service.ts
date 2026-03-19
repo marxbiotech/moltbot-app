@@ -13,7 +13,7 @@ import {
   unregisterAcpNodeEventHandler,
 } from "openclaw/plugin-sdk/remote-acpx";
 import { REMOTE_ACPX_BACKEND_ID, RemoteAcpxRuntime, type RemoteAcpxConfig } from "./runtime.js";
-import { routeNodeEvent } from "./event-router.js";
+import { routeNodeEvent, drainAllSessions } from "./event-router.js";
 import { clearNodeCache } from "./node-resolver.js";
 
 function resolveConfig(rawConfig: unknown): RemoteAcpxConfig {
@@ -55,6 +55,7 @@ export function createRemoteAcpxService(params: {
       );
     },
     async stop(_ctx: OpenClawPluginServiceContext): Promise<void> {
+      drainAllSessions();
       unregisterAcpRuntimeBackend(REMOTE_ACPX_BACKEND_ID);
       unregisterAcpNodeEventHandler();
       clearNodeCache();

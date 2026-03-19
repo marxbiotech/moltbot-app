@@ -78,7 +78,6 @@ export interface MoltbotEnv {
   GITHUB_APPS?: string;
   // ACPX (Agent Control Protocol) configuration
   ACPX_ENABLED?: string;
-  ACPX_ALLOWED_AGENTS?: string;
   // Node route for ACP/openclaw node connections (per-environment path, protected by CF Access Service Token)
   NODE_ROUTE?: string;
   NODE_ACCESS_AUD?: string; // CF Access Application AUD for node route — enables Worker-level JWT verification when set

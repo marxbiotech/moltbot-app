@@ -1,4 +1,4 @@
-// Resolves configured nodeName → nodeId. Caches the mapping.
+// Resolves nodeName → nodeId with caching. When nodeName is empty, auto-resolves to the first connected node.
 // Use Symbol.for globalThis to share cache across module loader instances.
 // Same pattern as event-router.ts — jiti may load this module multiple times.
 
@@ -28,7 +28,8 @@ export function resolveNodeId(nodeName: string): string | null {
   } else {
     // Auto-resolve: use first connected node
     const nodes = listAcpNodes();
-    nodeId = nodes.length > 0 ? nodes[0].nodeId : null;
+    const connected = nodes.find(n => isAcpNodeConnected(n.nodeId));
+    nodeId = connected ? connected.nodeId : null;
   }
 
   if (nodeId) {

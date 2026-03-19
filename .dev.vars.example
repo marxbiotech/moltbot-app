@@ -67,7 +67,6 @@ MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
 
 # === ACP / Remote Node (optional) ===
 # ACPX_ENABLED=true
-# ACPX_ALLOWED_AGENTS=claude-code
 # NODE_ROUTE=/your-node-path
 
 # === Owner identity (optional) ===

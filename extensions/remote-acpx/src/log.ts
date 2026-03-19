@@ -1,5 +1,5 @@
 // Structured file logger for remote-acpx extension diagnostics.
-// Writes to /tmp/remote-acpx.log, readable via /debug/cli endpoint.
+// Writes to /tmp/remote-acpx.log. Can be read via sandbox exec (e.g., /debug/cli?cmd=cat+/tmp/remote-acpx.log).
 // Survives across plugin reloads; cleared on container restart (/tmp).
 
 import { appendFileSync } from "node:fs";

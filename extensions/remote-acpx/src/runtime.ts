@@ -1,6 +1,6 @@
 // Core AcpRuntime implementation for remote dispatch.
 // Sends ACP events to a paired Mac node via WebSocket and yields
-// AcpRuntimeEvent from the ndjson stream coming back.
+// AcpRuntimeEvent via event-router queue (events arrive as parsed ndjson from event-router.ts).
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -232,6 +232,8 @@ export class RemoteAcpxRuntime implements AcpRuntime {
 
     // Handle abort signal
     const onAbort = () => {
+      queueHandle.push({ type: "error", message: "Session aborted" });
+      queueHandle.close();
       void this.cancel({ handle: input.handle, reason: "abort-signal" }).catch((e) => {
         log.error(`cancel on abort failed: ${e instanceof Error ? e.message : String(e)}`);
       });

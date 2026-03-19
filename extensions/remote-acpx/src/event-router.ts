@@ -55,6 +55,18 @@ export function unregisterSpawnResolver(acpSessionId: string): void {
   spawnResolvers.delete(acpSessionId);
 }
 
+export function drainAllSessions(): void {
+  for (const [, queue] of sessionQueues) {
+    queue.push({ type: "error", message: "Service stopped" });
+    queue.close();
+  }
+  sessionQueues.clear();
+  for (const [, resolver] of spawnResolvers) {
+    resolver.reject(new Error("Service stopped"));
+  }
+  spawnResolvers.clear();
+}
+
 function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
   let parsed: unknown;
   try {
@@ -165,9 +177,10 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
     // fail with recoverable errors. Only surface errors with high ids or unknown ids
     // as fatal, since we can't reliably track which id is the prompt request.
     // Heuristic: ignore errors with id <= 2 (protocol setup phase).
-    // Design Decision: suppressed errors are not logged yet — add log.warn here if debugging
-    // protocol issues. Deferred to avoid noise from expected recoverable errors.
+    // Design Decision: Protocol setup errors (id <= 2) are logged at INFO level and suppressed.
+    // Common examples: session/load "Resource not found" (first run), initialize version mismatch.
     if (typeof rpcId === "number" && rpcId <= 2) {
+      log.info(`parseJsonRpcLine: suppressed protocol error (id=${rpcId}): ${typeof error.message === "string" ? error.message : JSON.stringify(error)}`);
       return null;
     }
     const msg = typeof error.message === "string" ? error.message : "ACP agent error";
@@ -221,11 +234,10 @@ export function routeNodeEvent(
         break;
       }
       const event = parseNdjsonLine(line);
-      if (!event) {
-        log.warn(`parseNdjsonLine: unrecognized line=${line.slice(0, 200)}`);
-      }
       if (event) {
         queue.push(event);
+      } else {
+        log.warn(`parseNdjsonLine: unrecognized line=${line.slice(0, 200)}`);
       }
       break;
     }
@@ -241,6 +253,9 @@ export function routeNodeEvent(
         queue.push({ type: "done" });
         queue.close();
         sessionQueues.delete(acpSessionId);
+      } else {
+        const exitCode = typeof payload.exitCode === "number" ? payload.exitCode : -1;
+        log.warn(`acp.exited with no queue: acpSessionId=${acpSessionId} exitCode=${exitCode} (session may have timed out)`);
       }
       break;
     }
@@ -264,5 +279,8 @@ export function routeNodeEvent(
       }
       break;
     }
+    default:
+      log.warn(`routeNodeEvent: unrecognized event type="${evt.event}" acpSessionId=${acpSessionId}`);
+      break;
   }
 }

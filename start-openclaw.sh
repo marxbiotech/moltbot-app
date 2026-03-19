@@ -623,10 +623,7 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
 
 // ACPX (Agent Control Protocol) configuration
 if (process.env.ACPX_ENABLED === 'true') {
-    const agents = (process.env.ACPX_ALLOWED_AGENTS || 'claude').split(',').map(function(s) { return s.trim(); });
-
     // Always use remote-acpx backend (auto-resolves connected node at runtime)
-    var acpBackend = 'remote-acpx';
     config.plugins = config.plugins || {};
     config.plugins.entries = config.plugins.entries || {};
     config.plugins.entries['remote-acpx'] = {
@@ -641,12 +638,12 @@ if (process.env.ACPX_ENABLED === 'true') {
     config.acp = {
         enabled: true,
         dispatch: { enabled: true },
-        backend: acpBackend,
-        defaultAgent: agents[0],
-        allowedAgents: agents,
+        backend: 'remote-acpx',
+        defaultAgent: 'claude',
+        allowedAgents: ['claude'],
         maxConcurrentSessions: 8,
     };
-    console.log('ACPX enabled: backend=' + acpBackend + ' defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
+    console.log('ACPX enabled: backend=remote-acpx agent=claude');
 
 }
 
