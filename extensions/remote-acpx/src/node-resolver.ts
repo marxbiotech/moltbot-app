@@ -2,7 +2,7 @@
 // Use Symbol.for globalThis to share cache across module loader instances.
 // Same pattern as event-router.ts — jiti may load this module multiple times.
 
-import { resolveAcpNodeIdByName, isAcpNodeConnected } from "openclaw/plugin-sdk/remote-acpx";
+import { resolveAcpNodeIdByName, isAcpNodeConnected, listAcpNodes } from "openclaw/plugin-sdk/remote-acpx";
 
 interface NodeResolverCache {
   nodeId: string | null;
@@ -20,7 +20,17 @@ export function resolveNodeId(nodeName: string): string | null {
   if (cache.nodeName === nodeName && cache.nodeId && isAcpNodeConnected(cache.nodeId)) {
     return cache.nodeId;
   }
-  const nodeId = resolveAcpNodeIdByName(nodeName);
+
+  let nodeId: string | null;
+  if (nodeName) {
+    // Explicit name: resolve by display name
+    nodeId = resolveAcpNodeIdByName(nodeName);
+  } else {
+    // Auto-resolve: use first connected node
+    const nodes = listAcpNodes();
+    nodeId = nodes.length > 0 ? nodes[0].nodeId : null;
+  }
+
   if (nodeId) {
     cache.nodeId = nodeId;
     cache.nodeName = nodeName;

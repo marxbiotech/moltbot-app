@@ -39,10 +39,6 @@ export function createRemoteAcpxService(params: {
     id: "remote-acpx-runtime",
     async start(ctx: OpenClawPluginServiceContext): Promise<void> {
       const config = resolveConfig(params.pluginConfig);
-      if (!config.nodeName) {
-        ctx.logger.warn("remote-acpx: nodeName not configured, backend will not be registered");
-        return;
-      }
 
       runtime = new RemoteAcpxRuntime(config, { logger: ctx.logger });
 
@@ -55,7 +51,7 @@ export function createRemoteAcpxService(params: {
       registerAcpNodeEventHandler(routeNodeEvent);
 
       ctx.logger.info(
-        `remote-acpx backend registered (node=${config.nodeName}, agent=${config.agentCommand}, default=${config.defaultAgent})`,
+        `remote-acpx backend registered (node=${config.nodeName || "(auto)"}, agent=${config.agentCommand}, default=${config.defaultAgent})`,
       );
     },
     async stop(_ctx: OpenClawPluginServiceContext): Promise<void> {
