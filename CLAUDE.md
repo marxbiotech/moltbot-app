@@ -43,6 +43,7 @@ Browser → Cloudflare Worker (Hono) → Cloudflare Sandbox Container (OpenClaw 
 - **src/gateway/** — Container process lifecycle (`process.ts`), env var mapping (`env.ts`), R2 mount/sync (`r2.ts`, `sync.ts`)
 - **src/routes/** — Route handlers: `public.ts` (no auth), `api.ts` (device management), `admin-ui.ts` (SPA), `debug.ts`, `cdp.ts` (Chrome DevTools Protocol shim)
 - **src/client/** — React admin UI served at `/_admin/`, built to `dist/client/`
+- **extensions/** — OpenClaw extensions (run inside container, not Worker code): `telegram-tools` (webhook + DM management), `remote-acpx` (ACP dispatch to paired nodes), `node-tools` (node pairing via `/node` command)
 
 ### Auth Layers
 
@@ -103,6 +104,35 @@ Telegram → CF Worker (POST /telegram/webhook) → Container (port 8787, /teleg
 **EADDRINUSE patch:** `start-openclaw.sh` patches OpenClaw's `monitorTelegramProvider` in webhook mode (openclaw/openclaw#19831). The upstream bug causes an immediate return → auto-restart → port conflict crash loop. The patch adds an `abortSignal` await before the return. Applies to all matching `.js` files in `dist/` since chunk boundaries vary between versions. Remove once OpenClaw ships PR #20309.
 
 **Extension:** `extensions/telegram-tools/` is an OpenClaw extension (not Worker code) that runs inside the container. It handles `/telegram` slash commands (webhook on/off, pair, approve) and manages webhook config + `allow-from.json` for DM access control.
+
+### ACP / Remote Node
+
+```
+Telegram user → OpenClaw ACP dispatch → remote-acpx extension → WebSocket → paired Mac/Linux node → Claude Code
+```
+
+**ACP (Agent Control Protocol)** enables the bot to dispatch Claude Code sessions to a paired physical machine ("node") connected via `make node` from moltbot-env. When a user sends a message that triggers ACP, the remote-acpx extension sends commands to the node over WebSocket, and streams ndjson events back.
+
+**Env vars:**
+- `ACPX_ENABLED` — Set to `true` to enable ACP dispatch
+- `NODE_ROUTE` — Per-environment path (e.g., `/acp`) where nodes connect via WebSocket. Protected by CF Access Service Token. Must not collide with reserved prefixes (`/_admin`, `/api`, `/debug`, `/cdp`, `/sandbox-health`, `/telegram`, `/slack`)
+- `NODE_ACCESS_AUD` — CF Access Application AUD for Worker-level JWT verification on the node route (defense-in-depth, auto-managed by moltbot-env's `sync-access.sh`)
+
+**Auto-resolve:** When `ACPX_ENABLED=true`, the remote-acpx extension registers as the ACP backend with `nodeName: ""` (empty). At runtime, it auto-resolves to the first connected node via `listAcpNodes()`. The resolved node is cached until it disconnects, at which point the next connected node is selected. `isHealthy()` returns false when no node is connected, so ACP gracefully degrades.
+
+**Node connection flow:**
+1. Operator runs `make node` from moltbot-env overlay → node-host connects via WebSocket to `NODE_ROUTE`
+2. Worker middleware at `src/index.ts` verifies CF Access JWT (if `NODE_ACCESS_AUD` is set) and proxies to container via `handleNodeProxy()` in `src/routes/public.ts`
+3. OpenClaw's built-in node handler accepts the WebSocket and registers the node
+4. If the node is new (not yet paired), it appears as a pending pairing request
+5. User approves via `/node pair approve` (Telegram) or admin UI
+6. remote-acpx auto-resolves the connected node on the next ACP dispatch
+
+**Extensions:**
+- `extensions/remote-acpx/` — ACP runtime backend. Sends `acp.spawn`, `acp.turn`, `acp.kill` events to the node; routes `acp.spawned`, `acp.message`, `acp.exited`, `acp.error` responses back to session queues. Parses both ndjson and JSON-RPC 2.0 event formats. Uses `Symbol.for` globalThis pattern to share state across jiti module loader instances.
+- `extensions/node-tools/` — Telegram `/node` command for device pairing management. Subcommands: `/node pair` (list pending), `/node pair approve <id|all>`, `/node list` (show paired nodes). Uses `openclaw/plugin-sdk/device-pair` API.
+
+**Config in `start-openclaw.sh`:** When `ACPX_ENABLED=true`, configures `remote-acpx` plugin with `nodeName: ""`, `permissionMode: "approve-all"`, `turnTimeoutMs: 300000` (5 min). Sets ACP backend to `remote-acpx`, default agent to `claude`, max 8 concurrent sessions.
 
 ## Patterns & Conventions
 

@@ -67,11 +67,7 @@ MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
 
 # === ACP / Remote Node (optional) ===
 # ACPX_ENABLED=true
-# ACPX_ALLOWED_AGENTS=claude-code
 # NODE_ROUTE=/your-node-path
-# CLAUDE_NODE_NAME=my-mac
-# CLAUDE_NODE_WORKSPACE=/path/to/workspace
-# CLAUDE_NODE_WORKSPACES={"project-a":"/path/a","project-b":"/path/b"}
 
 # === Owner identity (optional) ===
 # MOLTBOT_EMAIL=you@example.com

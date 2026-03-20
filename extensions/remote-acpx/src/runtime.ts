@@ -1,6 +1,6 @@
 // Core AcpRuntime implementation for remote dispatch.
-// Sends ACP events to a paired Mac node via WebSocket and yields
-// AcpRuntimeEvent from the ndjson stream coming back.
+// Sends ACP events to a paired node via WebSocket and yields
+// AcpRuntimeEvent via event-router queue (events arrive as parsed ndjson from event-router.ts).
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -94,7 +94,7 @@ export class RemoteAcpxRuntime implements AcpRuntime {
       const nodeId = resolveNodeId(this.config.nodeName);
       const connected = nodeId !== null && isAcpNodeConnected(nodeId);
       if (!connected) {
-        log.warn(`isHealthy=false nodeName=${this.config.nodeName} nodeId=${nodeId}`);
+        log.warn(`isHealthy=false mode=${this.config.nodeName ? "explicit" : "auto-resolve"} nodeId=${nodeId}`);
       }
       return connected;
     } catch (e: unknown) {
@@ -108,13 +108,17 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     if (!nodeId) {
       throw new AcpRuntimeError(
         "ACP_BACKEND_UNAVAILABLE",
-        `Node "${this.config.nodeName}" is not connected.`,
+        this.config.nodeName
+          ? `Node "${this.config.nodeName}" is not connected.`
+          : "No connected node found. Pair a node with /node pair approve.",
       );
     }
     if (!isAcpNodeConnected(nodeId)) {
       throw new AcpRuntimeError(
         "ACP_BACKEND_UNAVAILABLE",
-        `Node "${this.config.nodeName}" (${nodeId}) is offline.`,
+        this.config.nodeName
+          ? `Node "${this.config.nodeName}" (${nodeId}) is offline.`
+          : `Auto-resolved node (${nodeId}) is offline.`,
       );
     }
 
@@ -232,6 +236,8 @@ export class RemoteAcpxRuntime implements AcpRuntime {
 
     // Handle abort signal
     const onAbort = () => {
+      queueHandle.push({ type: "error", message: "Session aborted" });
+      queueHandle.close();
       void this.cancel({ handle: input.handle, reason: "abort-signal" }).catch((e) => {
         log.error(`cancel on abort failed: ${e instanceof Error ? e.message : String(e)}`);
       });
@@ -325,8 +331,8 @@ export class RemoteAcpxRuntime implements AcpRuntime {
   }
 
   // Design Decision: cancel() silently returns on failure (invalid handle or send failure) rather than
-  // throwing. The remote session will self-terminate via idle timeout. Propagating errors from cancel()
-  // requires coordinating with abort/timeout handlers to push error events to the queue — deferred.
+  // throwing. The remote session will self-terminate via idle timeout. Callers (abort/timeout handlers)
+  // are responsible for pushing error events and closing the queue before calling cancel().
   async cancel(input: { handle: AcpRuntimeHandle; reason?: string }): Promise<void> {
     const state = decodeHandle(input.handle.runtimeSessionName);
     if (!state) {

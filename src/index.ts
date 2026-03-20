@@ -152,16 +152,22 @@ app.route('/cdp', cdp);
 // Reserved route prefixes — NODE_ROUTE must not collide with these
 // Design Decision: NODE_ROUTE=`/` is not explicitly blocked — NODE_ROUTE is an operator-set env var,
 // not user input. Operators are responsible for setting a meaningful path (e.g., `/acp`).
+// Design Decision: Uses simple startsWith matching (not segment-boundary). This means paths like
+// `/slackbot` are rejected because `/slack` is reserved. Acceptable because NODE_ROUTE is operator-set
+// and our conventions use short distinct prefixes like `/acp` that never collide.
 const RESERVED_PREFIXES = ['/_admin', '/api', '/debug', '/cdp', '/sandbox-health', '/telegram', '/slack'];
 
 app.use('*', async (c, next) => {
   const nodeRoute = c.env.NODE_ROUTE;
   if (nodeRoute) {
     // Design Decision: Invalid NODE_ROUTE logs an error and falls through rather than failing at startup.
-    // NODE_ROUTE is operator-configured; console.error per-request is sufficient — wrangler tail surfaces it.
-    // Cloudflare Workers don't have a startup hook to validate env vars before the first request.
+    // NODE_ROUTE is operator-configured; Cloudflare Workers don't have a startup hook to validate env vars.
+    // Always log (operator visibility) but only return 500 when the request matches the invalid route.
     if (!nodeRoute.startsWith('/') || RESERVED_PREFIXES.some((p) => nodeRoute.startsWith(p))) {
       console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
+      if (c.req.path === nodeRoute) {
+        return c.json({ error: 'NODE_ROUTE misconfigured' }, 500);
+      }
       return next();
     }
     if (c.req.path === nodeRoute) {

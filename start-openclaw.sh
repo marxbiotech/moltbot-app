@@ -192,10 +192,7 @@ if [ -d "$PLUGIN_STAGING" ]; then
     echo "Plugins installed: $(ls "$PLUGIN_STAGING" | tr '\n' ' ')"
 fi
 
-# Conditionally disable remote-acpx extension if no paired node configured
-if [ -z "${CLAUDE_NODE_NAME:-}" ]; then
-    rm -rf "$CONFIG_DIR/extensions/remote-acpx"
-fi
+# remote-acpx extension is always kept — it auto-resolves the connected node at runtime
 
 # ============================================================
 # GITHUB APPS CREDENTIAL SETUP
@@ -626,65 +623,28 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
 
 // ACPX (Agent Control Protocol) configuration
 if (process.env.ACPX_ENABLED === 'true') {
-    const agents = (process.env.ACPX_ALLOWED_AGENTS || 'claude').split(',').map(function(s) { return s.trim(); });
-    var acpBackend = 'acpx';
-
-    // When a paired node is configured, use remote-acpx as ACP backend
-    if (process.env.CLAUDE_NODE_NAME) {
-        acpBackend = 'remote-acpx';
-        config.plugins = config.plugins || {};
-        config.plugins.entries = config.plugins.entries || {};
-        config.plugins.entries['remote-acpx'] = {
-            enabled: true,
-            config: {
-                nodeName: process.env.CLAUDE_NODE_NAME,
-                cwd: process.env.CLAUDE_NODE_WORKSPACE || undefined,
-                permissionMode: 'approve-all',
-                turnTimeoutMs: 300000
-            }
-        };
-        console.log('Remote ACPX: backend=remote-acpx, node=' + process.env.CLAUDE_NODE_NAME);
-    }
+    // Always use remote-acpx backend (auto-resolves connected node at runtime)
+    config.plugins = config.plugins || {};
+    config.plugins.entries = config.plugins.entries || {};
+    config.plugins.entries['remote-acpx'] = {
+        enabled: true,
+        config: {
+            nodeName: '',
+            permissionMode: 'approve-all',
+            turnTimeoutMs: 300000
+        }
+    };
 
     config.acp = {
         enabled: true,
         dispatch: { enabled: true },
-        backend: acpBackend,
-        defaultAgent: agents[0],
-        allowedAgents: agents,
+        backend: 'remote-acpx',
+        defaultAgent: 'claude',
+        allowedAgents: ['claude'],
         maxConcurrentSessions: 8,
     };
-    console.log('ACPX enabled: backend=' + acpBackend + ' defaultAgent=' + agents[0] + ' allowedAgents=' + agents.join(','));
+    console.log('ACPX enabled: backend=remote-acpx agent=claude');
 
-    // Multi-workspace: generate per-workspace agent entries from CLAUDE_NODE_WORKSPACES
-    if (process.env.CLAUDE_NODE_WORKSPACES) {
-        var workspaces = {};
-        try { workspaces = JSON.parse(process.env.CLAUDE_NODE_WORKSPACES); } catch(e) {
-            console.error('ERROR: CLAUDE_NODE_WORKSPACES contains invalid JSON: ' + e.message);
-            console.error('ERROR: Multi-workspace ACP will NOT be configured. Fix the JSON and redeploy.');
-        }
-        var wsNames = Object.keys(workspaces);
-        if (wsNames.length > 0) {
-            config.agents.list = config.agents.list || [];
-            // Remove any existing workspace entries (prevents duplicates on R2 restore)
-            config.agents.list = config.agents.list.filter(function(a) {
-                return wsNames.indexOf(a.id) === -1;
-            });
-            wsNames.forEach(function(name) {
-                config.agents.list.push({
-                    id: name,
-                    runtime: { type: 'acp', acp: { agent: 'claude', cwd: workspaces[name] } }
-                });
-            });
-            // Append workspace names to allowedAgents (deduplicated); keep defaultAgent unchanged
-            // so regular Telegram sessions still use the original agent ("claude")
-            var existing = config.acp.allowedAgents;
-            wsNames.forEach(function(name) {
-                if (existing.indexOf(name) === -1) existing.push(name);
-            });
-            console.log('ACP workspaces: ' + wsNames.join(', '));
-        }
-    }
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
