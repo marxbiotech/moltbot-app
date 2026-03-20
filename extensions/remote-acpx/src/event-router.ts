@@ -56,6 +56,9 @@ export function unregisterSpawnResolver(acpSessionId: string): void {
 }
 
 export function drainAllSessions(): void {
+  if (sessionQueues.size > 0 || spawnResolvers.size > 0) {
+    log.info(`drainAllSessions: draining ${sessionQueues.size} session(s), ${spawnResolvers.size} spawn resolver(s)`);
+  }
   for (const [, queue] of sessionQueues) {
     queue.push({ type: "error", message: "Service stopped" });
     queue.close();

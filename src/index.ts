@@ -162,10 +162,10 @@ app.use('*', async (c, next) => {
   if (nodeRoute) {
     // Design Decision: Invalid NODE_ROUTE logs an error and falls through rather than failing at startup.
     // NODE_ROUTE is operator-configured; Cloudflare Workers don't have a startup hook to validate env vars.
-    // Only log when the request actually matches the invalid route to avoid per-request noise.
+    // Always log (operator visibility) but only return 500 when the request matches the invalid route.
     if (!nodeRoute.startsWith('/') || RESERVED_PREFIXES.some((p) => nodeRoute.startsWith(p))) {
+      console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
       if (c.req.path === nodeRoute) {
-        console.error(`[NODE] Invalid NODE_ROUTE "${nodeRoute}": must start with / and not collide with reserved prefixes`);
         return c.json({ error: 'NODE_ROUTE misconfigured' }, 500);
       }
       return next();

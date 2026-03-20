@@ -1,8 +1,11 @@
 // Resolves nodeName → nodeId with caching. When nodeName is empty, auto-resolves to the first connected node.
+// In auto-resolve mode, the first connected node is cached and reused until it disconnects,
+// at which point the next connected node is selected.
 // Use Symbol.for globalThis to share cache across module loader instances.
 // Same pattern as event-router.ts — jiti may load this module multiple times.
 
 import { resolveAcpNodeIdByName, isAcpNodeConnected, listAcpNodes } from "openclaw/plugin-sdk/remote-acpx";
+import { log } from "./log.js";
 
 interface NodeResolverCache {
   nodeId: string | null;
@@ -30,6 +33,9 @@ export function resolveNodeId(nodeName: string): string | null {
     const nodes = listAcpNodes();
     const connected = nodes.find(n => isAcpNodeConnected(n.nodeId));
     nodeId = connected ? connected.nodeId : null;
+    if (!nodeId) {
+      log.info(`resolveNodeId: auto-resolve failed — ${nodes.length} node(s) registered, none connected`);
+    }
   }
 
   if (nodeId) {

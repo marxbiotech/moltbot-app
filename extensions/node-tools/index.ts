@@ -185,6 +185,7 @@ export default function register(api: any) {
         return { text };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[node-tools] command error: ${msg}`, err instanceof Error ? err.stack : undefined);
         return { text: `[ERROR] ${msg}` };
       }
     },
