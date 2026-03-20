@@ -2,7 +2,6 @@
 // Uses a tool factory to access sessionKey from OpenClawPluginToolContext.
 
 import { randomUUID } from "node:crypto";
-import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { RemoteAcpxRuntime, type RemoteAcpxConfig } from "../../remote-acpx/src/runtime.js";
 import { isAcpRuntimeError } from "openclaw/plugin-sdk/remote-acpx";
@@ -87,20 +86,24 @@ export function registerCodingTool(api: OpenClawPluginApi): void {
       "Returns execution results including tool operations and text output. " +
       "Use this when the user needs code changes, codebase exploration, " +
       "git operations, tests, builds, or any task requiring source code access.",
-    parameters: Type.Object({
-      prompt: Type.String({
-        description:
-          "Complete technical instruction for Claude Code (English). " +
-          "Include specific file paths, module names, function names, and expected behavior.",
-      }),
-      cwd: Type.Optional(
-        Type.String({
+    parameters: {
+      type: "object" as const,
+      properties: {
+        prompt: {
+          type: "string" as const,
+          description:
+            "Complete technical instruction for Claude Code (English). " +
+            "Include specific file paths, module names, function names, and expected behavior.",
+        },
+        cwd: {
+          type: "string" as const,
           description:
             "Absolute path to the working directory on the remote Mac. " +
             "If omitted, uses the session's existing cwd.",
-        }),
-      ),
-    }),
+        },
+      },
+      required: ["prompt"] as const,
+    },
     async execute(_toolCallId, params) {
       const { prompt, cwd } = params as { prompt: string; cwd?: string };
       const sessionKey = ctx.sessionKey || "default";
