@@ -656,6 +656,11 @@ if (process.env.ACPX_ENABLED === 'true') {
         }
     };
 
+    // Disable claude-node (bundled with openclaw) — it conflicts with coding-tool
+    // by registering the same claude_code tool name but using system.run + claude CLI
+    // instead of the acpx protocol that coding-tool uses.
+    config.plugins.entries['claude-node'] = { enabled: false };
+
     // Allow claude_code tool through tool policy
     if (!config.tools.allow.includes('claude_code')) {
         config.tools.allow.push('claude_code');
