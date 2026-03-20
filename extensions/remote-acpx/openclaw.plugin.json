@@ -1,7 +1,7 @@
 {
   "id": "remote-acpx",
   "name": "Remote ACPX",
-  "description": "ACP runtime backend dispatching to a paired Mac node via WebSocket.",
+  "description": "ACP runtime backend dispatching to a paired node via WebSocket.",
   "configSchema": {
     "type": "object",
     "properties": {
