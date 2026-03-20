@@ -17,16 +17,6 @@
         "type": "string",
         "default": "claude"
       },
-      "workspaceRoot": {
-        "type": "string",
-        "description": "Mac 上 workspace 的根目錄路徑",
-        "default": "/Users/li/Projects"
-      },
-      "workspaces": {
-        "type": "object",
-        "description": "workspace 名稱 → 路徑對照（覆寫 workspaceRoot 推導）",
-        "additionalProperties": { "type": "string" }
-      },
       "permissionMode": {
         "type": "string",
         "default": "approve-all"

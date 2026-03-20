@@ -650,8 +650,6 @@ if (process.env.ACPX_ENABLED === 'true') {
             nodeName: '',
             agentCommand: 'acpx',
             defaultAgent: 'claude',
-            workspaceRoot: '/Users/li/Projects',
-            workspaces: {},
             permissionMode: 'approve-all',
             turnTimeoutMs: 300000,
             maxOutputChars: 6000

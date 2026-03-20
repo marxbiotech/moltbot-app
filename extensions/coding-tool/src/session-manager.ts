@@ -2,9 +2,8 @@
 // When the same conversation calls claude_code multiple times,
 // the cached session keeps Claude Code's conversation context.
 
-import type { AcpRuntimeHandle } from "openclaw/plugin-sdk/remote-acpx";
 import { isAcpNodeConnected } from "openclaw/plugin-sdk/remote-acpx";
-import type { RemoteAcpxRuntime } from "../../remote-acpx/src/runtime.js";
+import { type RemoteAcpxRuntime, getNodeIdFromHandle } from "../../remote-acpx/src/runtime.js";
 import { log } from "./log.js";
 
 export type CachedSession = {
@@ -15,7 +14,7 @@ export type CachedSession = {
 
 // Use Symbol.for to share state across jiti module reloads (same pattern as remote-acpx).
 const STATE_KEY = Symbol.for("moltbot.codingToolSessionState");
-type SessionState = { sessions: Map<string, CachedSession> };
+type SessionState = { sessions: Map<string, CachedSession>; pruneInterval?: ReturnType<typeof setInterval> };
 const globalRef = globalThis as unknown as Record<symbol, SessionState>;
 if (!globalRef[STATE_KEY]) {
   globalRef[STATE_KEY] = { sessions: new Map() };
@@ -39,11 +38,11 @@ export class SessionManager {
 
     if (cached) {
       // Validate cached session: workspace must match and node must be connected
-      const handleState = this.decodeHandleNodeId(cached.handle);
+      const nodeId = getNodeIdFromHandle(cached.handle);
       if (
         cached.workspace === opts.cwd &&
-        handleState &&
-        isAcpNodeConnected(handleState)
+        nodeId &&
+        isAcpNodeConnected(nodeId)
       ) {
         cached.lastUsedAt = Date.now();
         log.info(`session reused: key=${sessionKey} workspace=${opts.cwd}`);
@@ -54,8 +53,8 @@ export class SessionManager {
       sessions.delete(sessionKey);
       try {
         await runtime.close({ handle: cached.handle, reason: "stale" });
-      } catch {
-        // Best-effort cleanup
+      } catch (err) {
+        log.warn(`session close failed: key=${sessionKey} err=${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -82,6 +81,16 @@ export class SessionManager {
     sessions.delete(sessionKey);
   }
 
+  /** Clear previous prune interval (if any) and start a new one. Prevents accumulation on jiti reload. */
+  resetPruneInterval(fn: () => void): void {
+    const state = globalRef[STATE_KEY];
+    if (state.pruneInterval) {
+      clearInterval(state.pruneInterval);
+    }
+    state.pruneInterval = setInterval(fn, 10 * 60 * 1000);
+    state.pruneInterval.unref?.();
+  }
+
   /** Clean up sessions that have been idle longer than TTL */
   pruneStale(runtime: RemoteAcpxRuntime): void {
     const now = Date.now();
@@ -89,22 +98,11 @@ export class SessionManager {
       if (now - cached.lastUsedAt > TTL_MS) {
         log.info(`session pruned (TTL): key=${key}`);
         sessions.delete(key);
-        runtime.close({ handle: cached.handle, reason: "ttl" }).catch(() => {});
+        runtime.close({ handle: cached.handle, reason: "ttl" }).catch((err) => {
+          log.warn(`session close failed (TTL): key=${key} err=${err instanceof Error ? err.message : String(err)}`);
+        });
       }
     }
   }
 
-  /** Extract nodeId from encoded handle for connection check */
-  private decodeHandleNodeId(handle: AcpRuntimeHandle): string | null {
-    const prefix = "remote-acpx:v1:";
-    const name = handle.runtimeSessionName;
-    if (!name.startsWith(prefix)) return null;
-    try {
-      const raw = Buffer.from(name.slice(prefix.length), "base64url").toString("utf8");
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return typeof parsed.nodeId === "string" ? parsed.nodeId : null;
-    } catch {
-      return null;
-    }
-  }
 }

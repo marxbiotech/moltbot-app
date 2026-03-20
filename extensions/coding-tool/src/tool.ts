@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { RemoteAcpxRuntime, type RemoteAcpxConfig } from "../../remote-acpx/src/runtime.js";
+import { isAcpRuntimeError } from "openclaw/plugin-sdk/remote-acpx";
 import { SessionManager } from "./session-manager.js";
 import { collectTurnOutput, type CollectedResult } from "./output-collector.js";
 import { log } from "./log.js";
@@ -13,8 +14,6 @@ type CodingToolConfig = {
   nodeName: string;
   agentCommand: string;
   defaultAgent: string;
-  workspaceRoot: string;
-  workspaces: Record<string, string>;
   permissionMode: string;
   turnTimeoutMs: number;
   maxOutputChars: number;
@@ -26,28 +25,10 @@ function resolveConfig(raw: Record<string, unknown> | undefined): CodingToolConf
     nodeName: typeof cfg.nodeName === "string" ? cfg.nodeName : "",
     agentCommand: typeof cfg.agentCommand === "string" ? cfg.agentCommand : "acpx",
     defaultAgent: typeof cfg.defaultAgent === "string" ? cfg.defaultAgent : "claude",
-    workspaceRoot: typeof cfg.workspaceRoot === "string" ? cfg.workspaceRoot : "/Users/li/Projects",
-    workspaces:
-      typeof cfg.workspaces === "object" && cfg.workspaces !== null
-        ? (cfg.workspaces as Record<string, string>)
-        : {},
     permissionMode: typeof cfg.permissionMode === "string" ? cfg.permissionMode : "approve-all",
     turnTimeoutMs: typeof cfg.turnTimeoutMs === "number" ? cfg.turnTimeoutMs : 300000,
     maxOutputChars: typeof cfg.maxOutputChars === "number" ? cfg.maxOutputChars : 6000,
   };
-}
-
-function resolveWorkspacePath(
-  workspace: string | undefined,
-  config: CodingToolConfig,
-): string {
-  if (!workspace) return "";
-  // Check explicit workspace map first
-  if (config.workspaces[workspace]) {
-    return config.workspaces[workspace];
-  }
-  // Fallback: workspaceRoot + workspace name
-  return `${config.workspaceRoot}/${workspace}`;
 }
 
 function formatToolResult(result: CollectedResult): { content: Array<{ type: "text"; text: string }> } {
@@ -91,11 +72,11 @@ export function registerCodingTool(api: OpenClawPluginApi): void {
   const runtime = new RemoteAcpxRuntime(runtimeConfig);
   const sessionMgr = new SessionManager();
 
-  // Periodically prune stale sessions (every 10 minutes)
-  const pruneInterval = setInterval(() => sessionMgr.pruneStale(runtime), 10 * 60 * 1000);
-  pruneInterval.unref?.();
+  // Periodically prune stale sessions (every 10 minutes).
+  // Store interval in SessionManager's global state so it survives jiti reloads without accumulating.
+  sessionMgr.resetPruneInterval(() => sessionMgr.pruneStale(runtime));
 
-  log.info(`registerCodingTool: nodeName=${config.nodeName} agent=${config.defaultAgent} workspaceRoot=${config.workspaceRoot}`);
+  log.info(`registerCodingTool: nodeName=${config.nodeName} agent=${config.defaultAgent}`);
 
   // Tool factory — invoked per agent turn with context containing sessionKey
   api.registerTool((ctx) => ({
@@ -112,26 +93,27 @@ export function registerCodingTool(api: OpenClawPluginApi): void {
           "Complete technical instruction for Claude Code (English). " +
           "Include specific file paths, module names, function names, and expected behavior.",
       }),
-      workspace: Type.Optional(
+      cwd: Type.Optional(
         Type.String({
           description:
-            "Target workspace name (e.g., bindash, moltbot-app, marxbiotech-web). " +
-            "Determines the working directory on the Mac.",
+            "Absolute path to the working directory on the remote Mac. " +
+            "If omitted, uses the session's existing cwd.",
         }),
       ),
     }),
     async execute(_toolCallId, params) {
-      const { prompt, workspace } = params as { prompt: string; workspace?: string };
+      const { prompt, cwd } = params as { prompt: string; cwd?: string };
       const sessionKey = ctx.sessionKey || "default";
 
       try {
-        const cwd = resolveWorkspacePath(workspace, config);
-        log.info(`execute: sessionKey=${sessionKey} workspace=${workspace || "(none)"} cwd=${cwd} prompt=${prompt.slice(0, 100)}`);
+        // Design Decision: Log prompt prefix for debugging. /tmp is ephemeral (cleared on container restart)
+        // and only accessible via sandbox debug endpoint, so the sensitivity tradeoff is acceptable.
+        log.info(`execute: sessionKey=${sessionKey} cwd=${cwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
 
         // Get or create session (reuses existing Claude Code session for context)
         const handle = await sessionMgr.getOrCreate(sessionKey, runtime, {
           agent: config.defaultAgent,
-          cwd,
+          cwd: cwd || "",
         });
 
         // Run the turn and collect output
@@ -143,7 +125,6 @@ export function registerCodingTool(api: OpenClawPluginApi): void {
         });
         const result = await collectTurnOutput(events, {
           maxOutputChars: config.maxOutputChars,
-          timeoutMs: config.turnTimeoutMs,
         });
 
         // If session errored, invalidate cache so next call spawns fresh
@@ -157,8 +138,24 @@ export function registerCodingTool(api: OpenClawPluginApi): void {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`execute error: sessionKey=${sessionKey} err=${message}`);
         sessionMgr.invalidate(sessionKey);
+
+        let hint = "";
+        if (isAcpRuntimeError(err)) {
+          switch (err.code) {
+            case "ACP_BACKEND_UNAVAILABLE":
+              hint = "\n\nNo node is connected. Start one with `make node` in the overlay directory.";
+              break;
+            case "ACP_SESSION_INIT_FAILED":
+              hint = "\n\nFailed to start a Claude Code session. Check that the node is running and try again.";
+              break;
+            case "ACP_TURN_FAILED":
+              hint = "\n\nFailed to send the request to Claude Code. The node may have disconnected — try again.";
+              break;
+          }
+        }
+
         return {
-          content: [{ type: "text", text: `Error: ${message}` }],
+          content: [{ type: "text", text: `Error: ${message}${hint}` }],
         };
       }
     },

@@ -1,5 +1,6 @@
 // Collects streaming AcpRuntimeEvents from a runTurn() call into a structured result.
-// Handles text accumulation, tool call summarization, truncation, and timeout.
+// Handles text accumulation, tool call summarization, and truncation.
+// Timeout is handled by the runtime (sends acp.kill), not by the collector.
 
 import type { AcpRuntimeEvent } from "openclaw/plugin-sdk/remote-acpx";
 import { log } from "./log.js";
@@ -29,7 +30,7 @@ function truncateOutput(text: string, maxChars: number): string {
 
 export async function collectTurnOutput(
   events: AsyncIterable<AcpRuntimeEvent>,
-  opts: { maxOutputChars: number; timeoutMs: number; signal?: AbortSignal },
+  opts: { maxOutputChars: number; signal?: AbortSignal },
 ): Promise<CollectedResult> {
   const chunks: string[] = [];
   const operations: string[] = [];
@@ -37,16 +38,9 @@ export async function collectTurnOutput(
   let stopReason: string | undefined;
   let error: string | undefined;
 
-  const timeoutSignal =
-    opts.timeoutMs > 0 ? AbortSignal.timeout(opts.timeoutMs) : undefined;
-  const combinedSignal =
-    opts.signal && timeoutSignal
-      ? AbortSignal.any([opts.signal, timeoutSignal])
-      : opts.signal || timeoutSignal;
-
   try {
     for await (const event of events) {
-      if (combinedSignal?.aborted) {
+      if (opts.signal?.aborted) {
         status = "error";
         error = "Turn timed out or was cancelled";
         break;
