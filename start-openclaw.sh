@@ -643,7 +643,27 @@ if (process.env.ACPX_ENABLED === 'true') {
         allowedAgents: ['claude'],
         maxConcurrentSessions: 8,
     };
-    console.log('ACPX enabled: backend=remote-acpx agent=claude');
+    // coding-tool: LLM-invocable Claude Code tool (reuses remote-acpx runtime)
+    config.plugins.entries['coding-tool'] = {
+        enabled: true,
+        config: {
+            nodeName: '',
+            agentCommand: 'acpx',
+            defaultAgent: 'claude',
+            workspaceRoot: '/Users/li/Projects',
+            workspaces: {},
+            permissionMode: 'approve-all',
+            turnTimeoutMs: 300000,
+            maxOutputChars: 6000
+        }
+    };
+
+    // Allow claude_code tool through tool policy
+    if (!config.tools.allow.includes('claude_code')) {
+        config.tools.allow.push('claude_code');
+    }
+
+    console.log('ACPX enabled: backend=remote-acpx agent=claude coding-tool=enabled');
 
 }
 

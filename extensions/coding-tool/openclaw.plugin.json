@@ -1,0 +1,45 @@
+{
+  "id": "coding-tool",
+  "name": "Coding Tool",
+  "description": "LLM-invocable tool wrapping Claude Code via remote-acpx runtime.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "nodeName": {
+        "type": "string",
+        "description": "Target node displayName (same as remote-acpx)"
+      },
+      "agentCommand": {
+        "type": "string",
+        "default": "acpx"
+      },
+      "defaultAgent": {
+        "type": "string",
+        "default": "claude"
+      },
+      "workspaceRoot": {
+        "type": "string",
+        "description": "Mac 上 workspace 的根目錄路徑",
+        "default": "/Users/li/Projects"
+      },
+      "workspaces": {
+        "type": "object",
+        "description": "workspace 名稱 → 路徑對照（覆寫 workspaceRoot 推導）",
+        "additionalProperties": { "type": "string" }
+      },
+      "permissionMode": {
+        "type": "string",
+        "default": "approve-all"
+      },
+      "turnTimeoutMs": {
+        "type": "number",
+        "default": 300000
+      },
+      "maxOutputChars": {
+        "type": "number",
+        "description": "回傳給 LLM 的 output 最大字元數（truncate 閾值）",
+        "default": 6000
+      }
+    }
+  }
+}
