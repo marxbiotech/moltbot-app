@@ -1,0 +1,10 @@
+{
+  "id": "subscription-auth",
+  "name": "Subscription Auth",
+  "description": "Authenticate with Claude Pro/Max (setup-token) or ChatGPT Plus/Pro (Codex OAuth). Provides /claude_auth, /openai_auth, /openai_callback slash commands.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

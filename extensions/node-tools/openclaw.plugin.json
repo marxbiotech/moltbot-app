@@ -1,0 +1,10 @@
+{
+  "id": "node-tools",
+  "name": "Node Tools",
+  "description": "Node pairing management. /node pair|list",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

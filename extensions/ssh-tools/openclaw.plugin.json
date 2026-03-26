@@ -1,0 +1,10 @@
+{
+  "id": "ssh-tools",
+  "name": "SSH Tools",
+  "description": "SSH key management and diagnostics. Provides /ssh_setup and /ssh_check commands.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
