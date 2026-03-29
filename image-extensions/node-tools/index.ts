@@ -15,7 +15,7 @@
 import {
   listDevicePairing,
   approveDevicePairing,
-} from "openclaw/plugin-sdk/device-pair";
+} from "openclaw/plugin-sdk/device-bootstrap";
 
 // ── Helpers ──────────────────────────────────────────────────
 
