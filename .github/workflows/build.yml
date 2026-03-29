@@ -31,7 +31,7 @@ jobs:
       - name: Extract OpenClaw version from Dockerfile
         id: version
         run: |
-          tag=$(grep '^FROM ghcr.io/openclaw/openclaw:' Dockerfile | cut -d: -f2)
+          tag=$(grep '^FROM ghcr.io/' Dockerfile | head -1 | cut -d: -f2)
           echo "openclaw_tag=$tag" >> "$GITHUB_OUTPUT"
           sha_short=$(git rev-parse --short HEAD)
           echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
