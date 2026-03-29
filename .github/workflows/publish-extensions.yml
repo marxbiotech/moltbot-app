@@ -1,0 +1,103 @@
+name: Publish Extensions to ClawHub
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'extensions/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.changed.outputs.matrix }}
+      has_changes: ${{ steps.changed.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed extensions
+        id: changed
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            DIRS=$(find extensions -maxdepth 1 -mindepth 1 -type d -exec test -f {}/package.json \; -print | sort)
+          else
+            DIRS=$(git diff --name-only HEAD~1 HEAD -- extensions/ \
+              | cut -d/ -f1-2 \
+              | sort -u \
+              | while read dir; do
+                  [ -f "$dir/package.json" ] && echo "$dir"
+                done)
+          fi
+
+          if [ -z "$DIRS" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No extensions to publish."
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+          MATRIX="["
+          FIRST=true
+          for dir in $DIRS; do
+            NAME=$(node -p "require('./$dir/package.json').name")
+            VERSION=$(node -p "require('./$dir/package.json').version")
+            DISPLAY=$(node -p "require('./$dir/openclaw.plugin.json').name")
+
+            [ "$FIRST" = true ] && FIRST=false || MATRIX="$MATRIX,"
+            MATRIX="$MATRIX{\"dir\":\"$dir\",\"name\":\"$NAME\",\"version\":\"$VERSION\",\"display\":\"$DISPLAY\"}"
+          done
+          MATRIX="$MATRIX]"
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Extensions to publish:"
+          echo "$MATRIX" | jq .
+
+  publish:
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install ClawHub CLI
+        run: npm install -g clawhub
+
+      - name: Authenticate
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: clawhub login --token "$CLAWHUB_TOKEN" --no-browser
+
+      - name: Publish extension
+        env:
+          EXT_DIR: ${{ matrix.extension.dir }}
+          EXT_NAME: ${{ matrix.extension.name }}
+          EXT_DISPLAY: ${{ matrix.extension.display }}
+          EXT_VERSION: ${{ matrix.extension.version }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          cd "$EXT_DIR"
+          clawhub package publish . \
+            --family code-plugin \
+            --name "$EXT_NAME" \
+            --display-name "$EXT_DISPLAY" \
+            --version "$EXT_VERSION" \
+            --tags latest \
+            --source-repo "$SOURCE_REPO" \
+            --source-commit "$SOURCE_COMMIT" \
+            --source-path "$EXT_DIR"
