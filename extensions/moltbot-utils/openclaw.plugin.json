@@ -1,5 +1,5 @@
 {
-  "id": "moltbot-utils",
+  "id": "marxbiotech-moltbot-utils",
   "name": "Moltbot Utilities",
   "description": "System diagnostics. Provides /ws_check, /sys_info, and /net_check commands.",
   "configSchema": {

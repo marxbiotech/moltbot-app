@@ -6,7 +6,4 @@ USER root
 # A symlink ensures OpenClaw can find it in PATH.
 RUN ln -s /opt/tailscale/tailscale /usr/local/bin/tailscale
 
-# Copy custom extensions into the app extensions directory
-COPY extensions/ /app/extensions/
-
 USER node
