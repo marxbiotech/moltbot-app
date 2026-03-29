@@ -6,4 +6,7 @@ USER root
 # A symlink ensures OpenClaw can find it in PATH.
 RUN ln -s /opt/tailscale/tailscale /usr/local/bin/tailscale
 
+# Extensions that require image-bundling (PATH scripts, SDK dependencies)
+COPY image-extensions/ /app/extensions/
+
 USER node

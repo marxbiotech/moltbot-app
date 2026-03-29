@@ -1,5 +1,5 @@
 {
-  "id": "git-tools",
+  "id": "marxbiotech-git-tools",
   "name": "Git Tools",
   "description": "Git repository management. Provides /git_check, /git_sync, and /git_repos commands.",
   "configSchema": {

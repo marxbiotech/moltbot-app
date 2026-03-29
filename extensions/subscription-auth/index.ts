@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { randomBytes, createHash } from "node:crypto";
 
 /**
@@ -12,8 +13,9 @@ import { randomBytes, createHash } from "node:crypto";
  * Credentials are written to auth-profiles.json which is auto-synced to R2.
  */
 
-const AUTH_FILE = "/root/.openclaw/agents/main/agent/auth-profiles.json";
-const CONFIG_FILE = "/root/.openclaw/openclaw.json";
+const OPENCLAW_HOME = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
+const AUTH_FILE = join(OPENCLAW_HOME, "agents", "main", "agent", "auth-profiles.json");
+const CONFIG_FILE = join(OPENCLAW_HOME, "openclaw.json");
 
 // OpenAI Codex OAuth constants (from openai/codex source: codex-rs/core/src/auth.rs)
 const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";

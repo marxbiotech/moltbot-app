@@ -1,5 +1,5 @@
 {
-  "id": "bedrock-auth",
+  "id": "marxbiotech-bedrock-auth",
   "name": "AWS Bedrock Auth",
   "description": "MFA-based authentication for AWS Bedrock. Provides /aws_auth slash command.",
   "configSchema": {

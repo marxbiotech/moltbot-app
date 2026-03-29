@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 
 /**
  * telegram-tools plugin — /telegram
@@ -24,7 +25,7 @@ import { dirname } from "node:path";
  *   /telegram mention add|remove|test     — manage mention patterns
  */
 
-const OPENCLAW_DIR = "/root/.openclaw";
+const OPENCLAW_DIR = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
 const PAIRING_TTL_MS = 60 * 60 * 1000; // 60 minutes
 const CLI_TIMEOUT_MS = 10_000;
 const BOT_TO_BOT_MENTION_PROMPT = [

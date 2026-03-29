@@ -1,5 +1,5 @@
 {
-  "id": "ssh-tools",
+  "id": "marxbiotech-ssh-tools",
   "name": "SSH Tools",
   "description": "SSH key management and diagnostics. Provides /ssh_setup and /ssh_check commands.",
   "configSchema": {

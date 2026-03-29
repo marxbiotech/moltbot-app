@@ -1,29 +1,6 @@
-import { execFile } from "node:child_process";
-
-/**
- * git-tools plugin — /git_check, /git_sync, and /git_repos commands.
- *
- * Uses registerCommand() so commands execute WITHOUT the AI agent.
- * The actual logic lives in /usr/local/bin/{git_check,git_sync,git_repos}
- * (installed by start-openclaw.sh from extensions/git-tools/scripts/).
- */
-
-function runScript(
-  bin: string,
-  args: string[],
-  timeoutMs = 60_000,
-): Promise<{ text: string }> {
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout: timeoutMs, env: process.env }, (err, stdout, stderr) => {
-      const output = (stdout || "") + (stderr ? `\n${stderr}` : "");
-      if (err && !output.trim()) {
-        resolve({ text: `❌ ${bin} failed: ${err.message}` });
-      } else {
-        resolve({ text: output.trim() || "✅ Done." });
-      }
-    });
-  });
-}
+import { gitCheck } from "./src/git-check.ts";
+import { gitSync } from "./src/git-sync.ts";
+import { gitRepos } from "./src/git-repos.ts";
 
 export default function register(api: any) {
   api.registerCommand({
@@ -32,8 +9,8 @@ export default function register(api: any) {
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: any) => {
-      const args = ctx.args?.trim();
-      return runScript("git_check", args ? [args] : [], 15_000);
+      const args = ctx.args?.trim() || undefined;
+      return gitCheck(args);
     },
   });
 
@@ -43,8 +20,8 @@ export default function register(api: any) {
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: any) => {
-      const args = ctx.args?.trim();
-      return runScript("git_sync", args ? [args] : [], 60_000);
+      const args = ctx.args?.trim() || undefined;
+      return gitSync(args);
     },
   });
 
@@ -53,8 +30,6 @@ export default function register(api: any) {
     description: "Scan workspace git repos — branch and dirty status",
     acceptsArgs: false,
     requireAuth: true,
-    handler: async () => {
-      return runScript("git_repos", [], 15_000);
-    },
+    handler: async () => gitRepos(),
   });
 }

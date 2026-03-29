@@ -1,5 +1,5 @@
 {
-  "id": "telegram-tools",
+  "id": "marxbiotech-telegram-tools",
   "name": "Telegram Tools",
   "description": "Telegram management. /telegram webhook|pair|group|mention|config",
   "configSchema": {
