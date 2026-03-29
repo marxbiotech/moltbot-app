@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'Dockerfile'
-      - 'extensions/**'
+      - 'image-extensions/**'
   workflow_dispatch:
 
 permissions:
