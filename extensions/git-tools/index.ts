@@ -1,6 +1,7 @@
 import { gitCheck } from "./src/git-check.ts";
 import { gitSync } from "./src/git-sync.ts";
 import { gitRepos } from "./src/git-repos.ts";
+import { skillSyncTool } from "./src/skill-sync.ts";
 
 export default function register(api: any) {
   api.registerCommand({
@@ -32,4 +33,6 @@ export default function register(api: any) {
     requireAuth: true,
     handler: async () => gitRepos(),
   });
+
+  api.registerTool(skillSyncTool);
 }
