@@ -73,14 +73,23 @@ async function handlePairApprove(idArg: string): Promise<string> {
     return "[FAIL] No pending node pairing requests.";
   }
 
+  const allScopes = [
+    "operator.admin",
+    "operator.read",
+    "operator.write",
+    "operator.approvals",
+    "operator.pairing",
+    "node",
+  ];
+
   if (idArg === "all") {
     const results: string[] = [];
     for (const req of nodeRequests) {
-      const approved = await approveDevicePairing(req.requestId);
-      if (approved) {
+      const result: any = await approveDevicePairing(req.requestId, { callerScopes: allScopes });
+      if (result?.status === "approved") {
         results.push(`[PASS] Approved: ${req.displayName || req.deviceId}`);
       } else {
-        results.push(`[FAIL] Failed to approve: ${req.displayName || req.requestId}`);
+        results.push(`[FAIL] Failed to approve: ${req.displayName || req.requestId} (${result?.status || "null"}: ${result?.missingScope || ""})`);
       }
     }
     return results.join("\n");
@@ -94,11 +103,11 @@ async function handlePairApprove(idArg: string): Promise<string> {
     return `[FAIL] No pending node request matching "${idArg}".\nUse /node pair to list requests.`;
   }
 
-  const approved = await approveDevicePairing(match.requestId);
-  if (approved) {
+  const result: any = await approveDevicePairing(match.requestId, { callerScopes: allScopes });
+  if (result?.status === "approved") {
     return `[PASS] Approved: ${match.displayName || match.deviceId}\nRun \`make node\` again to connect.`;
   }
-  return `[FAIL] Failed to approve request ${match.requestId}.`;
+  return `[FAIL] Failed to approve request ${match.requestId} (${result?.status || "null"}: ${result?.missingScope || ""}).`;
 }
 
 async function handleList(): Promise<string> {
