@@ -1,6 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/remote-acpx";
 import { createRemoteAcpxService } from "./src/service.js";
-import { registerCodingTool } from "./src/tool.js";
 
 const plugin = {
   id: "remote-acpx",
@@ -13,7 +12,6 @@ const plugin = {
         api,
       }),
     );
-    registerCodingTool(api);
   },
 };
 
