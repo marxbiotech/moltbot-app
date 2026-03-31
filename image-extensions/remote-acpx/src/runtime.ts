@@ -71,6 +71,12 @@ function decodeHandle(runtimeSessionName: string): RemoteHandleState | null {
   }
 }
 
+/** Extract nodeId from an encoded handle (for session validation). */
+export function getNodeIdFromHandle(handle: AcpRuntimeHandle): string | null {
+  const state = decodeHandle(handle.runtimeSessionName);
+  return state?.nodeId ?? null;
+}
+
 export type RemoteAcpxConfig = {
   nodeName: string;
   agentCommand: string;

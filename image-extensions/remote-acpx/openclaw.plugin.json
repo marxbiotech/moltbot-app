@@ -1,7 +1,7 @@
 {
   "id": "remote-acpx",
   "name": "Remote ACPX",
-  "description": "ACP runtime backend dispatching to a paired node via WebSocket.",
+  "description": "ACP runtime backend dispatching to a paired node via WebSocket, with LLM-invocable Claude Code tool.",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -27,6 +27,11 @@
       "turnTimeoutMs": {
         "type": "number",
         "default": 300000
+      },
+      "maxOutputChars": {
+        "type": "number",
+        "description": "Max characters in the message section returned to the outer LLM.",
+        "default": 6000
       }
     }
   }
