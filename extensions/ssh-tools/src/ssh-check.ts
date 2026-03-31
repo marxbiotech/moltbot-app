@@ -17,8 +17,7 @@ function execFilePromise(cmd: string, args: string[], timeoutMs = 15_000): Promi
 }
 
 function sshDir(): string {
-  const home = process.env.OPENCLAW_HOME ?? path.join(os.homedir(), ".openclaw");
-  return path.join(home, "workspace", ".ssh");
+  return path.join(os.homedir(), ".ssh");
 }
 
 function fileMode(filePath: string): number | null {
@@ -44,81 +43,54 @@ export async function sshCheck(): Promise<CheckResult> {
   const keyPath = path.join(dir, "id_ed25519");
   const pubPath = path.join(dir, "id_ed25519.pub");
   const knownHostsPath = path.join(dir, "known_hosts");
-  const homeSsh = path.join(os.homedir(), ".ssh");
 
-  // Early exit if workspace SSH dir doesn't exist
+  // 1. SSH directory exists
   if (!fs.existsSync(dir)) {
     fail(`SSH directory missing: ${dir}`);
     lines.push("");
-    lines.push("Run /ssh_setup to initialize SSH keys.");
+    lines.push("Run /ssh_setup to initialize SSH keys, or configure a K8s Secret mount.");
     lines.push("");
     lines.push(`--- SSH Check: ${passes} PASS / ${warns} WARN / ${fails} FAIL ---`);
     return { text: lines.join("\n") };
   }
 
-  // 1. Symlink integrity
-  try {
-    const stat = fs.lstatSync(homeSsh);
-    if (stat.isSymbolicLink()) {
-      const target = fs.readlinkSync(homeSsh);
-      if (target === dir) {
-        pass(`Symlink: ${homeSsh} -> ${dir}`);
-      } else {
-        warn(`Symlink: ${homeSsh} -> ${target} (expected ${dir})`);
-      }
-    } else if (stat.isDirectory()) {
-      fail(`Symlink: ${homeSsh} is a real directory (keys will be lost on restart)`);
+  // 2. Detect provisioning method (subPath mount makes the file read-only, dir stays writable)
+  let keyIsReadOnly = false;
+  if (fs.existsSync(keyPath)) {
+    try {
+      fs.accessSync(keyPath, fs.constants.W_OK);
+    } catch {
+      keyIsReadOnly = true;
     }
-  } catch {
-    fail(`Symlink: ${homeSsh} does not exist`);
   }
+  info(`Source: ${keyIsReadOnly ? "K8s Secret mount (read-only key)" : "local filesystem"}`);
 
-  // 2. Directory permissions
-  const dirMode = fileMode(dir);
-  if (dirMode !== null) {
-    if (dirMode === 0o700) {
-      pass("Directory permissions: 700");
-    } else {
-      fail(`Directory permissions: ${dirMode.toString(8)} (should be 700)`);
-    }
-  } else {
-    fail(`Directory missing: ${dir} (run /ssh_setup)`);
-  }
-
-  // 3. Private key permissions
-  const keyMode = fileMode(keyPath);
-  if (keyMode !== null) {
-    if (keyMode === 0o600) {
-      pass("Private key permissions: 600");
-    } else {
-      fail(`Private key permissions: ${keyMode.toString(8)} (should be 600)`);
+  // 3. Private key
+  if (fs.existsSync(keyPath)) {
+    const keyMode = fileMode(keyPath);
+    if (keyMode === 0o600 || (keyIsReadOnly && keyMode !== null)) {
+      pass(`Private key: present (${keyMode!.toString(8)})`);
+    } else if (keyMode !== null) {
+      warn(`Private key permissions: ${keyMode.toString(8)} (expected 600)`);
     }
   } else {
     fail(`Private key: missing (${keyPath})`);
   }
 
-  // 4. Public key permissions
-  const pubMode = fileMode(pubPath);
-  if (pubMode !== null) {
-    if (pubMode === 0o644) {
-      pass("Public key permissions: 644");
-    } else {
-      warn(`Public key permissions: ${pubMode.toString(8)} (recommended 644)`);
-    }
+  // 4. Public key (optional — K8s Secret may only mount private key)
+  if (fs.existsSync(pubPath)) {
+    pass("Public key: present");
   } else {
-    fail(`Public key: missing (${pubPath})`);
+    info("Public key: not present");
   }
 
   // 5. known_hosts
-  if (fs.existsSync(knownHostsPath)) {
-    const content = fs.readFileSync(knownHostsPath, "utf8");
-    if (content.includes("github.com")) {
-      pass("known_hosts: contains github.com");
-    } else {
-      warn("known_hosts: exists but missing github.com entry");
-    }
+  const hasGithub = fs.existsSync(knownHostsPath) &&
+    fs.readFileSync(knownHostsPath, "utf8").includes("github.com");
+  if (hasGithub) {
+    pass("known_hosts: contains github.com");
   } else {
-    warn("known_hosts: missing (will get interactive prompt on first connect)");
+    warn("known_hosts: missing github.com (run /ssh_setup to add)");
   }
 
   // 6. Key fingerprint
@@ -128,6 +100,14 @@ export async function sshCheck(): Promise<CheckResult> {
       info(`Key fingerprint: ${stdout.trim()}`);
     } catch {
       // silently skip if ssh-keygen not available
+    }
+  } else if (fs.existsSync(keyPath)) {
+    // Extract fingerprint from private key
+    try {
+      const { stdout } = await execFilePromise("ssh-keygen", ["-lf", keyPath], 5_000);
+      info(`Key fingerprint: ${stdout.trim()}`);
+    } catch {
+      // silently skip
     }
   }
 
