@@ -1,5 +1,8 @@
 // Tool registration for claude_code — the LLM-invocable Claude Code tool.
 // Uses a tool factory to access sessionKey from OpenClawPluginToolContext.
+// Must be called during plugin register() phase (not service start()) so the
+// tool appears in the agent's tool catalog. Runtime and config are resolved
+// lazily via getters since the service hasn't started yet at registration time.
 
 import { randomUUID } from "node:crypto";
 import { Type } from "@sinclair/typebox";
@@ -47,15 +50,18 @@ function formatToolResult(result: CollectedResult): { content: Array<{ type: "te
   };
 }
 
+export type CodingToolDeps = {
+  getRuntime: () => RemoteAcpxRuntime | null;
+  getConfig: () => CodingToolConfig;
+};
+
 export function registerCodingTool(
   api: OpenClawPluginApi,
-  runtime: RemoteAcpxRuntime,
-  config: CodingToolConfig,
+  deps: CodingToolDeps,
 ): void {
   const sessionMgr = new SessionManager();
 
-  // Periodically prune stale sessions (every 10 minutes).
-  sessionMgr.resetPruneInterval(() => sessionMgr.pruneStale(runtime));
+  log.info(`registerCodingTool: registering claude_code tool`);
 
   // Tool factory — invoked per agent turn with context containing sessionKey
   api.registerTool((ctx) => ({
@@ -81,6 +87,15 @@ export function registerCodingTool(
       ),
     }),
     async execute(_toolCallId, params) {
+      const runtime = deps.getRuntime();
+      const config = deps.getConfig();
+
+      if (!runtime) {
+        return {
+          content: [{ type: "text", text: "Error: Remote-acpx service not started yet. Try again in a moment." }],
+        };
+      }
+
       const { prompt, cwd } = params as { prompt: string; cwd?: string };
       const sessionKey = ctx.sessionKey || "default";
 
@@ -134,4 +149,10 @@ export function registerCodingTool(
       }
     },
   }));
+
+  // Start prune interval after registration (uses lazy runtime getter)
+  sessionMgr.resetPruneInterval(() => {
+    const runtime = deps.getRuntime();
+    if (runtime) sessionMgr.pruneStale(runtime);
+  });
 }
