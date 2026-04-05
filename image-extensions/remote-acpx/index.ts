@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/remote-acpx";
 import { createRemoteAcpxService, resolveConfig, type ServiceState } from "./src/service.js";
 import { registerCodingTool } from "./src/tool.js";
+import { registerAgentTools } from "./src/agent-tools.js";
 
 // Persist state across jiti module reloads using Symbol.for (same pattern as
 // session-manager and event-router). Without this, a plugin reload creates a
@@ -40,6 +41,9 @@ const plugin = {
       getRuntime: () => state.runtime,
       getConfig: () => state.config,
     });
+
+    // Register agent management tools (list/add/remove/sync).
+    registerAgentTools(api);
   },
 };
 
