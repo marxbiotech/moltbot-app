@@ -1,7 +1,11 @@
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
-import { randomBytes, createHash } from "node:crypto";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  upsertAuthProfileWithLock,
+  generatePkceVerifierChallenge,
+  toFormUrlEncoded,
+} from "openclaw/plugin-sdk/provider-auth";
+import { updateConfig } from "openclaw/plugin-sdk/config-runtime";
 
 /**
  * subscription-auth plugin — /claude_auth, /openai_auth, /openai_callback
@@ -10,12 +14,8 @@ import { randomBytes, createHash } from "node:crypto";
  * ChatGPT Plus/Pro subscription (OpenAI Codex OAuth PKCE).
  *
  * Uses registerCommand() so commands execute WITHOUT the AI agent.
- * Credentials are written to auth-profiles.json which is auto-synced to R2.
+ * Credentials are written to auth-profiles.json via plugin-sdk.
  */
-
-const OPENCLAW_HOME = process.env.OPENCLAW_HOME ?? join(homedir(), ".openclaw");
-const AUTH_FILE = join(OPENCLAW_HOME, "agents", "main", "agent", "auth-profiles.json");
-const CONFIG_FILE = join(OPENCLAW_HOME, "openclaw.json");
 
 // OpenAI Codex OAuth constants (from openai/codex source: codex-rs/core/src/auth.rs)
 const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -25,55 +25,11 @@ const OPENAI_SCOPE = "openid profile email offline_access";
 
 const PKCE_STATE_FILE = "/tmp/.codex-pkce-state";
 
-// ── Helpers ──────────────────────────────────────────────────
-
-type AuthProfileStore = {
-  version: number;
-  profiles: Record<string, Record<string, unknown>>;
-  [key: string]: unknown;
-};
-
-function readAuthStore(): AuthProfileStore {
-  try {
-    return JSON.parse(readFileSync(AUTH_FILE, "utf8"));
-  } catch {
-    return { version: 1, profiles: {} };
-  }
-}
-
-function writeAuthStore(store: AuthProfileStore): void {
-  mkdirSync(dirname(AUTH_FILE), { recursive: true });
-  writeFileSync(AUTH_FILE, JSON.stringify(store, null, 2));
-}
-
-function readConfig(): Record<string, any> {
-  try {
-    return JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeConfig(config: Record<string, any>): void {
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-}
-
-function addModelsToAllowlist(
-  config: Record<string, any>,
-  models: Record<string, { alias: string }>,
-): void {
-  config.agents ??= {};
-  config.agents.defaults ??= {};
-  config.agents.defaults.models ??= {};
-  Object.assign(config.agents.defaults.models, models);
-}
-
 // ── /claude_auth ─────────────────────────────────────────────
 
-function handleClaudeAuth(token: string): string {
+async function handleClaudeAuth(token: string): Promise<string> {
   const lines: string[] = [];
 
-  // Validate format
   if (!token) {
     return [
       "Usage: /claude_auth <setup-token>",
@@ -90,33 +46,33 @@ function handleClaudeAuth(token: string): string {
     ].join("\n");
   }
 
-  // Write to auth-profiles.json
-  const store = readAuthStore();
-  store.profiles["anthropic:manual"] = {
-    type: "token",
-    provider: "anthropic",
-    token: token,
-  };
-  writeAuthStore(store);
+  // Write to auth-profiles.json via SDK (with file locking)
+  await upsertAuthProfileWithLock({
+    profileId: "anthropic:manual",
+    credential: {
+      type: "token",
+      provider: "anthropic",
+      token: token,
+    },
+  });
   lines.push("[PASS] Setup-token written to auth-profiles.json");
 
-  // Update openclaw.json — add anthropic models to allowlist
+  // Update openclaw.json via SDK (with validation)
   try {
-    const config = readConfig();
-    addModelsToAllowlist(config, {
-      "anthropic/claude-sonnet-4-6": { alias: "Claude Sonnet 4.6" },
-      "anthropic/claude-opus-4-6": { alias: "Claude Opus 4.6" },
-      "anthropic/claude-haiku-4-5": { alias: "Claude Haiku 4.5" },
+    await updateConfig((cfg) => {
+      cfg.agents ??= {} as any;
+      cfg.agents.defaults ??= {} as any;
+      cfg.agents.defaults.models ??= {};
+      Object.assign(cfg.agents.defaults.models, {
+        "anthropic/claude-sonnet-4-6": { alias: "Claude Sonnet 4.6" },
+        "anthropic/claude-opus-4-6": { alias: "Claude Opus 4.6" },
+        "anthropic/claude-haiku-4-5": { alias: "Claude Haiku 4.5" },
+      });
+      cfg.agents.defaults.model ??= {} as any;
+      (cfg.agents.defaults.model as any).primary = "anthropic/claude-sonnet-4-6";
+      return cfg;
     });
-
-    // Set default model to anthropic
-    config.agents ??= {};
-    config.agents.defaults ??= {};
-    config.agents.defaults.model ??= {};
-    config.agents.defaults.model.primary = "anthropic/claude-sonnet-4-6";
     lines.push("[PASS] Default model set to: anthropic/claude-sonnet-4-6");
-
-    writeConfig(config);
     lines.push("[PASS] Anthropic models added to allowlist");
   } catch (e: any) {
     lines.push("[WARN] Could not update config: " + e.message);
@@ -131,26 +87,23 @@ function handleClaudeAuth(token: string): string {
 // ── /openai_auth ─────────────────────────────────────────────
 
 function handleOpenaiAuth(): string {
-  // Generate PKCE verifier + challenge
-  const verifier = randomBytes(32).toString("hex");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  // Generate PKCE verifier + challenge via SDK
+  const { verifier, challenge } = generatePkceVerifierChallenge();
   const state = randomBytes(16).toString("hex");
 
-  // Build authorize URL — use encodeURIComponent (produces %20) instead of
-  // URLSearchParams (produces +) because OpenAI's OAuth server rejects +.
-  const qsParts = [
-    ["response_type", "code"],
-    ["client_id", OPENAI_CLIENT_ID],
-    ["redirect_uri", OPENAI_REDIRECT_URI],
-    ["scope", OPENAI_SCOPE],
-    ["code_challenge", challenge],
-    ["code_challenge_method", "S256"],
-    ["id_token_add_organizations", "true"],
-    ["codex_cli_simplified_flow", "true"],
-    ["state", state],
-    ["originator", "codex_cli_rs"],
-  ] as const;
-  const qs = qsParts.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  // Build authorize URL via SDK (uses encodeURIComponent, not +)
+  const qs = toFormUrlEncoded({
+    response_type: "code",
+    client_id: OPENAI_CLIENT_ID,
+    redirect_uri: OPENAI_REDIRECT_URI,
+    scope: OPENAI_SCOPE,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    id_token_add_organizations: "true",
+    codex_cli_simplified_flow: "true",
+    state: state,
+    originator: "codex_cli_rs",
+  });
   const url = `${OPENAI_ISSUER}/oauth/authorize?${qs}`;
 
   // Save state for callback
@@ -209,7 +162,7 @@ async function handleOpenaiCallback(redirectUrl: string): Promise<string> {
   }
 
   // Exchange code for tokens
-  const body = new URLSearchParams({
+  const body = toFormUrlEncoded({
     grant_type: "authorization_code",
     code: code,
     redirect_uri: saved.redirectUri,
@@ -222,7 +175,7 @@ async function handleOpenaiCallback(redirectUrl: string): Promise<string> {
     const resp = await fetch(`${OPENAI_ISSUER}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
+      body,
     });
 
     if (!resp.ok) {
@@ -237,35 +190,35 @@ async function handleOpenaiCallback(redirectUrl: string): Promise<string> {
 
   const expiresAt = Date.now() + (data.expires_in || 3600) * 1000 - 5 * 60 * 1000;
 
-  // Write to auth-profiles.json
-  const store = readAuthStore();
-  store.profiles["openai-codex:default"] = {
-    type: "oauth",
-    provider: "openai-codex",
-    access: data.access_token,
-    refresh: data.refresh_token,
-    expires: expiresAt,
-  };
-  writeAuthStore(store);
+  // Write to auth-profiles.json via SDK (with file locking)
+  await upsertAuthProfileWithLock({
+    profileId: "openai-codex:default",
+    credential: {
+      type: "oauth",
+      provider: "openai-codex",
+      access: data.access_token,
+      refresh: data.refresh_token,
+      expires: expiresAt,
+    },
+  });
   lines.push("[PASS] OAuth credentials written to auth-profiles.json");
 
-  // Update openclaw.json — add openai-codex models
+  // Update openclaw.json via SDK (with validation)
   try {
-    const config = readConfig();
-    addModelsToAllowlist(config, {
-      "openai-codex/gpt-5.3-codex": { alias: "GPT-5.3 Codex" },
-      "openai-codex/gpt-5.1-codex-max": { alias: "GPT-5.1 Codex Max" },
-      "openai-codex/gpt-5-codex-mini": { alias: "GPT-5 Codex Mini" },
+    await updateConfig((cfg) => {
+      cfg.agents ??= {} as any;
+      cfg.agents.defaults ??= {} as any;
+      cfg.agents.defaults.models ??= {};
+      Object.assign(cfg.agents.defaults.models, {
+        "openai-codex/gpt-5.3-codex": { alias: "GPT-5.3 Codex" },
+        "openai-codex/gpt-5.1-codex-max": { alias: "GPT-5.1 Codex Max" },
+        "openai-codex/gpt-5-codex-mini": { alias: "GPT-5 Codex Mini" },
+      });
+      cfg.agents.defaults.model ??= {} as any;
+      (cfg.agents.defaults.model as any).primary = "openai-codex/gpt-5.3-codex";
+      return cfg;
     });
-
-    // Set default model to openai-codex
-    config.agents ??= {};
-    config.agents.defaults ??= {};
-    config.agents.defaults.model ??= {};
-    config.agents.defaults.model.primary = "openai-codex/gpt-5.3-codex";
     lines.push("[PASS] Default model set to: openai-codex/gpt-5.3-codex");
-
-    writeConfig(config);
     lines.push("[PASS] OpenAI Codex models added to allowlist");
   } catch (e: any) {
     lines.push("[WARN] Could not update config: " + e.message);
@@ -292,7 +245,7 @@ export default function register(api: any) {
     requireAuth: true,
     handler: async (ctx: any) => {
       const args = ctx.args?.trim() ?? "";
-      return { text: handleClaudeAuth(args) };
+      return { text: await handleClaudeAuth(args) };
     },
   });
 
