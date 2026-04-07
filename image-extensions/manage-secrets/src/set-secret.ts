@@ -90,6 +90,29 @@ async function getLatestRuns(repo: string, token: string): Promise<string> {
 
 const persona = getPersona();
 
+async function run(secret_key: string, secret_value: string): Promise<string> {
+  const token = process.env.AGENT_GITHUB_PAT;
+  if (!token) return "Error: AGENT_GITHUB_PAT is not set.";
+
+  const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
+  if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
+
+  if (!persona) return "Error: Could not determine persona from hostname.";
+
+  if (!/^[A-Z][A-Z0-9_]*$/.test(secret_key)) {
+    return `Error: secret_key must match ^[A-Z][A-Z0-9_]*$ (got "${secret_key}")`;
+  }
+
+  const result = await triggerWorkflow(repo, token, persona, secret_key, secret_value);
+  if (!result.ok) return result.message;
+
+  // Wait briefly then fetch latest run status
+  await new Promise((r) => setTimeout(r, 3000));
+  const runs = await getLatestRuns(repo, token);
+
+  return `${result.message}\n\nRecent runs:\n${runs}`;
+}
+
 export const setSecretTool = {
   name: "set_secret",
   label: "Set Secret",
@@ -111,33 +134,7 @@ export const setSecretTool = {
     _toolCallId: string,
     params: { secret_key: string; secret_value: string },
   ): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }> {
-    const { secret_key, secret_value } = params;
-
-    const text = await this._run(secret_key, secret_value);
+    const text = await run(params.secret_key, params.secret_value);
     return { content: [{ type: "text", text }], details: undefined };
-  },
-
-  async _run(secret_key: string, secret_value: string): Promise<string> {
-
-    const token = process.env.AGENT_GITHUB_PAT;
-    if (!token) return "Error: AGENT_GITHUB_PAT is not set.";
-
-    const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
-    if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
-
-    if (!persona) return "Error: Could not determine persona from hostname.";
-
-    if (!/^[A-Z][A-Z0-9_]*$/.test(secret_key)) {
-      return `Error: secret_key must match ^[A-Z][A-Z0-9_]*$ (got "${secret_key}")`;
-    }
-
-    const result = await triggerWorkflow(repo, token, persona, secret_key, secret_value);
-    if (!result.ok) return result.message;
-
-    // Wait briefly then fetch latest run status
-    await new Promise((r) => setTimeout(r, 3000));
-    const runs = await getLatestRuns(repo, token);
-
-    return `${result.message}\n\nRecent runs:\n${runs}`;
   },
 };
