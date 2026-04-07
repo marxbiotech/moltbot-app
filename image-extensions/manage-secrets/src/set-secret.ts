@@ -92,6 +92,7 @@ const persona = getPersona();
 
 export const setSecretTool = {
   name: "set_secret",
+  label: "Set Secret",
   description:
     "Set or update an environment secret for this persona. " +
     "Triggers the set-secret GitHub Actions workflow, which decrypts the SOPS-encrypted secrets.yaml, " +
@@ -106,8 +107,17 @@ export const setSecretTool = {
       description: "The secret value to set.",
     }),
   }),
-  async execute(params: { secret_key: string; secret_value: string }): Promise<string> {
+  async execute(
+    _toolCallId: string,
+    params: { secret_key: string; secret_value: string },
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }> {
     const { secret_key, secret_value } = params;
+
+    const text = await this._run(secret_key, secret_value);
+    return { content: [{ type: "text", text }], details: undefined };
+  },
+
+  async _run(secret_key: string, secret_value: string): Promise<string> {
 
     const token = process.env.AGENT_GITHUB_PAT;
     if (!token) return "Error: AGENT_GITHUB_PAT is not set.";
