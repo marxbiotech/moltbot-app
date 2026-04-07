@@ -1,0 +1,10 @@
+{
+  "id": "manage-secrets",
+  "name": "Manage Secrets",
+  "description": "LLM-invocable tool for setting environment secrets via GitHub Actions workflow dispatch.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
