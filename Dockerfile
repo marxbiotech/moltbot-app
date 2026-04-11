@@ -9,4 +9,7 @@ RUN ln -s /opt/tailscale/tailscale /usr/local/bin/tailscale
 # Extensions that require image-bundling (PATH scripts, SDK dependencies)
 COPY image-extensions/ /app/extensions/
 
+# Install per-extension npm dependencies
+RUN cd /app/extensions/github-apps && npm install --production --ignore-scripts 2>/dev/null || true
+
 USER node

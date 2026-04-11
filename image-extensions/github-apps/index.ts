@@ -1,67 +1,75 @@
-import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createAppAuth } from "@octokit/auth-app";
 
 /**
- * github-apps plugin — /gh_apps command for GitHub App token management.
+ * github-apps plugin — GitHub App token management.
  *
- * Uses registerCommand() so the command executes WITHOUT the AI agent.
- * Subcommands:
- *   list          — list available GitHub Apps in ~/.github-apps/
- *   token <name>  — get an installation token for the named app
+ * Parses GITHUB_APPS env var (JSON) at load time and provides:
+ *   /gh_apps list          — list configured apps
+ *   /gh_apps token <name>  — get an installation token
  *
- * The token subcommand delegates to /usr/local/bin/gh_app_token
- * (installed by start-openclaw.sh from extensions/github-apps/scripts/).
+ * Also exports getInstallationToken() for other plugins.
+ *
+ * GITHUB_APPS format:
+ * {
+ *   "<name>": {
+ *     "appId": "123456",
+ *     "installationId": "789",
+ *     "privateKey": "<base64-encoded PEM>"
+ *   }
+ * }
  */
 
-const APPS_DIR = join(process.env.HOME || "/root", ".github-apps");
-
-function runScript(
-  bin: string,
-  args: string[],
-  timeoutMs = 60_000,
-): Promise<{ text: string }> {
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout: timeoutMs, env: process.env }, (err, stdout, stderr) => {
-      const output = (stdout || "") + (stderr ? `\n${stderr}` : "");
-      if (err) {
-        const detail = output.trim() || err.message;
-        resolve({ text: `❌ ${bin} failed: ${detail}` });
-      } else {
-        resolve({ text: output.trim() || "✅ Done." });
-      }
-    });
-  });
+interface AppConfig {
+  appId: string;
+  installationId: string;
+  privateKey: string;
 }
 
-function listApps(): { text: string } {
+const apps = new Map<string, AppConfig>();
+
+function loadApps(): void {
+  const raw = process.env.GITHUB_APPS;
+  if (!raw) return;
+
   try {
-    const entries = readdirSync(APPS_DIR, { withFileTypes: true });
-    const apps = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => {
-        const appIdFile = join(APPS_DIR, e.name, "app-id");
-        try {
-          const appId = readFileSync(appIdFile, "utf-8").trim();
-          return `  ${e.name}  (app-id: ${appId})`;
-        } catch (err: any) {
-          if (err?.code === "ENOENT") {
-            return `  ${e.name}  (app-id: missing)`;
-          }
-          return `  ${e.name}  (app-id: error — ${err?.code || err?.message})`;
-        }
+    const parsed = JSON.parse(raw);
+    for (const [name, cfg] of Object.entries(parsed) as [string, any][]) {
+      if (!cfg.appId || !cfg.installationId || !cfg.privateKey) {
+        console.error(`[github-apps] "${name}" missing required fields (appId, installationId, privateKey)`);
+        continue;
+      }
+      apps.set(name, {
+        appId: cfg.appId,
+        installationId: cfg.installationId,
+        privateKey: Buffer.from(cfg.privateKey, "base64").toString(),
       });
-    if (apps.length === 0) {
-      return { text: "No GitHub Apps configured in ~/.github-apps/" };
     }
-    return { text: `GitHub Apps:\n${apps.join("\n")}` };
-  } catch (err: any) {
-    if (err?.code === "ENOENT") {
-      return { text: "No GitHub Apps configured (directory ~/.github-apps/ not found)" };
+    if (apps.size > 0) {
+      console.log(`[github-apps] loaded: ${[...apps.keys()].join(", ")}`);
     }
-    return { text: `Error listing GitHub Apps: ${err?.message || err}` };
+  } catch (e: any) {
+    console.error(`[github-apps] failed to parse GITHUB_APPS: ${e.message}`);
   }
 }
+
+export async function getInstallationToken(appName: string): Promise<string> {
+  const cfg = apps.get(appName);
+  if (!cfg) {
+    throw new Error(`GitHub App "${appName}" not configured. Available: ${[...apps.keys()].join(", ") || "(none)"}`);
+  }
+
+  const auth = createAppAuth({
+    appId: cfg.appId,
+    privateKey: cfg.privateKey,
+    installationId: cfg.installationId,
+  });
+
+  const { token } = await auth({ type: "installation" });
+  return token;
+}
+
+// Load apps at import time
+loadApps();
 
 export default function register(api: any) {
   api.registerCommand({
@@ -75,7 +83,11 @@ export default function register(api: any) {
       const sub = parts[0]?.toLowerCase();
 
       if (!sub || sub === "list") {
-        return listApps();
+        if (apps.size === 0) {
+          return { text: "No GitHub Apps configured (GITHUB_APPS env var not set or empty)" };
+        }
+        const lines = [...apps.entries()].map(([name, cfg]) => `  ${name}  (app-id: ${cfg.appId})`);
+        return { text: `GitHub Apps:\n${lines.join("\n")}` };
       }
 
       if (sub === "token") {
@@ -83,10 +95,12 @@ export default function register(api: any) {
         if (!appName) {
           return { text: "Usage: /gh_apps token <app-name>" };
         }
-        if (!/^[a-zA-Z0-9_-]+$/.test(appName)) {
-          return { text: "Invalid app name. Use only alphanumeric characters, hyphens, and underscores." };
+        try {
+          const token = await getInstallationToken(appName);
+          return { text: token };
+        } catch (e: any) {
+          return { text: `❌ ${e.message}` };
         }
-        return runScript("gh_app_token", [appName], 30_000);
       }
 
       return { text: "Usage: /gh_apps list | /gh_apps token <app-name>" };

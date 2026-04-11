@@ -1,4 +1,4 @@
-import { execFileSync, execFile } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 
 function getPersona(): string {
@@ -90,30 +90,17 @@ async function getLatestRuns(repo: string, token: string): Promise<string> {
 
 const persona = getPersona();
 
-function getGhAppToken(appName: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile("gh_app_token", [appName], { timeout: 30_000 }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(stderr?.trim() || err.message));
-      } else {
-        const token = stdout.trim();
-        if (!token) reject(new Error("gh_app_token returned empty output"));
-        else resolve(token);
-      }
-    });
-  });
-}
-
 async function resolveToken(): Promise<string | null> {
   // 1. Explicit PAT takes priority
   if (process.env.AGENT_GITHUB_PAT) return process.env.AGENT_GITHUB_PAT;
 
-  // 2. Fall back to GitHub App via gh_app_token
+  // 2. Fall back to GitHub App via github-apps plugin
   const appName = process.env.MANAGE_SECRETS_GITHUB_APP;
   if (appName) {
     try {
-      return await getGhAppToken(appName);
-    } catch (e: any) {
+      const { getInstallationToken } = await import("/app/extensions/github-apps/index.ts");
+      return await getInstallationToken(appName);
+    } catch {
       return null;
     }
   }

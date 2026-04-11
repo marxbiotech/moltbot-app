@@ -1,0 +1,7 @@
+{
+  "name": "github-apps",
+  "private": true,
+  "dependencies": {
+    "@octokit/auth-app": "^7.1.5"
+  }
+}
