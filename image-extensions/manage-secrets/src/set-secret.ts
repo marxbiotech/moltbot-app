@@ -100,12 +100,15 @@ async function resolveToken(): Promise<string | null> {
     const gh = (globalThis as any)[Symbol.for("openclaw.github-apps")] as
       | { getInstallationToken: (name: string) => Promise<string> }
       | undefined;
-    if (gh) {
-      try {
-        return await gh.getInstallationToken(appName);
-      } catch {
-        return null;
-      }
+    if (!gh) {
+      console.error(`[manage-secrets] MANAGE_SECRETS_GITHUB_APP="${appName}" but github-apps plugin is not loaded`);
+      return null;
+    }
+    try {
+      return await gh.getInstallationToken(appName);
+    } catch (e: any) {
+      console.error(`[manage-secrets] github-apps token failed for "${appName}": ${e.message}`);
+      return null;
     }
   }
 
@@ -114,9 +117,7 @@ async function resolveToken(): Promise<string | null> {
 
 async function run(secret_key: string, secret_value: string): Promise<string> {
   const token = await resolveToken();
-  if (!token) {
-    return "Error: No GitHub token available. Set AGENT_GITHUB_PAT or MANAGE_SECRETS_GITHUB_APP (with github-apps plugin).";
-  }
+  if (!token) return "Error: AGENT_GITHUB_PAT is not set and github-apps fallback unavailable. Check logs for details.";
 
   const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
   if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
