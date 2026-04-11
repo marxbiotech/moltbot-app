@@ -7,7 +7,7 @@ import { createAppAuth } from "@octokit/auth-app";
  *   /gh_apps list          — list configured apps
  *   /gh_apps token <name>  — get an installation token
  *
- * Also exports getInstallationToken() for other plugins.
+ * Exposes getInstallationToken() to other plugins via Symbol.for("openclaw.github-apps").
  *
  * GITHUB_APPS format:
  * {
@@ -68,8 +68,9 @@ export async function getInstallationToken(appName: string): Promise<string> {
   return token;
 }
 
-// Load apps at import time
+// Load apps at import time and expose to other plugins
 loadApps();
+(globalThis as any)[Symbol.for("openclaw.github-apps")] = { getInstallationToken };
 
 export default function register(api: any) {
   api.registerCommand({

@@ -94,14 +94,18 @@ async function resolveToken(): Promise<string | null> {
   // 1. Explicit PAT takes priority
   if (process.env.AGENT_GITHUB_PAT) return process.env.AGENT_GITHUB_PAT;
 
-  // 2. Fall back to GitHub App via github-apps plugin
+  // 2. Fall back to GitHub App via github-apps plugin (Symbol.for registry)
   const appName = process.env.MANAGE_SECRETS_GITHUB_APP;
   if (appName) {
-    try {
-      const { getInstallationToken } = await import("/app/extensions/github-apps/index.ts");
-      return await getInstallationToken(appName);
-    } catch {
-      return null;
+    const gh = (globalThis as any)[Symbol.for("openclaw.github-apps")] as
+      | { getInstallationToken: (name: string) => Promise<string> }
+      | undefined;
+    if (gh) {
+      try {
+        return await gh.getInstallationToken(appName);
+      } catch {
+        return null;
+      }
     }
   }
 
