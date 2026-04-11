@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, execFile } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 
 function getPersona(): string {
@@ -90,9 +90,42 @@ async function getLatestRuns(repo: string, token: string): Promise<string> {
 
 const persona = getPersona();
 
+function getGhAppToken(appName: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("gh_app_token", [appName], { timeout: 30_000 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr?.trim() || err.message));
+      } else {
+        const token = stdout.trim();
+        if (!token) reject(new Error("gh_app_token returned empty output"));
+        else resolve(token);
+      }
+    });
+  });
+}
+
+async function resolveToken(): Promise<string | null> {
+  // 1. Explicit PAT takes priority
+  if (process.env.AGENT_GITHUB_PAT) return process.env.AGENT_GITHUB_PAT;
+
+  // 2. Fall back to GitHub App via gh_app_token
+  const appName = process.env.MANAGE_SECRETS_GITHUB_APP;
+  if (appName) {
+    try {
+      return await getGhAppToken(appName);
+    } catch (e: any) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 async function run(secret_key: string, secret_value: string): Promise<string> {
-  const token = process.env.AGENT_GITHUB_PAT;
-  if (!token) return "Error: AGENT_GITHUB_PAT is not set.";
+  const token = await resolveToken();
+  if (!token) {
+    return "Error: No GitHub token available. Set AGENT_GITHUB_PAT or MANAGE_SECRETS_GITHUB_APP (with github-apps plugin).";
+  }
 
   const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
   if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";

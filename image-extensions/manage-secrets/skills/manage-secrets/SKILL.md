@@ -41,4 +41,5 @@ The tool auto-detects the current persona and triggers a GitHub Actions workflow
 - If the value is unchanged, the workflow exits cleanly with no commit
 - After triggering, report the workflow status to the user
 - Never echo the secret value back to the user
-- Requires `AGENT_GITHUB_PAT` and `MANAGE_SECRETS_GITHUB_REPO` env vars to be set
+- Requires `MANAGE_SECRETS_GITHUB_REPO` env var
+- Auth: set `AGENT_GITHUB_PAT` (static token) or `MANAGE_SECRETS_GITHUB_APP` (GitHub App name, requires github-apps plugin)
