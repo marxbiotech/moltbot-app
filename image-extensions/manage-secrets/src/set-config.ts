@@ -1,17 +1,12 @@
 import { Type } from "@sinclair/typebox";
-import { persona, resolveToken, dispatchWorkflow, getLatestRuns } from "./shared.ts";
+import { resolveContext, dispatchWorkflow, getLatestRuns, toolResult, type ToolResult } from "./shared.ts";
 import { checkConfigPath, checkConfigValue } from "./preflight.ts";
 
 const WORKFLOW_FILE = "set-config.yml";
 
 async function run(config_path: string, config_value: string): Promise<string> {
-  const token = await resolveToken();
-  if (!token) return "Error: AGENT_GITHUB_PAT is not set and github-apps fallback unavailable. Check logs for details.";
-
-  const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
-  if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
-
-  if (!persona) return "Error: Could not determine persona from hostname.";
+  const ctx = await resolveContext();
+  if (typeof ctx === "string") return ctx;
 
   // Preflight: reject obviously malformed inputs before dispatching workflow.
   // Authoritative validation happens in openclaw core (Phase 1) and repo-side (Phase 2).
@@ -21,8 +16,8 @@ async function run(config_path: string, config_value: string): Promise<string> {
   const valueError = checkConfigValue(config_value);
   if (valueError) return `Error: ${valueError}`;
 
-  const result = await dispatchWorkflow(repo, token, WORKFLOW_FILE, {
-    persona,
+  const result = await dispatchWorkflow(ctx.repo, ctx.token, WORKFLOW_FILE, {
+    persona: ctx.persona,
     config_path,
     config_value,
   });
@@ -30,9 +25,9 @@ async function run(config_path: string, config_value: string): Promise<string> {
 
   // Wait briefly then fetch latest run status
   await new Promise((r) => setTimeout(r, 3000));
-  const runs = await getLatestRuns(repo, token, WORKFLOW_FILE);
+  const runs = await getLatestRuns(ctx.repo, ctx.token, WORKFLOW_FILE);
 
-  return `Workflow dispatched: setting config ${config_path} for persona '${persona}'\n\nRecent runs:\n${runs}`;
+  return `Workflow dispatched: setting config ${config_path} for persona '${ctx.persona}'\n\nRecent runs:\n${runs}`;
 }
 
 export const setConfigTool = {
@@ -60,8 +55,8 @@ export const setConfigTool = {
   async execute(
     _toolCallId: string,
     params: { config_path: string; config_value: string },
-  ): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }> {
+  ): Promise<ToolResult> {
     const text = await run(params.config_path, params.config_value);
-    return { content: [{ type: "text", text }], details: undefined };
+    return toolResult(text);
   },
 };

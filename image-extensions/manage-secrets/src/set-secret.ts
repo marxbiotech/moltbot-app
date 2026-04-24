@@ -1,23 +1,18 @@
 import { Type } from "@sinclair/typebox";
-import { persona, resolveToken, dispatchWorkflow, getLatestRuns } from "./shared.ts";
+import { resolveContext, dispatchWorkflow, getLatestRuns, toolResult, type ToolResult } from "./shared.ts";
 
 const WORKFLOW_FILE = "set-secret.yml";
 
 async function run(secret_key: string, secret_value: string): Promise<string> {
-  const token = await resolveToken();
-  if (!token) return "Error: AGENT_GITHUB_PAT is not set and github-apps fallback unavailable. Check logs for details.";
-
-  const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
-  if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
-
-  if (!persona) return "Error: Could not determine persona from hostname.";
+  const ctx = await resolveContext();
+  if (typeof ctx === "string") return ctx;
 
   if (!/^[A-Z][A-Z0-9_]*$/.test(secret_key)) {
     return `Error: secret_key must match ^[A-Z][A-Z0-9_]*$ (got "${secret_key}")`;
   }
 
-  const result = await dispatchWorkflow(repo, token, WORKFLOW_FILE, {
-    persona,
+  const result = await dispatchWorkflow(ctx.repo, ctx.token, WORKFLOW_FILE, {
+    persona: ctx.persona,
     secret_key,
     secret_value,
   });
@@ -25,9 +20,9 @@ async function run(secret_key: string, secret_value: string): Promise<string> {
 
   // Wait briefly then fetch latest run status
   await new Promise((r) => setTimeout(r, 3000));
-  const runs = await getLatestRuns(repo, token, WORKFLOW_FILE);
+  const runs = await getLatestRuns(ctx.repo, ctx.token, WORKFLOW_FILE);
 
-  return `Workflow dispatched: setting ${secret_key} for persona '${persona}'\n\nRecent runs:\n${runs}`;
+  return `Workflow dispatched: setting ${secret_key} for persona '${ctx.persona}'\n\nRecent runs:\n${runs}`;
 }
 
 export const setSecretTool = {
@@ -50,8 +45,8 @@ export const setSecretTool = {
   async execute(
     _toolCallId: string,
     params: { secret_key: string; secret_value: string },
-  ): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }> {
+  ): Promise<ToolResult> {
     const text = await run(params.secret_key, params.secret_value);
-    return { content: [{ type: "text", text }], details: undefined };
+    return toolResult(text);
   },
 };

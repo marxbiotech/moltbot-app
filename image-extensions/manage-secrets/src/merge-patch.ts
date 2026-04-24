@@ -21,6 +21,6 @@ export function buildMergePatch(
     cursor[segments[i]] = next;
     cursor = next;
   }
-  cursor[segments[segments.length - 1]] = value;
+  cursor[segments.at(-1)!] = value;
   return patch;
 }
