@@ -6,7 +6,7 @@ const GITHUB_HEADERS = {
   "X-GitHub-Api-Version": "2022-11-28",
 } as const;
 
-export function getPersona(): string {
+function getPersona(): string {
   // Try Tailscale hostname first (strip "moltbot-" prefix)
   try {
     const raw = execFileSync("tailscale", ["status", "--self", "--json"], {
@@ -17,8 +17,12 @@ export function getPersona(): string {
     if (hostname.startsWith("moltbot-")) {
       return hostname.slice("moltbot-".length);
     }
-  } catch {
-    // fall through
+  } catch (e: unknown) {
+    // ENOENT = tailscale not installed, expected in non-Tailscale environments
+    const isNotFound = e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT";
+    if (!isNotFound) {
+      console.warn(`[manage-secrets] Tailscale persona detection failed, falling back to HOSTNAME: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // Fallback: HOSTNAME env var (K8s pod name pattern: moltbot-<persona>-<hash>-<hash>)
@@ -29,9 +33,9 @@ export function getPersona(): string {
   return "";
 }
 
-export const persona = getPersona();
+const persona = getPersona();
 
-export async function resolveToken(): Promise<string | null> {
+async function resolveToken(): Promise<string | null> {
   // 1. Explicit PAT takes priority
   if (process.env.AGENT_GITHUB_PAT) return process.env.AGENT_GITHUB_PAT;
 
@@ -47,8 +51,9 @@ export async function resolveToken(): Promise<string | null> {
     }
     try {
       return await gh.getInstallationToken(appName);
-    } catch (e: any) {
-      console.error(`[manage-secrets] github-apps token failed for "${appName}": ${e.message}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`[manage-secrets] github-apps token failed for "${appName}": ${message}`, e);
       return null;
     }
   }
@@ -62,24 +67,68 @@ export async function dispatchWorkflow(
   workflowFile: string,
   inputs: Record<string, string>,
 ): Promise<{ ok: boolean; message: string }> {
-  const res = await fetch(
-    `${GITHUB_API}/repos/${repo}/actions/workflows/${workflowFile}/dispatches`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...GITHUB_HEADERS,
+  let res: Response;
+  try {
+    res = await fetch(
+      `${GITHUB_API}/repos/${repo}/actions/workflows/${workflowFile}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...GITHUB_HEADERS,
+        },
+        body: JSON.stringify({ ref: "main", inputs }),
       },
-      body: JSON.stringify({ ref: "main", inputs }),
-    },
-  );
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, message: `GitHub API request failed: ${msg}` };
+  }
 
   if (res.status === 204) {
     return { ok: true, message: "Workflow dispatched successfully." };
   }
 
-  const body = await res.text();
+  let body: string;
+  try {
+    body = await res.text();
+  } catch {
+    body = "(could not read response body)";
+  }
   return { ok: false, message: `GitHub API error (${res.status}): ${body}` };
+}
+
+/** Pre-validated context shared by every tool's `run()` function. */
+export interface ToolContext {
+  token: string;
+  repo: string;
+  persona: string;
+}
+
+/**
+ * Resolve token, repo, and persona -- the common preamble every tool needs.
+ * Returns a validated context or an error string suitable for direct return.
+ */
+export async function resolveContext(): Promise<ToolContext | string> {
+  const token = await resolveToken();
+  if (!token) return "Error: AGENT_GITHUB_PAT is not set and github-apps fallback unavailable. Check logs for details.";
+
+  const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
+  if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
+
+  if (!persona) return "Error: Could not determine persona from hostname.";
+
+  return { token, repo, persona };
+}
+
+/** Standard tool execute() return type. */
+export interface ToolResult {
+  content: Array<{ type: "text"; text: string }>;
+  details: undefined;
+}
+
+export function toolResult(text: string): ToolResult {
+  return { content: [{ type: "text", text }], details: undefined };
 }
 
 export async function getLatestRuns(
@@ -87,19 +136,25 @@ export async function getLatestRuns(
   token: string,
   workflowFile: string,
 ): Promise<string> {
-  const res = await fetch(
-    `${GITHUB_API}/repos/${repo}/actions/workflows/${workflowFile}/runs?per_page=3`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...GITHUB_HEADERS,
+  let res: Response;
+  try {
+    res = await fetch(
+      `${GITHUB_API}/repos/${repo}/actions/workflows/${workflowFile}/runs?per_page=3`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...GITHUB_HEADERS,
+        },
       },
-    },
-  );
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return `Failed to fetch runs (network error: ${msg})`;
+  }
 
   if (!res.ok) return `Failed to fetch runs (${res.status})`;
 
-  const data = (await res.json()) as {
+  let data: {
     workflow_runs: Array<{
       id: number;
       status: string;
@@ -108,6 +163,11 @@ export async function getLatestRuns(
       created_at: string;
     }>;
   };
+  try {
+    data = await res.json();
+  } catch {
+    return "Failed to parse workflow runs response.";
+  }
   if (!data.workflow_runs?.length) return "No recent runs found.";
 
   return data.workflow_runs
