@@ -1,7 +1,7 @@
 {
   "id": "manage-secrets",
   "name": "Manage Secrets",
-  "description": "LLM-invocable tool for setting environment secrets via GitHub Actions workflow dispatch.",
+  "description": "GitOps mutation tools: set environment secrets (set_secret) and update runtime config (set_config) via GitHub Actions workflow dispatch.",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
