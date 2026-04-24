@@ -31,6 +31,8 @@ Phase 2 uses the plugin `set_config` tool (provided by this plugin).
 
 ### Phase 1: Runtime apply (via `gateway` tool)
 
+Steps 1 and 2 are independent — call them in parallel when possible.
+
 #### Step 1 — Look up schema
 
 Call the `gateway` tool to verify the config path exists and check its type:
@@ -39,10 +41,11 @@ Call the `gateway` tool to verify the config path exists and check its type:
 gateway(action: "config.schema.lookup", path: "<dot.path>")
 ```
 
-Example: `gateway(action: "config.schema.lookup", path: "agents.defaults.model.primary")`
-
 The response includes `schema` (JSON Schema node), `hint` (UI metadata), and
 `children` (available sub-paths). Use this to validate the proposed value type.
+
+**If the path is not found:** tell the user the path does not exist. Use
+`children` from the parent path to suggest valid alternatives.
 
 #### Step 2 — Get current value
 
@@ -58,15 +61,21 @@ The response includes:
 
 Show the user: `current value -> proposed value`.
 
+**If config.get fails:** the gateway may be unreachable. Tell the user and
+do not proceed — both phases require a working gateway.
+
 #### Step 3 — Apply runtime patch
 
-Construct a merge-patch object from the dot path. For a path like
-`agents.defaults.model.primary` with value `"google/gemini-3-flash"`,
-build the nested object:
+Build a merge-patch: convert the dot-delimited path into a nested object with
+only the target leaf set. For path `a.b.c` with value `V`:
 
 ```json
-{"agents": {"defaults": {"model": {"primary": "google/gemini-3-flash"}}}}
+{"a": {"b": {"c": V}}}
 ```
+
+Arrays are replaced wholesale — merge-patch has no array-append semantics.
+To change one element of `agents.defaults.model.fallbacks`, replace the
+entire array.
 
 Then call:
 
@@ -82,11 +91,22 @@ gateway(
 This writes to `openclaw.json` and triggers a graceful SIGUSR1 restart.
 The `note` parameter is delivered to the user after restart completes.
 
+**If config.patch fails:**
+- *baseHash mismatch* — config was changed concurrently. Re-fetch via
+  `config.get` and retry with the new hash.
+- *Protected path* — `tools.exec.ask` and `tools.exec.security` cannot be
+  changed via agent config mutations. Tell the user this path is protected.
+- *Other error* — report the error and do not proceed to Phase 2.
+
 #### Step 4 — Confirm
 
 Ask the user to verify the change works as expected.
 Wait for **explicit confirmation** before proceeding to Phase 2.
-If rejected, the change reverts automatically on next pod restart.
+
+**If the user rejects the change:** the runtime change reverts automatically
+on the next pod restart (or immediately if the user requests a restart via
+`gateway(action: "restart")`). No repo change is made. Inform the user that
+the change is ephemeral and will revert.
 
 ### Phase 2: Repo persist (via `set_config` tool)
 
@@ -103,10 +123,55 @@ the `gateway` tool (Phase 1) and the repo-side workflow.
 It then triggers a GitHub Actions workflow that patches the persona's `values.yaml`,
 commits, and pushes — triggering a durable deploy.
 
+**If the workflow dispatch fails:** warn the user that the runtime change is
+live but ephemeral — it will revert on the next pod restart. They can retry
+`set_config` or persist manually.
+
 #### Step 6 — Report
 
 The tool returns the workflow dispatch status and recent run URLs.
 Report success/failure to the user.
+
+## Worked example
+
+User says: "change the model to google/gemini-3-flash"
+
+**Step 1+2** (parallel):
+```
+gateway(action: "config.schema.lookup", path: "agents.defaults.model.primary")
+gateway(action: "config.get")
+```
+
+Schema lookup confirms `agents.defaults.model.primary` exists and is a string.
+Config.get returns hash `"abc123"` and shows current value is `"anthropic/claude-sonnet-4-20250514"`.
+
+**Preview:**
+> Changing `agents.defaults.model.primary`:
+> `"anthropic/claude-sonnet-4-20250514"` -> `"google/gemini-3-flash"`
+> Apply this change?
+
+**Step 3** (after user says "yes, try it"):
+```
+gateway(
+  action: "config.patch",
+  raw: "{\"agents\":{\"defaults\":{\"model\":{\"primary\":\"google/gemini-3-flash\"}}}}",
+  baseHash: "abc123",
+  note: "Changed primary model to google/gemini-3-flash"
+)
+```
+
+**Step 4:** "The model has been changed. Please try sending a message to
+verify it works. Should I persist this to the repo?"
+
+**Step 5** (after user confirms):
+```
+set_config(
+  config_path: "agents.defaults.model.primary",
+  config_value: "\"google/gemini-3-flash\""
+)
+```
+
+**Step 6:** "Workflow dispatched. Run #12345 is in progress — [view](url)."
 
 ## Config path format
 
