@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import { persona, resolveToken, dispatchWorkflow, getLatestRuns } from "./shared.ts";
-import { validateConfigPath, validateConfigValue } from "./validate.ts";
+import { checkConfigPath, checkConfigValue } from "./preflight.ts";
 
 const WORKFLOW_FILE = "set-config.yml";
 
@@ -13,10 +13,12 @@ async function run(config_path: string, config_value: string): Promise<string> {
 
   if (!persona) return "Error: Could not determine persona from hostname.";
 
-  const pathError = validateConfigPath(config_path);
+  // Preflight: reject obviously malformed inputs before dispatching workflow.
+  // Authoritative validation happens in openclaw core (Phase 1) and repo-side (Phase 2).
+  const pathError = checkConfigPath(config_path);
   if (pathError) return `Error: ${pathError}`;
 
-  const valueError = validateConfigValue(config_value);
+  const valueError = checkConfigValue(config_value);
   if (valueError) return `Error: ${valueError}`;
 
   const result = await dispatchWorkflow(repo, token, WORKFLOW_FILE, {
@@ -37,11 +39,12 @@ export const setConfigTool = {
   name: "set_config",
   label: "Set Config",
   description:
-    "Persist a config change to the GitOps repo for this persona. " +
+    "Persist a config change to the GitOps repo for this persona (Phase 2 of the two-phase flow). " +
     "Triggers the set-config GitHub Actions workflow, which patches the persona's values.yaml " +
     "with a single config path+value, commits, and pushes — triggering a deploy. " +
-    "This is the persistence step of the two-phase config update flow: " +
-    "runtime apply first (via config.patch), user confirmation, then this tool to persist. " +
+    "This tool performs only transport-safety preflight checks (well-formed path/JSON); " +
+    "authoritative schema validation is handled by the gateway tool (Phase 1) and " +
+    "the repo-side workflow. " +
     "Use only after the user has confirmed a runtime config change works correctly.",
   parameters: Type.Object({
     config_path: Type.String({

@@ -97,7 +97,10 @@ On confirmation, call the `set_config` tool with:
   (same format used in schema lookup, e.g. `agents.defaults.model.primary`)
 - `config_value`: JSON-encoded value (e.g. `"google/gemini-3-flash"`, `true`, `42`)
 
-This triggers a GitHub Actions workflow that patches the persona's `values.yaml`,
+The tool runs transport-safety preflight checks (well-formed path, valid JSON)
+but does **not** validate against the config schema — that authority belongs to
+the `gateway` tool (Phase 1) and the repo-side workflow.
+It then triggers a GitHub Actions workflow that patches the persona's `values.yaml`,
 commits, and pushes — triggering a durable deploy.
 
 #### Step 6 — Report
