@@ -26,34 +26,88 @@ Do NOT trigger when:
 
 ## Two-phase workflow
 
-### Phase 1: Runtime apply (instant feedback)
+Phase 1 uses the built-in `gateway` tool (provided by openclaw).
+Phase 2 uses the plugin `set_config` tool (provided by this plugin).
 
-1. **Validate** — Use the gateway API to look up the config path and verify
-   it exists and the proposed value matches the expected type.
+### Phase 1: Runtime apply (via `gateway` tool)
 
-2. **Preview** — Show the user: current value -> proposed value.
+#### Step 1 — Look up schema
 
-3. **Apply runtime** — Call `config.patch` with a merge-patch containing
-   only the changed field. This writes to `openclaw.json` and triggers a
-   graceful SIGUSR1 restart.
+Call the `gateway` tool to verify the config path exists and check its type:
 
-4. **Confirm** — Ask the user to verify the change works as expected.
-   Wait for explicit confirmation before proceeding.
+```
+gateway(action: "config.schema.lookup", path: "<dot.path>")
+```
 
-### Phase 2: Repo persist (durable change)
+Example: `gateway(action: "config.schema.lookup", path: "agents.defaults.model.primary")`
 
-5. **Persist** — On confirmation, call the `set_config` tool with:
-   - `config_path`: dot-delimited path relative to `openclaw-helm.config`
-   - `config_value`: JSON-encoded value
+The response includes `schema` (JSON Schema node), `hint` (UI metadata), and
+`children` (available sub-paths). Use this to validate the proposed value type.
 
-6. **Report** — Poll the workflow run and report success/failure.
+#### Step 2 — Get current value
 
-If the user rejects the change, it will revert on next pod restart
-(no repo change is made).
+Call the `gateway` tool to fetch the live config snapshot:
+
+```
+gateway(action: "config.get")
+```
+
+The response includes:
+- `config` — the full config object (navigate to the target path to read current value)
+- `hash` — **save this** — required as `baseHash` for the patch step
+
+Show the user: `current value -> proposed value`.
+
+#### Step 3 — Apply runtime patch
+
+Construct a merge-patch object from the dot path. For a path like
+`agents.defaults.model.primary` with value `"google/gemini-3-flash"`,
+build the nested object:
+
+```json
+{"agents": {"defaults": {"model": {"primary": "google/gemini-3-flash"}}}}
+```
+
+Then call:
+
+```
+gateway(
+  action: "config.patch",
+  raw: "<the merge-patch JSON string>",
+  baseHash: "<hash from config.get>",
+  note: "<human-readable summary, e.g. 'Changed primary model to google/gemini-3-flash'>"
+)
+```
+
+This writes to `openclaw.json` and triggers a graceful SIGUSR1 restart.
+The `note` parameter is delivered to the user after restart completes.
+
+#### Step 4 — Confirm
+
+Ask the user to verify the change works as expected.
+Wait for **explicit confirmation** before proceeding to Phase 2.
+If rejected, the change reverts automatically on next pod restart.
+
+### Phase 2: Repo persist (via `set_config` tool)
+
+#### Step 5 — Persist
+
+On confirmation, call the `set_config` tool with:
+- `config_path`: dot-delimited path relative to `openclaw-helm.config`
+  (same format used in schema lookup, e.g. `agents.defaults.model.primary`)
+- `config_value`: JSON-encoded value (e.g. `"google/gemini-3-flash"`, `true`, `42`)
+
+This triggers a GitHub Actions workflow that patches the persona's `values.yaml`,
+commits, and pushes — triggering a durable deploy.
+
+#### Step 6 — Report
+
+The tool returns the workflow dispatch status and recent run URLs.
+Report success/failure to the user.
 
 ## Config path format
 
-- Paths are dot-delimited, relative to `openclaw-helm.config`
+- Dot-delimited, relative to `openclaw-helm.config`
 - Only simple identifiers per segment (no array selectors like `list[id=main]`)
 - Examples:
   - `agents.defaults.model.primary` — model provider string
@@ -65,9 +119,11 @@ If the user rejects the change, it will revert on next pod restart
 ## Important notes
 
 - NEVER write the full live `openclaw.json` back to `values.yaml`.
-  Only the specific changed path+value is persisted.
+  Only the specific changed path+value is persisted via `set_config`.
 - If the persist step fails, warn the user that the runtime change is
   ephemeral and will revert on next pod restart.
 - Config values must be valid JSON (strings need double quotes: `"google/gemini-3-flash"`)
+- The `gateway` tool enforces protected paths (`tools.exec.ask`, `tools.exec.security`)
+  that cannot be changed via agent config mutations.
 - Requires `MANAGE_SECRETS_GITHUB_REPO` env var (shared with set_secret)
 - Auth: `AGENT_GITHUB_PAT` or `MANAGE_SECRETS_GITHUB_APP` (same as set_secret)
