@@ -1,13 +1,13 @@
-// Utility for constructing RFC 7396 merge-patch objects from a dot-delimited
-// config path and a parsed value.
+// Utilities for working with RFC 7396 merge-patch objects.
 //
+// buildMergePatch — constructs a merge-patch from a dot-delimited path + value.
 // Used by the manage-config skill (Phase 1) when calling the gateway tool's
 // config.patch action.  The gateway tool expects a `raw` JSON string containing
 // a nested object where only the targeted leaf is set.
 //
-// Example:
-//   buildMergePatch("agents.defaults.model.primary", "google/gemini-3-flash")
-//   => { agents: { defaults: { model: { primary: "google/gemini-3-flash" } } } }
+// extractLeafPaths — walks a parsed merge-patch and returns dot-delimited paths
+// to every leaf (primitives, arrays, and nulls).  Used by preflight validation
+// and status-message generation.
 
 export function buildMergePatch(
   dotPath: string,
@@ -23,4 +23,20 @@ export function buildMergePatch(
   }
   cursor[segments.at(-1)!] = value;
   return patch;
+}
+
+export function extractLeafPaths(
+  obj: Record<string, unknown>,
+  prefix = "",
+): string[] {
+  const paths: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      paths.push(...extractLeafPaths(value as Record<string, unknown>, path));
+    } else {
+      paths.push(path);
+    }
+  }
+  return paths;
 }

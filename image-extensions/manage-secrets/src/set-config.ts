@@ -1,25 +1,21 @@
 import { Type } from "@sinclair/typebox";
 import { resolveContext, dispatchWorkflow, getLatestRuns, toolResult, type ToolResult } from "./shared.ts";
-import { checkConfigPath, checkConfigValue } from "./preflight.ts";
+import { checkPatch } from "./preflight.ts";
 
 const WORKFLOW_FILE = "set-config.yml";
 
-async function run(config_path: string, config_value: string): Promise<string> {
+async function run(patch: string): Promise<string> {
   const ctx = await resolveContext();
   if (typeof ctx === "string") return ctx;
 
   // Preflight: reject obviously malformed inputs before dispatching workflow.
   // Authoritative validation happens in openclaw core (Phase 1) and repo-side (Phase 2).
-  const pathError = checkConfigPath(config_path);
-  if (pathError) return `Error: ${pathError}`;
-
-  const valueError = checkConfigValue(config_value);
-  if (valueError) return `Error: ${valueError}`;
+  const check = checkPatch(patch);
+  if ("error" in check) return `Error: ${check.error}`;
 
   const result = await dispatchWorkflow(ctx.repo, ctx.token, WORKFLOW_FILE, {
     persona: ctx.persona,
-    config_path,
-    config_value,
+    patch,
   });
   if (!result.ok) return result.message;
 
@@ -30,7 +26,8 @@ async function run(config_path: string, config_value: string): Promise<string> {
     ? "\n\nNote: Could not fetch deployment status. The save was still initiated successfully."
     : `\n\nRecent deployments:\n${runs}`;
 
-  return `Saving config ${config_path} — deployment in progress.${runsSection}`;
+  const pathsSummary = check.leafPaths.join(", ");
+  return `Saving config [${pathsSummary}] — deployment in progress.${runsSection}`;
 }
 
 export const setConfigTool = {
@@ -39,24 +36,21 @@ export const setConfigTool = {
   description:
     "Save a confirmed config change permanently for this agent. " +
     "Use only after the user has confirmed a live config change works correctly (Phase 2 of apply-then-save). " +
-    "Performs transport-safety preflight checks (well-formed path/JSON); " +
+    "Pass the same merge-patch JSON string used in the gateway config.patch call. " +
+    "Performs transport-safety preflight checks; " +
     "authoritative schema validation is handled by the gateway tool in Phase 1.",
   parameters: Type.Object({
-    config_path: Type.String({
+    patch: Type.String({
       description:
-        'Dot-delimited config path (e.g., "agents.defaults.model.primary"). ' +
-        "Only simple dot-delimited identifiers — no array selectors.",
-    }),
-    config_value: Type.String({
-      description:
-        'JSON-encoded value (e.g., \'"google/gemini-3-flash"\', "true", "42", \'{"key":"val"}\').',
+        "JSON merge-patch string — the same value passed as `raw` to the gateway config.patch action. " +
+        'Example: \'{"agents":{"defaults":{"model":{"primary":"google/gemini-3-flash"}}}}\'',
     }),
   }),
   async execute(
     _toolCallId: string,
-    params: { config_path: string; config_value: string },
+    params: { patch: string },
   ): Promise<ToolResult> {
-    const text = await run(params.config_path, params.config_value);
+    const text = await run(params.patch);
     return toolResult(text);
   },
 };
