@@ -33,8 +33,6 @@ function getPersona(): string {
   return "";
 }
 
-const persona = getPersona();
-
 async function resolveToken(): Promise<string | null> {
   // 1. Explicit PAT takes priority
   if (process.env.AGENT_GITHUB_PAT) return process.env.AGENT_GITHUB_PAT;
@@ -116,6 +114,7 @@ export async function resolveContext(): Promise<ToolContext | string> {
   const repo = process.env.MANAGE_SECRETS_GITHUB_REPO;
   if (!repo) return "Error: MANAGE_SECRETS_GITHUB_REPO is not set.";
 
+  const persona = getPersona();
   if (!persona) return "Error: Could not determine persona from hostname.";
 
   return { token, repo, persona };

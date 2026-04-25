@@ -21,8 +21,11 @@ async function run(secret_key: string, secret_value: string): Promise<string> {
   // Wait briefly then fetch latest run status
   await new Promise((r) => setTimeout(r, 3000));
   const runs = await getLatestRuns(ctx.repo, ctx.token, WORKFLOW_FILE);
+  const runsSection = runs.startsWith("Failed") || runs.startsWith("No recent")
+    ? "\n\nNote: Could not fetch deployment status. The save was still initiated successfully."
+    : `\n\nRecent deployments:\n${runs}`;
 
-  return `Saving secret ${secret_key} — deployment in progress.\n\nRecent deployments:\n${runs}`;
+  return `Saving secret ${secret_key} — deployment in progress.${runsSection}`;
 }
 
 export const setSecretTool = {
