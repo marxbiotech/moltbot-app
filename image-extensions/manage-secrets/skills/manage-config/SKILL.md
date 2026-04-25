@@ -135,11 +135,11 @@ set_config(
 
 Do NOT re-derive or re-construct the patch — pass the `raw` string verbatim.
 
-The tool runs transport-safety preflight checks (valid JSON object, supported
-config paths at every leaf, no null/deletion values) but does **not** validate
-against the config schema — that authority belongs to the `gateway` tool in
-Phase 1. It then saves the change durably so it survives restarts and
-redeployments.
+The tool runs transport-safety preflight checks (valid JSON object, well-formed
+dot-delimited path segments at every leaf, no null/deletion values, max 20
+paths per patch) but does **not** validate against the config schema — that
+authority belongs to the `gateway` tool in Phase 1. It then saves the change
+durably so it survives restarts and redeployments.
 
 **If saving fails:** warn the user that the change is active but hasn't been
 saved — it won't survive a restart. They can retry `set_config` later.

@@ -77,8 +77,10 @@ describe("checkPatch", () => {
     expect("leafPaths" in result).toBe(true);
   });
 
-  it("rejects invalid JSON", () => {
-    expect(checkPatch("not-json")).toEqual({ error: "patch must be valid JSON" });
+  it("rejects invalid JSON with parse details", () => {
+    const result = checkPatch("not-json");
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/patch must be valid JSON:/);
   });
 
   it("rejects non-object JSON (array)", () => {
@@ -134,7 +136,7 @@ describe("checkPatch", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildMergePatch (unchanged — regression tests)
+// buildMergePatch — regression tests for the dot-path-to-nested-object utility
 // ---------------------------------------------------------------------------
 
 describe("buildMergePatch (dot-path to nested object)", () => {

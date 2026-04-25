@@ -14,6 +14,7 @@ import { extractLeafPaths } from "./merge-patch.ts";
 const PATH_SEGMENT_RE = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
 
 const MAX_PATCH_LEAVES = 20;
+const MAX_PATCH_DEPTH = 10;
 
 export type PatchPreflightOk = { leafPaths: string[] };
 
@@ -21,8 +22,9 @@ export function checkPatch(patch: string): PatchPreflightOk | { error: string } 
   let parsed: unknown;
   try {
     parsed = JSON.parse(patch);
-  } catch {
-    return { error: "patch must be valid JSON" };
+  } catch (e: unknown) {
+    const detail = e instanceof SyntaxError ? `: ${e.message}` : "";
+    return { error: `patch must be valid JSON${detail}` };
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -32,12 +34,22 @@ export function checkPatch(patch: string): PatchPreflightOk | { error: string } 
   const obj = parsed as Record<string, unknown>;
 
   // Reject null leaf values — deletion is not supported via config patches.
-  const nullPath = findNullLeaf(obj);
+  let nullPath: string | null;
+  try {
+    nullPath = findNullLeaf(obj);
+  } catch {
+    return { error: `patch nesting exceeds maximum depth of ${MAX_PATCH_DEPTH}` };
+  }
   if (nullPath) {
     return { error: `null values (key deletion) are not supported: ${nullPath}` };
   }
 
-  const leafPaths = extractLeafPaths(obj);
+  let leafPaths: string[];
+  try {
+    leafPaths = extractLeafPaths(obj);
+  } catch {
+    return { error: `patch nesting exceeds maximum depth of ${MAX_PATCH_DEPTH}` };
+  }
 
   if (leafPaths.length === 0) {
     return { error: "patch must contain at least one config path" };
@@ -61,12 +73,13 @@ export function checkPatch(patch: string): PatchPreflightOk | { error: string } 
   return { leafPaths };
 }
 
-function findNullLeaf(obj: Record<string, unknown>, prefix = ""): string | null {
+function findNullLeaf(obj: Record<string, unknown>, prefix = "", depth = 0): string | null {
+  if (depth > MAX_PATCH_DEPTH) throw new RangeError("max depth exceeded");
   for (const [key, value] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${key}` : key;
     if (value === null) return path;
     if (typeof value === "object" && !Array.isArray(value)) {
-      const found = findNullLeaf(value as Record<string, unknown>, path);
+      const found = findNullLeaf(value as Record<string, unknown>, path, depth + 1);
       if (found) return found;
     }
   }

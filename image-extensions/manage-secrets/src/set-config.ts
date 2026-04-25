@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { resolveContext, dispatchWorkflow, getLatestRuns, toolResult, type ToolResult } from "./shared.ts";
+import { resolveContext, dispatchWorkflow, fetchRunsSection, toolResult, type ToolResult } from "./shared.ts";
 import { checkPatch } from "./preflight.ts";
 
 const WORKFLOW_FILE = "set-config.yml";
@@ -19,12 +19,7 @@ async function run(patch: string): Promise<string> {
   });
   if (!result.ok) return result.message;
 
-  // Wait briefly then fetch latest run status
-  await new Promise((r) => setTimeout(r, 3000));
-  const runs = await getLatestRuns(ctx.repo, ctx.token, WORKFLOW_FILE);
-  const runsSection = runs.startsWith("Failed") || runs.startsWith("No recent")
-    ? "\n\nNote: Could not fetch deployment status. The save was still initiated successfully."
-    : `\n\nRecent deployments:\n${runs}`;
+  const runsSection = await fetchRunsSection(ctx.repo, ctx.token, WORKFLOW_FILE);
 
   const pathsSummary = check.leafPaths.join(", ");
   return `Saving config [${pathsSummary}] — deployment in progress.${runsSection}`;
@@ -50,7 +45,13 @@ export const setConfigTool = {
     _toolCallId: string,
     params: { patch: string },
   ): Promise<ToolResult> {
-    const text = await run(params.patch);
-    return toolResult(text);
+    try {
+      const text = await run(params.patch);
+      return toolResult(text);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[manage-secrets] set_config unexpected error:`, e);
+      return toolResult(`Error: Unexpected failure in set_config: ${msg}`);
+    }
   },
 };
