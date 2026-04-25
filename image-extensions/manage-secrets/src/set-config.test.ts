@@ -1,62 +1,143 @@
 import { describe, it, expect } from "vitest";
-import { checkConfigPath, checkConfigValue } from "./preflight.ts";
-import { buildMergePatch } from "./merge-patch.ts";
+import { checkPatch } from "./preflight.ts";
+import { buildMergePatch, extractLeafPaths } from "./merge-patch.ts";
 
-// These tests cover the transport-safety preflight checks, not authoritative
-// schema validation (which belongs to openclaw core and the repo-side workflow).
+// ---------------------------------------------------------------------------
+// extractLeafPaths
+// ---------------------------------------------------------------------------
 
-describe("checkConfigPath (supported-subset gate)", () => {
-  it("accepts valid dot-delimited paths", () => {
-    expect(checkConfigPath("agents.defaults.model.primary")).toBeNull();
-    expect(checkConfigPath("channels.telegram.enabled")).toBeNull();
-    expect(checkConfigPath("singleSegment")).toBeNull();
-    expect(checkConfigPath("a_b-c.d_e")).toBeNull();
+describe("extractLeafPaths", () => {
+  it("extracts single leaf path", () => {
+    expect(extractLeafPaths({ enabled: true })).toEqual(["enabled"]);
   });
 
-  it("rejects empty path", () => {
-    expect(checkConfigPath("")).toMatch(/must not be empty/);
+  it("extracts deeply nested leaf path", () => {
+    expect(
+      extractLeafPaths({ agents: { defaults: { model: { primary: "gemini" } } } }),
+    ).toEqual(["agents.defaults.model.primary"]);
   });
 
-  it("rejects segments starting with digits", () => {
-    expect(checkConfigPath("agents.0bad")).toMatch(/Unsupported path segment/);
+  it("extracts multiple leaf paths from a multi-path patch", () => {
+    const patch = {
+      agents: { defaults: { model: { primary: "gemini", fallbacks: ["a", "b"] } } },
+      channels: { telegram: { streaming: true } },
+    };
+    expect(extractLeafPaths(patch)).toEqual([
+      "agents.defaults.model.primary",
+      "agents.defaults.model.fallbacks",
+      "channels.telegram.streaming",
+    ]);
   });
 
-  it("rejects segments with special characters", () => {
-    expect(checkConfigPath("agents.foo[0]")).toMatch(/Unsupported path segment/);
-    expect(checkConfigPath("agents.foo bar")).toMatch(/Unsupported path segment/);
-    expect(checkConfigPath("agents.foo.bar.baz[id=main]")).toMatch(/Unsupported path segment/);
+  it("treats arrays as leaf values", () => {
+    expect(extractLeafPaths({ list: [1, 2, 3] })).toEqual(["list"]);
   });
 
-  it("rejects paths with empty segments (consecutive dots)", () => {
-    expect(checkConfigPath("agents..model")).toMatch(/Unsupported path segment/);
+  it("treats null as leaf value", () => {
+    expect(extractLeafPaths({ removed: null })).toEqual(["removed"]);
   });
 
-  it("rejects segments starting with a hyphen", () => {
-    expect(checkConfigPath("-bad")).toMatch(/Unsupported path segment/);
+  it("returns empty array for empty object", () => {
+    expect(extractLeafPaths({})).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkPatch
+// ---------------------------------------------------------------------------
+
+describe("checkPatch", () => {
+  it("accepts a valid single-path patch", () => {
+    const result = checkPatch('{"agents":{"defaults":{"model":{"primary":"gemini"}}}}');
+    expect(result).toEqual({
+      leafPaths: ["agents.defaults.model.primary"],
+    });
+  });
+
+  it("accepts a valid multi-path patch", () => {
+    const patch = JSON.stringify({
+      agents: { defaults: { model: { primary: "gemini", fallbacks: ["a"] } } },
+      channels: { telegram: { streaming: true } },
+    });
+    const result = checkPatch(patch);
+    expect(result).toEqual({
+      leafPaths: [
+        "agents.defaults.model.primary",
+        "agents.defaults.model.fallbacks",
+        "channels.telegram.streaming",
+      ],
+    });
+  });
+
+  it("accepts patches with boolean, number, string, array leaf values", () => {
+    const patch = JSON.stringify({
+      a: { str: "val", num: 42, bool: false, arr: [1, 2] },
+    });
+    const result = checkPatch(patch);
+    expect("leafPaths" in result).toBe(true);
+  });
+
+  it("rejects invalid JSON with parse details", () => {
+    const result = checkPatch("not-json");
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/patch must be valid JSON:/);
+  });
+
+  it("rejects non-object JSON (array)", () => {
+    expect(checkPatch('[1,2]')).toEqual({ error: "patch must be a JSON object" });
+  });
+
+  it("rejects non-object JSON (string)", () => {
+    expect(checkPatch('"hello"')).toEqual({ error: "patch must be a JSON object" });
+  });
+
+  it("rejects non-object JSON (null)", () => {
+    expect(checkPatch("null")).toEqual({ error: "patch must be a JSON object" });
+  });
+
+  it("rejects null leaf values (deletion not supported)", () => {
+    const patch = JSON.stringify({ agents: { defaults: { model: { primary: null } } } });
+    const result = checkPatch(patch);
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/null.*not supported.*agents\.defaults\.model\.primary/);
+  });
+
+  it("rejects empty object (no leaf paths)", () => {
+    expect(checkPatch("{}")).toEqual({ error: "patch must contain at least one config path" });
+  });
+
+  it("rejects nested empty objects (no leaf paths)", () => {
+    expect(checkPatch('{"a":{"b":{}}}')).toEqual({
+      error: "patch must contain at least one config path",
+    });
+  });
+
+  it("rejects path segments starting with digits", () => {
+    const patch = JSON.stringify({ agents: { "0bad": true } });
+    const result = checkPatch(patch);
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/Unsupported path segment/);
+  });
+
+  it("rejects path segments with special characters", () => {
+    const patch = JSON.stringify({ "foo[0]": true });
+    const result = checkPatch(patch);
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/Unsupported path segment/);
+  });
+
+  it("rejects patches with too many leaf paths", () => {
+    const obj: Record<string, boolean> = {};
+    for (let i = 0; i < 21; i++) obj[`key_${i}`] = true;
+    const result = checkPatch(JSON.stringify(obj));
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toMatch(/21 leaf paths.*max 20/);
   });
 });
 
-describe("checkConfigValue (JSON transport safety)", () => {
-  it("accepts valid JSON strings", () => {
-    expect(checkConfigValue('"google/gemini-3-flash"')).toBeNull();
-    expect(checkConfigValue("true")).toBeNull();
-    expect(checkConfigValue("false")).toBeNull();
-    expect(checkConfigValue("42")).toBeNull();
-    expect(checkConfigValue('{"key":"val"}')).toBeNull();
-    expect(checkConfigValue("[]")).toBeNull();
-    expect(checkConfigValue('["a","b"]')).toBeNull();
-  });
-
-  it("rejects null", () => {
-    expect(checkConfigValue("null")).toMatch(/must not be JSON null/);
-  });
-
-  it("rejects invalid JSON", () => {
-    expect(checkConfigValue("not-json")).toMatch(/must be valid JSON/);
-    expect(checkConfigValue("")).toMatch(/must be valid JSON/);
-    expect(checkConfigValue("google/gemini-3-flash")).toMatch(/must be valid JSON/);
-  });
-});
+// ---------------------------------------------------------------------------
+// buildMergePatch — regression tests for the dot-path-to-nested-object utility
+// ---------------------------------------------------------------------------
 
 describe("buildMergePatch (dot-path to nested object)", () => {
   it("builds nested object from multi-segment path", () => {

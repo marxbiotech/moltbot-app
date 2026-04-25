@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { resolveContext, dispatchWorkflow, getLatestRuns, toolResult, type ToolResult } from "./shared.ts";
+import { resolveContext, dispatchWorkflow, fetchRunsSection, toolResult, type ToolResult } from "./shared.ts";
 
 const WORKFLOW_FILE = "set-secret.yml";
 
@@ -18,12 +18,7 @@ async function run(secret_key: string, secret_value: string): Promise<string> {
   });
   if (!result.ok) return result.message;
 
-  // Wait briefly then fetch latest run status
-  await new Promise((r) => setTimeout(r, 3000));
-  const runs = await getLatestRuns(ctx.repo, ctx.token, WORKFLOW_FILE);
-  const runsSection = runs.startsWith("Failed") || runs.startsWith("No recent")
-    ? "\n\nNote: Could not fetch deployment status. The save was still initiated successfully."
-    : `\n\nRecent deployments:\n${runs}`;
+  const runsSection = await fetchRunsSection(ctx.repo, ctx.token, WORKFLOW_FILE);
 
   return `Saving secret ${secret_key} — deployment in progress.${runsSection}`;
 }
@@ -48,7 +43,13 @@ export const setSecretTool = {
     _toolCallId: string,
     params: { secret_key: string; secret_value: string },
   ): Promise<ToolResult> {
-    const text = await run(params.secret_key, params.secret_value);
-    return toolResult(text);
+    try {
+      const text = await run(params.secret_key, params.secret_value);
+      return toolResult(text);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[manage-secrets] set_secret unexpected error:`, e);
+      return toolResult(`Error: Unexpected failure in set_secret: ${msg}`);
+    }
   },
 };

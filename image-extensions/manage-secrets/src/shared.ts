@@ -30,6 +30,9 @@ function getPersona(): string {
   const match = hostname.match(/^moltbot-([a-z][\w-]*?)(?:-[a-f0-9]+-[a-z0-9]+)?$/);
   if (match) return match[1];
 
+  console.warn(
+    `[manage-secrets] Persona detection failed: Tailscale unavailable, HOSTNAME=${hostname ? `"${hostname}" (no match)` : "(not set)"}`,
+  );
   return "";
 }
 
@@ -90,7 +93,8 @@ export async function dispatchWorkflow(
   let body: string;
   try {
     body = await res.text();
-  } catch {
+  } catch (e: unknown) {
+    console.warn(`[manage-secrets] Could not read error response body:`, e);
     body = "(could not read response body)";
   }
   return { ok: false, message: `Save failed (${res.status}): ${body}` };
@@ -130,11 +134,13 @@ export function toolResult(text: string): ToolResult {
   return { content: [{ type: "text", text }], details: undefined };
 }
 
+export type RunsResult = { ok: true; text: string } | { ok: false; text: string };
+
 export async function getLatestRuns(
   repo: string,
   token: string,
   workflowFile: string,
-): Promise<string> {
+): Promise<RunsResult> {
   let res: Response;
   try {
     res = await fetch(
@@ -148,10 +154,10 @@ export async function getLatestRuns(
     );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return `Failed to fetch deployment status (network error: ${msg})`;
+    return { ok: false, text: `Failed to fetch deployment status (network error: ${msg})` };
   }
 
-  if (!res.ok) return `Failed to fetch deployment status (${res.status})`;
+  if (!res.ok) return { ok: false, text: `Failed to fetch deployment status (${res.status})` };
 
   let data: {
     workflow_runs: Array<{
@@ -164,15 +170,43 @@ export async function getLatestRuns(
   };
   try {
     data = await res.json();
-  } catch {
-    return "Failed to parse deployment status response.";
+  } catch (e: unknown) {
+    console.warn(`[manage-secrets] Could not parse runs response:`, e);
+    return { ok: false, text: "Failed to parse deployment status response." };
   }
-  if (!data.workflow_runs?.length) return "No recent deployments found.";
+  if (!Array.isArray(data.workflow_runs) || data.workflow_runs.length === 0) {
+    return { ok: false, text: "No recent deployments found." };
+  }
 
-  return data.workflow_runs
-    .map(
-      (r) =>
-        `#${r.id} ${r.status}${r.conclusion ? ` (${r.conclusion})` : ""} — ${r.created_at}\n  ${r.html_url}`,
-    )
-    .join("\n");
+  return {
+    ok: true,
+    text: data.workflow_runs
+      .map(
+        (r) =>
+          `#${r.id} ${r.status}${r.conclusion ? ` (${r.conclusion})` : ""} — ${r.created_at}\n  ${r.html_url}`,
+      )
+      .join("\n"),
+  };
+}
+
+/**
+ * Shared post-dispatch helper: waits briefly, fetches latest run status,
+ * and formats the result section. Catches all errors so a status-fetch
+ * failure never masks a successful dispatch.
+ */
+export async function fetchRunsSection(
+  repo: string,
+  token: string,
+  workflowFile: string,
+): Promise<string> {
+  try {
+    await new Promise((r) => setTimeout(r, 3000));
+    const runs = await getLatestRuns(repo, token, workflowFile);
+    return runs.ok
+      ? `\n\nRecent deployments:\n${runs.text}`
+      : "\n\nNote: Could not fetch deployment status. The save was still initiated successfully.";
+  } catch (e: unknown) {
+    console.warn(`[manage-secrets] getLatestRuns threw unexpectedly:`, e);
+    return "\n\nNote: Could not fetch deployment status. The save was still initiated successfully.";
+  }
 }
