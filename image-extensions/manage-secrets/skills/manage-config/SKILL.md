@@ -1,8 +1,8 @@
 ---
 name: manage-config
 description: >
-  Update OpenClaw runtime config via the two-phase flow: apply immediately
-  for instant feedback, then persist to the GitOps repo after user confirmation.
+  Update agent config via apply-then-save: apply immediately for instant
+  feedback, then save permanently after user confirmation.
   Use when the user asks to change a model, toggle a feature, update channel
   settings, or modify agent config.
 user-invocable: false
@@ -20,16 +20,16 @@ Trigger when the user:
 
 Do NOT trigger when:
 - The user is asking about secrets (use manage-secrets skill)
-- The change requires adding new SOPS-encrypted values
-- The request is about image tags, Helm chart versions, or infra config
-  (these require direct values.yaml edits, not runtime config patching)
+- The change requires adding new encrypted secrets
+- The request is about infrastructure-level changes (image versions, chart
+  config, or deployment settings) — these are outside this tool's scope
 
 ## Two-phase workflow
 
-Phase 1 uses the built-in `gateway` tool (provided by openclaw).
-Phase 2 uses the plugin `set_config` tool (provided by this plugin).
+Phase 1 uses the built-in `gateway` tool to apply the change live.
+Phase 2 uses the `set_config` tool to save it permanently.
 
-### Phase 1: Runtime apply (via `gateway` tool)
+### Phase 1: Apply (via `gateway` tool)
 
 Steps 1 and 2 are independent — call them in parallel when possible.
 
@@ -88,8 +88,8 @@ gateway(
 )
 ```
 
-This writes to `openclaw.json` and triggers a graceful SIGUSR1 restart.
-The `note` parameter is delivered to the user after restart completes.
+This applies the change and triggers a graceful reload.
+The `note` parameter is delivered to the user after the reload completes.
 
 **If config.patch fails:**
 - *baseHash mismatch* — config was changed concurrently. Re-fetch via
@@ -103,33 +103,31 @@ The `note` parameter is delivered to the user after restart completes.
 Ask the user to verify the change works as expected.
 Wait for **explicit confirmation** before proceeding to Phase 2.
 
-**If the user rejects the change:** the runtime change reverts automatically
-on the next pod restart (or immediately if the user requests a restart via
-`gateway(action: "restart")`). No repo change is made. Inform the user that
-the change is ephemeral and will revert.
+**If the user rejects the change:** the change is active but unsaved — it
+won't survive a restart. The user can request an immediate restart via
+`gateway(action: "restart")` to revert right away. No permanent save is made.
+Inform the user that the change will revert on next restart.
 
-### Phase 2: Repo persist (via `set_config` tool)
+### Phase 2: Save (via `set_config` tool)
 
-#### Step 5 — Persist
+#### Step 5 — Save permanently
 
 On confirmation, call the `set_config` tool with:
-- `config_path`: dot-delimited path relative to `openclaw-helm.config`
+- `config_path`: dot-delimited config path
   (same format used in schema lookup, e.g. `agents.defaults.model.primary`)
 - `config_value`: JSON-encoded value (e.g. `"google/gemini-3-flash"`, `true`, `42`)
 
 The tool runs transport-safety preflight checks (well-formed path, valid JSON)
 but does **not** validate against the config schema — that authority belongs to
-the `gateway` tool (Phase 1) and the repo-side workflow.
-It then triggers a GitHub Actions workflow that patches the persona's `values.yaml`,
-commits, and pushes — triggering a durable deploy.
+the `gateway` tool in Phase 1.
+It then saves the change durably so it survives restarts and redeployments.
 
-**If the workflow dispatch fails:** warn the user that the runtime change is
-live but ephemeral — it will revert on the next pod restart. They can retry
-`set_config` or persist manually.
+**If saving fails:** warn the user that the change is active but hasn't been
+saved — it won't survive a restart. They can retry `set_config` later.
 
 #### Step 6 — Report
 
-The tool returns the workflow dispatch status and recent run URLs.
+The tool returns save status and progress information.
 Report success/failure to the user.
 
 ## Worked example
@@ -161,7 +159,7 @@ gateway(
 ```
 
 **Step 4:** "The model has been changed. Please try sending a message to
-verify it works. Should I persist this to the repo?"
+verify it works. Want me to save this permanently?"
 
 **Step 5** (after user confirms):
 ```
@@ -171,11 +169,11 @@ set_config(
 )
 ```
 
-**Step 6:** "Workflow dispatched. Run #12345 is in progress — [view](url)."
+**Step 6:** "Change saved. Deployment in progress — [view](url)."
 
 ## Config path format
 
-- Dot-delimited, relative to `openclaw-helm.config`
+- Dot-delimited config path
 - Only simple identifiers per segment (no array selectors like `list[id=main]`)
 - Examples:
   - `agents.defaults.model.primary` — model provider string
@@ -186,12 +184,10 @@ set_config(
 
 ## Important notes
 
-- NEVER write the full live `openclaw.json` back to `values.yaml`.
-  Only the specific changed path+value is persisted via `set_config`.
-- If the persist step fails, warn the user that the runtime change is
-  ephemeral and will revert on next pod restart.
+- NEVER save the full live config wholesale.
+  Only the specific changed path+value is saved via `set_config`.
+- If the save step fails, warn the user that the change is active but
+  unsaved — it won't survive a restart.
 - Config values must be valid JSON (strings need double quotes: `"google/gemini-3-flash"`)
 - The `gateway` tool enforces protected paths (`tools.exec.ask`, `tools.exec.security`)
   that cannot be changed via agent config mutations.
-- Requires `MANAGE_SECRETS_GITHUB_REPO` env var (shared with set_secret)
-- Auth: `AGENT_GITHUB_PAT` or `MANAGE_SECRETS_GITHUB_APP` (same as set_secret)

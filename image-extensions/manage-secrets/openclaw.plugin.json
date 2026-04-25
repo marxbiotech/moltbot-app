@@ -1,7 +1,7 @@
 {
   "id": "manage-secrets",
   "name": "Manage Secrets",
-  "description": "GitOps mutation tools: set environment secrets (set_secret) and update runtime config (set_config) via GitHub Actions workflow dispatch.",
+  "description": "Manage agent secrets and configuration. Provides set_secret (environment secrets) and set_config (runtime config) tools.",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",

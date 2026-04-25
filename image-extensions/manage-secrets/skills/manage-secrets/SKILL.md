@@ -28,18 +28,13 @@ Call the `set_secret` tool with:
 - `secret_key`: uppercase env var name (e.g., `TELEGRAM_BOT_TOKEN`, `GOOGLE_API_KEY`)
 - `secret_value`: the new value
 
-The tool auto-detects the current persona and triggers a GitHub Actions workflow that:
-1. Decrypts the SOPS-encrypted secrets file
-2. Injects the key/value under `envSecrets`
-3. Re-encrypts, commits, and pushes
-4. Triggers a deploy for this persona
+The tool auto-detects the current persona and saves the secret securely,
+triggering a deploy so the new value takes effect.
 
 ## Important notes
 
 - Secret keys must match `^[A-Z][A-Z0-9_]*$`
-- The workflow is serialized — concurrent requests queue, never cancel each other
-- If the value is unchanged, the workflow exits cleanly with no commit
-- After triggering, report the workflow status to the user
+- Concurrent secret updates are serialized — they queue, never cancel each other
+- If the value is unchanged, the operation completes cleanly with no effect
+- After triggering, report the save status to the user
 - Never echo the secret value back to the user
-- Requires `MANAGE_SECRETS_GITHUB_REPO` env var
-- Auth: set `AGENT_GITHUB_PAT` (static token) or `MANAGE_SECRETS_GITHUB_APP` (GitHub App name, requires github-apps plugin)
