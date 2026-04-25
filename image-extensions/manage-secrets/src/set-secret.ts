@@ -29,9 +29,8 @@ export const setSecretTool = {
   name: "set_secret",
   label: "Set Secret",
   description:
-    "Set or update an environment secret for this persona. " +
-    "Triggers the set-secret GitHub Actions workflow, which decrypts the SOPS-encrypted secrets.yaml, " +
-    "injects the key/value under envSecrets, re-encrypts, commits, and pushes — triggering a deploy. " +
+    "Set or update an environment secret for this agent. " +
+    "Securely saves the secret and triggers a deploy so the new value takes effect. " +
     "Use when the user asks to update, rotate, or set a secret, token, or API key.",
   parameters: Type.Object({
     secret_key: Type.String({

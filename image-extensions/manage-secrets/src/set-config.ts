@@ -34,17 +34,14 @@ export const setConfigTool = {
   name: "set_config",
   label: "Set Config",
   description:
-    "Persist a config change to the GitOps repo for this persona (Phase 2 of the two-phase flow). " +
-    "Triggers the set-config GitHub Actions workflow, which patches the persona's values.yaml " +
-    "with a single config path+value, commits, and pushes — triggering a deploy. " +
-    "This tool performs only transport-safety preflight checks (well-formed path/JSON); " +
-    "authoritative schema validation is handled by the gateway tool (Phase 1) and " +
-    "the repo-side workflow. " +
-    "Use only after the user has confirmed a runtime config change works correctly.",
+    "Save a confirmed config change permanently for this agent. " +
+    "Use only after the user has confirmed a live config change works correctly (Phase 2 of apply-then-save). " +
+    "Performs transport-safety preflight checks (well-formed path/JSON); " +
+    "authoritative schema validation is handled by the gateway tool in Phase 1.",
   parameters: Type.Object({
     config_path: Type.String({
       description:
-        'Dot-delimited path relative to openclaw-helm.config (e.g., "agents.defaults.model.primary"). ' +
+        'Dot-delimited config path (e.g., "agents.defaults.model.primary"). ' +
         "Only simple dot-delimited identifiers — no array selectors.",
     }),
     config_value: Type.String({
