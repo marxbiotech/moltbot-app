@@ -82,11 +82,11 @@ export async function dispatchWorkflow(
     );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, message: `GitHub API request failed: ${msg}` };
+    return { ok: false, message: `Save request failed: ${msg}` };
   }
 
   if (res.status === 204) {
-    return { ok: true, message: "Workflow dispatched successfully." };
+    return { ok: true, message: "Save initiated successfully." };
   }
 
   let body: string;
@@ -95,7 +95,7 @@ export async function dispatchWorkflow(
   } catch {
     body = "(could not read response body)";
   }
-  return { ok: false, message: `GitHub API error (${res.status}): ${body}` };
+  return { ok: false, message: `Save failed (${res.status}): ${body}` };
 }
 
 /** Pre-validated context shared by every tool's `run()` function. */
@@ -149,10 +149,10 @@ export async function getLatestRuns(
     );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return `Failed to fetch runs (network error: ${msg})`;
+    return `Failed to fetch deployment status (network error: ${msg})`;
   }
 
-  if (!res.ok) return `Failed to fetch runs (${res.status})`;
+  if (!res.ok) return `Failed to fetch deployment status (${res.status})`;
 
   let data: {
     workflow_runs: Array<{
@@ -166,9 +166,9 @@ export async function getLatestRuns(
   try {
     data = await res.json();
   } catch {
-    return "Failed to parse workflow runs response.";
+    return "Failed to parse deployment status response.";
   }
-  if (!data.workflow_runs?.length) return "No recent runs found.";
+  if (!data.workflow_runs?.length) return "No recent deployments found.";
 
   return data.workflow_runs
     .map(

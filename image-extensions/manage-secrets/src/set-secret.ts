@@ -22,7 +22,7 @@ async function run(secret_key: string, secret_value: string): Promise<string> {
   await new Promise((r) => setTimeout(r, 3000));
   const runs = await getLatestRuns(ctx.repo, ctx.token, WORKFLOW_FILE);
 
-  return `Workflow dispatched: setting ${secret_key} for persona '${ctx.persona}'\n\nRecent runs:\n${runs}`;
+  return `Saving secret ${secret_key} — deployment in progress.\n\nRecent deployments:\n${runs}`;
 }
 
 export const setSecretTool = {
