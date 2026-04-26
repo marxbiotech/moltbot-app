@@ -4,7 +4,8 @@ description: >
   Update agent config via apply-then-save: apply immediately for instant
   feedback, then save permanently after user confirmation.
   Use when the user asks to change a model, toggle a feature, update channel
-  settings, or modify agent config.
+  settings, or modify agent config — including natural-language intents like
+  "turn off transcript echo" or "make Telegram streaming partial".
 user-invocable: false
 ---
 
@@ -13,6 +14,9 @@ user-invocable: false
 ## Intent detection
 
 Trigger when the user:
+- Uses product language to describe a config change
+  ("turn off transcript echo", "make Telegram streaming partial",
+  "switch to gemini", "always echo STT transcription")
 - Asks to change the model, switch providers, or update model fallbacks
 - Wants to enable/disable a channel, plugin, or feature
 - Asks to modify agent identity, system prompts, or channel config
@@ -31,6 +35,32 @@ Phase 2 uses the `set_config` tool to save it permanently.
 
 The **merge-patch JSON string** is the single canonical artifact — construct
 it once in Phase 1, then pass the same string verbatim to Phase 2.
+
+### Step 0 — Resolve intent to config path
+
+**If the user provides an exact dot-path** (e.g. `channels.telegram.streaming`):
+skip directly to Step 1.
+
+**If the user describes intent in natural language:**
+
+1. Check the quick-reference table below for a matching path.
+2. If no table match, identify the likely top-level group from context
+   (agents, channels, tools, talk, session, models, browser) and call:
+   ```
+   gateway(action: "config.schema.lookup", path: "<group>")
+   ```
+   Browse `children` to find the target field. Drill deeper with additional
+   lookups if needed.
+3. If multiple paths could match, present the top 2-3 candidates with their
+   labels and ask the user to pick:
+   > I found multiple config fields that could match:
+   > 1. `tools.media.audio.echoTranscript` — Echo Transcript to Chat
+   > 2. `tools.media.audio.echoFormat` — Transcript Echo Format
+   > Which one did you mean?
+4. If zero matches are found, ask the user to clarify. Suggest relevant
+   top-level groups they can browse.
+5. Once a single path is identified, state it to the user and proceed
+   to Step 1.
 
 ### Phase 1: Apply (via `gateway` tool)
 
@@ -149,9 +179,24 @@ saved — it won't survive a restart. They can retry `set_config` later.
 The tool returns save status and progress information.
 Report success/failure to the user.
 
+## Worked example: intent resolution
+
+User says: "turn off transcript echo"
+
+**Step 0:** Matches quick-reference "transcript echo, STT echo" ->
+`tools.media.audio.echoTranscript` (boolean).
+
+"I'll set `tools.media.audio.echoTranscript` to `false`."
+
+**Steps 1-6:** proceed as normal with path
+`tools.media.audio.echoTranscript` and value `false`.
+
 ## Worked example: single path
 
 User says: "change the model to google/gemini-3-flash"
+
+**Step 0:** Matches quick-reference "primary model, switch model" ->
+`agents.defaults.model.primary`.
 
 **Step 1+2** (parallel):
 ```
@@ -193,6 +238,11 @@ set_config(
 
 User says: "switch to gemini-3-flash with claude-sonnet as fallback, and
 enable streaming on Telegram"
+
+**Step 0:** Matches multiple quick-reference entries:
+- "primary model" -> `agents.defaults.model.primary`
+- "fallback models" -> `agents.defaults.model.fallbacks`
+- "telegram streaming" -> `channels.telegram.streaming`
 
 **Step 1+2** (parallel — look up each path + fetch config):
 ```
@@ -249,3 +299,89 @@ set_config(
 - Arrays are replaced wholesale — merge-patch has no array-append semantics.
 - The `gateway` tool enforces protected paths (`tools.exec.ask`, `tools.exec.security`)
   that cannot be changed via agent config mutations.
+
+## Config quick-reference
+
+Use this table to resolve natural-language intents to config paths.
+If the intent doesn't match any row, fall back to `config.schema.lookup`
+to browse the relevant top-level group (Step 0).
+
+### Models
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| primary model, switch model, change model | agents.defaults.model.primary | string |
+| fallback models, backup model | agents.defaults.model.fallbacks | string[] |
+| image model, vision model | agents.defaults.imageModel.primary | string |
+| image generation model | agents.defaults.imageGenerationModel.primary | string |
+| pdf model | agents.defaults.pdfModel.primary | string |
+
+### Channels — streaming & toggles
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| telegram streaming | channels.telegram.streaming | off/partial/block/progress |
+| discord streaming | channels.discord.streaming | off/partial/block/progress |
+| slack streaming | channels.slack.streaming | off/partial/block/progress |
+| enable/disable telegram | channels.telegram.enabled | boolean |
+| enable/disable discord | channels.discord.enabled | boolean |
+| enable/disable slack | channels.slack.enabled | boolean |
+| enable/disable imessage | channels.imessage.enabled | boolean |
+| telegram parse mode, formatting | channels.telegram.parseMode | string |
+
+### Audio & media
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| transcript echo, STT echo, echo transcription | tools.media.audio.echoTranscript | boolean |
+| transcript echo format | tools.media.audio.echoFormat | string |
+| audio understanding, audio scope | tools.media.audio.scope | string |
+| image understanding | tools.media.image.enabled | boolean |
+| video understanding | tools.media.video.enabled | boolean |
+| link understanding, link preview | tools.links.enabled | boolean |
+| max links per turn | tools.links.maxLinks | number |
+
+### Talk / TTS
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| TTS provider, talk provider | talk.provider | string |
+| interrupt on speech | talk.interruptOnSpeech | boolean |
+| silence timeout | talk.silenceTimeoutMs | number |
+
+### Session & reset
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| session scope | session.scope | per-sender/global |
+| DM session scope | session.dmScope | string |
+| reset mode, reset schedule | session.reset.mode | daily/idle |
+| daily reset hour | session.reset.atHour | number (0-23) |
+| idle reset minutes | session.reset.idleMinutes | number |
+| reset triggers, reset words | session.resetTriggers | string[] |
+| typing indicator | session.typingMode | never/instant/thinking/message |
+
+### Tools
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| web search | tools.web.search.enabled | boolean |
+| web fetch | tools.web.fetch.enabled | boolean |
+| shell execution, exec | tools.exec.enabled | boolean |
+| browser, browser automation | browser.enabled | boolean |
+| headless browser | browser.headless | boolean |
+| agent-to-agent calls | tools.agentToAgent.enabled | boolean |
+
+### Agent identity
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| assistant name, bot name | ui.assistant.name | string |
+| assistant avatar | ui.assistant.avatar | string |
+
+### Memory
+
+| Intent keywords | Path | Type |
+|---|---|---|
+| memory search | agents.defaults.memorySearch.enabled | boolean |
+| memory citations | memory.citations | auto/on/off |
