@@ -114,8 +114,8 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
 
         config.agents.list.push(newAgent);
         writeConfig(config);
-        log.info(`coding_agent_add: added "${name}" (ACP: ${nodeName || "no"})`);
-        return textResult(`Added agent "${name}" (ACP: ${nodeName || "no"}).`);
+        log.info(`coding_agent_add: added "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "n/a"})`);
+        return textResult(`Added agent "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "local"}).`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.error(`coding_agent_add failed: ${msg}`);

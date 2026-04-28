@@ -1,6 +1,6 @@
 // Caches AcpRuntimeHandle objects by sessionKey for session reuse.
 // When the same conversation calls claude_code multiple times,
-// the cached session keeps Claude Code's conversation context.
+// the cached session keeps the coding agent's conversation context.
 
 import type { AcpRuntimeHandle } from "openclaw/plugin-sdk/remote-acpx";
 import { isAcpNodeConnected } from "openclaw/plugin-sdk/remote-acpx";
@@ -28,7 +28,7 @@ const TTL_MS = 30 * 60 * 1000; // 30 minutes
 export class SessionManager {
   /**
    * Get existing session or create a new one.
-   * Reuses cached session if: same workspace, node still connected.
+   * Reuses cached session if: same workspace, same agent variant, node still connected.
    * Otherwise spawns a new session.
    */
   async getOrCreate(
