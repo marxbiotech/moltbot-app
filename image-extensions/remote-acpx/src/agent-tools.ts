@@ -82,26 +82,29 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
     label: "Add Coding Agent",
     description:
       "Add a new coding agent to the roster. " +
-      "For remote ACP agents, provide nodeName to route via the paired node.",
+      "For remote ACP agents, provide nodeName to route via the paired node. " +
+      "Use the agent parameter to specify the ACP agent variant (e.g. 'claude', 'codex'); defaults to 'claude'.",
     parameters: Type.Object({
       name: Type.String({ description: "Agent identifier (used as id)" }),
       path: Type.String({ description: "Workspace path (local) or remote cwd (when nodeName is set)" }),
       nodeName: Type.Optional(Type.String({ description: "Target node displayName for ACP routing" })),
       model: Type.Optional(Type.String({ description: "Model override for this agent" })),
+      agent: Type.Optional(Type.String({ description: "ACP agent variant (default: 'claude')" })),
     }),
     async execute(_toolCallId, params) {
-      const { name, path, nodeName, model } = params as {
+      const { name, path, nodeName, model, agent } = params as {
         name: string;
         path: string;
         nodeName?: string;
         model?: string;
+        agent?: string;
       };
       try {
         const config = readConfig();
         const newAgent: AgentEntry = { id: name, name };
 
         if (nodeName) {
-          newAgent.runtime = { type: "acp", acp: { agent: "claude", cwd: path, nodeName } };
+          newAgent.runtime = { type: "acp", acp: { agent: agent || "claude", cwd: path, nodeName } };
         } else {
           newAgent.workspace = path;
         }
@@ -111,8 +114,8 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
 
         config.agents.list.push(newAgent);
         writeConfig(config);
-        log.info(`coding_agent_add: added "${name}" (ACP: ${nodeName || "no"})`);
-        return textResult(`Added agent "${name}" (ACP: ${nodeName || "no"}).`);
+        log.info(`coding_agent_add: added "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "n/a"})`);
+        return textResult(`Added agent "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "local"}).`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.error(`coding_agent_add failed: ${msg}`);

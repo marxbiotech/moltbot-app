@@ -1,6 +1,6 @@
 // Caches AcpRuntimeHandle objects by sessionKey for session reuse.
 // When the same conversation calls claude_code multiple times,
-// the cached session keeps Claude Code's conversation context.
+// the cached session keeps the coding agent's conversation context.
 
 import type { AcpRuntimeHandle } from "openclaw/plugin-sdk/remote-acpx";
 import { isAcpNodeConnected } from "openclaw/plugin-sdk/remote-acpx";
@@ -11,6 +11,7 @@ export type CachedSession = {
   handle: AcpRuntimeHandle;
   lastUsedAt: number;
   workspace: string;
+  agent: string;
 };
 
 // Use Symbol.for to share state across jiti module reloads (same pattern as event-router).
@@ -27,7 +28,7 @@ const TTL_MS = 30 * 60 * 1000; // 30 minutes
 export class SessionManager {
   /**
    * Get existing session or create a new one.
-   * Reuses cached session if: same workspace, node still connected.
+   * Reuses cached session if: same workspace, same agent variant, node still connected.
    * Otherwise spawns a new session.
    */
   async getOrCreate(
@@ -38,19 +39,20 @@ export class SessionManager {
     const cached = sessions.get(sessionKey);
 
     if (cached) {
-      // Validate cached session: workspace must match and node must be connected
+      // Validate cached session: workspace + agent must match and node must be connected
       const nodeId = getNodeIdFromHandle(cached.handle);
       if (
         cached.workspace === opts.cwd &&
+        cached.agent === opts.agent &&
         nodeId &&
         isAcpNodeConnected(nodeId)
       ) {
         cached.lastUsedAt = Date.now();
-        log.info(`session reused: key=${sessionKey} workspace=${opts.cwd}`);
+        log.info(`session reused: key=${sessionKey} agent=${opts.agent} workspace=${opts.cwd}`);
         return cached.handle;
       }
       // Stale session — clean up
-      log.info(`session stale: key=${sessionKey} (workspace changed or node disconnected)`);
+      log.info(`session stale: key=${sessionKey} (workspace/agent changed or node disconnected)`);
       sessions.delete(sessionKey);
       try {
         await runtime.close({ handle: cached.handle, reason: "stale" });
@@ -72,6 +74,7 @@ export class SessionManager {
       handle,
       lastUsedAt: Date.now(),
       workspace: opts.cwd,
+      agent: opts.agent,
     });
 
     return handle;
