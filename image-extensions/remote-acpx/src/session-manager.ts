@@ -39,7 +39,7 @@ export class SessionManager {
     const cached = sessions.get(sessionKey);
 
     if (cached) {
-      // Validate cached session: workspace must match and node must be connected
+      // Validate cached session: workspace + agent must match and node must be connected
       const nodeId = getNodeIdFromHandle(cached.handle);
       if (
         cached.workspace === opts.cwd &&
