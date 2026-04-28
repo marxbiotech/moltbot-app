@@ -11,6 +11,7 @@ export type CachedSession = {
   handle: AcpRuntimeHandle;
   lastUsedAt: number;
   workspace: string;
+  agent: string;
 };
 
 // Use Symbol.for to share state across jiti module reloads (same pattern as event-router).
@@ -42,15 +43,16 @@ export class SessionManager {
       const nodeId = getNodeIdFromHandle(cached.handle);
       if (
         cached.workspace === opts.cwd &&
+        cached.agent === opts.agent &&
         nodeId &&
         isAcpNodeConnected(nodeId)
       ) {
         cached.lastUsedAt = Date.now();
-        log.info(`session reused: key=${sessionKey} workspace=${opts.cwd}`);
+        log.info(`session reused: key=${sessionKey} agent=${opts.agent} workspace=${opts.cwd}`);
         return cached.handle;
       }
       // Stale session — clean up
-      log.info(`session stale: key=${sessionKey} (workspace changed or node disconnected)`);
+      log.info(`session stale: key=${sessionKey} (workspace/agent changed or node disconnected)`);
       sessions.delete(sessionKey);
       try {
         await runtime.close({ handle: cached.handle, reason: "stale" });
@@ -72,6 +74,7 @@ export class SessionManager {
       handle,
       lastUsedAt: Date.now(),
       workspace: opts.cwd,
+      agent: opts.agent,
     });
 
     return handle;

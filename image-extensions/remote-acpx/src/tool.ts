@@ -68,14 +68,14 @@ export function registerCodingTool(
     name: "claude_code",
     label: "Claude Code",
     description:
-      "Execute Claude Code CLI on the remote Mac to perform coding tasks. " +
+      "Execute a coding agent CLI on the remote Mac to perform coding tasks. " +
       "Returns a structured result with Operations (tool calls made) and Message (developer reply). " +
       "Use this when the user needs code changes, codebase exploration, " +
       "git operations, tests, builds, or any task requiring source code access.",
     parameters: Type.Object({
       prompt: Type.String({
         description:
-          "Complete technical instruction for Claude Code (English). " +
+          "Complete technical instruction for the coding agent (English). " +
           "Include specific file paths, module names, function names, and expected behavior.",
       }),
       cwd: Type.Optional(
@@ -83,6 +83,13 @@ export function registerCodingTool(
           description:
             "Absolute path to the working directory on the remote Mac. " +
             "If omitted, uses the session's existing cwd.",
+        }),
+      ),
+      agent: Type.Optional(
+        Type.String({
+          description:
+            "ACP agent variant (e.g. 'claude', 'codex'). " +
+            "If omitted, uses the plugin default.",
         }),
       ),
     }),
@@ -96,14 +103,15 @@ export function registerCodingTool(
         };
       }
 
-      const { prompt, cwd } = params as { prompt: string; cwd?: string };
+      const { prompt, cwd, agent } = params as { prompt: string; cwd?: string; agent?: string };
+      const resolvedAgent = agent || config.defaultAgent;
       const sessionKey = ctx.sessionKey || "default";
 
       try {
-        log.info(`execute: sessionKey=${sessionKey} cwd=${cwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
+        log.info(`execute: sessionKey=${sessionKey} agent=${resolvedAgent} cwd=${cwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
 
         const handle = await sessionMgr.getOrCreate(sessionKey, runtime, {
-          agent: config.defaultAgent,
+          agent: resolvedAgent,
           cwd: cwd || "",
         });
 
@@ -135,10 +143,10 @@ export function registerCodingTool(
               hint = "\n\nNo node is connected. Start one with `make node` in the overlay directory.";
               break;
             case "ACP_SESSION_INIT_FAILED":
-              hint = "\n\nFailed to start a Claude Code session. Check that the node is running and try again.";
+              hint = "\n\nFailed to start a coding agent session. Check that the node is running and try again.";
               break;
             case "ACP_TURN_FAILED":
-              hint = "\n\nFailed to send the request to Claude Code. The node may have disconnected — try again.";
+              hint = "\n\nFailed to send the request to the coding agent. The node may have disconnected — try again.";
               break;
           }
         }

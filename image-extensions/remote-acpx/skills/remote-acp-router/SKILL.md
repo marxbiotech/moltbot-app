@@ -1,12 +1,12 @@
 ---
 name: remote-acp-router
-description: Route coding tasks to a remote Claude Code CLI agent on a paired OpenClaw node via the claude_code tool. Manages agent roster and session lifecycle.
+description: Route coding tasks to a remote coding agent (Claude, Codex, etc.) on a paired OpenClaw node via the claude_code tool. Manages agent roster, variant selection, and session lifecycle.
 user-invocable: false
 ---
 
 # Remote ACP Router
 
-When user intent involves coding tasks that require source code access, route through the `claude_code` tool on a paired remote OpenClaw node. You act as a PM / Tech Lead — understand high-level intent, decompose into executable tasks, delegate to Claude Code, and track progress and quality.
+When user intent involves coding tasks that require source code access, route through the `claude_code` tool on a paired remote OpenClaw node. You act as a PM / Tech Lead — understand high-level intent, decompose into executable tasks, delegate to the appropriate coding agent, and track progress and quality.
 
 ## Intent detection
 
@@ -23,9 +23,10 @@ Do not trigger when:
 - Casual conversation or non-technical questions
 - User is already using `/acp` manually (do not overlap)
 
-## Alias
+## Aliases
 
-When users say "cc", treat it as "Claude Code". For example: "ask cc which branch we're on" = call `claude_code` tool.
+- When users say "cc", treat it as "Claude Code" (agent variant: `claude`).
+- When users say "cx", treat it as "Codex" (agent variant: `codex`).
 
 ## Your responsibilities
 
@@ -50,7 +51,7 @@ After receiving tool results, report to the user in Traditional Chinese:
 
 ### 3. Do not relay raw output
 
-Users do not need full diffs, logs, or raw Claude Code responses. Only quote key output fragments when the user asks for details.
+Users do not need full diffs, logs, or raw agent responses. Only quote key output fragments when the user asks for details.
 
 ### 4. Track state and continuity
 
@@ -69,30 +70,35 @@ Use the following tools to manage the agent roster. Always call `coding_agents_l
 | Tool | Purpose |
 |------|---------|
 | `coding_agents_list` | List all agents with effective cwd, runtime info, isDefault flag |
-| `coding_agent_add` | Add a new agent (local or ACP remote) |
+| `coding_agent_add` | Add a new agent (local or ACP remote); supports `agent` parameter for variant |
 | `coding_agent_remove` | Remove an agent by id |
 | `coding_agent_sync` | Copy workspace/runtime config from source to target agent |
 
 Cache the `coding_agents_list` result within the session. Re-query only after add/remove/sync operations.
 
-## CWD decision flow
+## CWD and variant decision flow
 
 1. **Get agent list** (once per conversation via `coding_agents_list`)
 2. **User specifies a project** -> match by `id` or keywords in `cwd` path
 3. **User mentions a specific file or module** -> infer project from context, match agent list
-4. **Continuing a previous task** -> reuse the last `cwd`
-5. **Cannot determine** -> list available agents and ask the user to choose
+4. **Variant disambiguation** — when multiple agents share the same `cwd` but have different `runtime.acp.agent` values:
+   - User explicitly named a variant (e.g. "use Codex", "cx", "cc") → select the matching entry
+   - User did not specify → prefer the entry with `isDefault: true`, then fall back to `claude`
+   - Still ambiguous → list available variants and ask the user to choose
+5. **Continuing a previous task** -> reuse the last `cwd` and variant
+6. **Cannot determine** -> list available agents and ask the user to choose
 
 **Do not guess paths**: if no agent matches, ask the user.
 
-Agents sharing the same `cwd` share a session context. When the user says "make Repo X and Repo Y share a session", use `coding_agent_sync` to synchronize them.
+When calling `claude_code`, pass the `agent` parameter if the resolved variant differs from the plugin default. Omit it when using the default variant.
 
 ## Session reuse logic
 
 `claude_code` tool supports session reuse. Use sessions to maintain context:
 
-- **Consecutive operations on same project**: reuse session
+- **Consecutive operations on same project and variant**: reuse session
 - **Switching to a different project**: new session
+- **Switching variant on same project** (e.g. Claude → Codex): new session (different variants cannot share sessions)
 - **Previous operation failed or stuck**: new session
 - **User says "start over" / "reset"**: new session
 
@@ -111,3 +117,8 @@ User: "moltbot add a new env var FEATURE_FLAG"
 User: "what changed in openclaw recently?"
 -> Query agent list, match agent whose cwd contains `openclaw`
 > Run `git log --oneline -20` and summarize the recent changes.
+
+User: "用 codex 看一下 moltbot-app 的 test 有沒有過"
+-> Query agent list, find entry with cwd containing `moltbot-app` and `runtime.acp.agent === "codex"`
+-> Call `claude_code` with `agent: "codex"` and the matched cwd
+> Run the test suite and report pass/fail results.
