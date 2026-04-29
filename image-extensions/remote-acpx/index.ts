@@ -23,7 +23,7 @@ function getOrCreateState(pluginConfig: unknown): ServiceState {
 const plugin = {
   id: "remote-acpx",
   name: "Remote ACPX",
-  description: "ACP runtime backend dispatching to a paired Mac node via WebSocket, with LLM-invocable Claude Code tool.",
+  description: "ACP runtime backend dispatching to a paired Mac node via WebSocket, with LLM-invocable run_coder tool.",
   register(api: OpenClawPluginApi) {
     const state = getOrCreateState(api.pluginConfig);
 
@@ -35,7 +35,7 @@ const plugin = {
       }),
     );
 
-    // Register claude_code tool now (register phase) with lazy deps.
+    // Register run_coder tool now (register phase) with lazy deps.
     // Tool execute() reads runtime/config from state at call time.
     registerCodingTool(api, {
       getRuntime: () => state.runtime,
