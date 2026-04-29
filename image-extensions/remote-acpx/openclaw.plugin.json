@@ -1,7 +1,7 @@
 {
   "id": "remote-acpx",
   "name": "Remote ACPX",
-  "description": "ACP runtime backend dispatching to a paired node via WebSocket, with LLM-invocable Claude Code tool.",
+  "description": "ACP runtime backend dispatching to a paired node via WebSocket, with LLM-invocable run_coder tool.",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",

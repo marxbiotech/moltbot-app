@@ -1,12 +1,12 @@
 ---
 name: remote-acp-router
-description: Route coding tasks to a remote coding agent (Claude, Codex, etc.) on a paired OpenClaw node via the claude_code tool. Manages agent roster, variant selection, and session lifecycle.
+description: Route coding tasks to a remote coding agent (Claude, Codex, etc.) on a paired OpenClaw node via the run_coder tool. Manages agent roster, variant selection, and session lifecycle.
 user-invocable: false
 ---
 
 # Remote ACP Router
 
-When user intent involves coding tasks that require source code access, route through the `claude_code` tool on a paired remote OpenClaw node. You act as a PM / Tech Lead — understand high-level intent, decompose into executable tasks, delegate to the appropriate coding agent, and track progress and quality.
+When user intent involves coding tasks that require source code access, route through the `run_coder` tool on a paired remote OpenClaw node. You act as a PM / Tech Lead — understand high-level intent, decompose into executable tasks, delegate to the appropriate coding agent, and track progress and quality.
 
 ## Intent detection
 
@@ -74,7 +74,7 @@ On `INVOCATION_ERROR`, suggest starting a new session. On `RESOLUTION_FAILED`, l
 
 ### 1. Decompose and delegate
 
-The user speaks high-level requirements (often in Chinese); you translate into precise English technical prompts for `claude_code`.
+The user speaks high-level requirements (often in Chinese); you translate into precise English technical prompts for `run_coder`.
 
 - Assess scope: single-file change vs cross-module refactor
 - Include specific file paths, module names, function names, expected behavior
@@ -107,7 +107,7 @@ For multi-step tasks, proactively track completed and pending steps without requ
 
 ## Agent roster management
 
-Use the following tools to manage the agent roster. Always call `coding_agents_list` before the first `claude_code` invocation in a conversation to discover available agents and their working directories.
+Use the following tools to manage the agent roster. Always call `coding_agents_list` before the first `run_coder` invocation in a conversation to discover available agents and their working directories.
 
 | Tool | Purpose |
 |------|---------|
@@ -132,11 +132,11 @@ Cache the `coding_agents_list` result within the session. Re-query only after ad
 
 **Do not guess paths**: if no agent matches, ask the user.
 
-When calling `claude_code`, pass the `agent` parameter if the resolved variant differs from the plugin default. Omit it when using the default variant.
+When calling `run_coder`, pass the `agent` parameter if the resolved variant differs from the plugin default. Omit it when using the default variant.
 
 ## Session reuse logic
 
-`claude_code` tool supports session reuse. Use sessions to maintain context:
+`run_coder` tool supports session reuse. Use sessions to maintain context:
 
 - **Consecutive operations on same project and variant**: reuse session
 - **Switching to a different project**: new session
@@ -144,7 +144,7 @@ When calling `claude_code`, pass the `agent` parameter if the resolved variant d
 - **Previous operation failed or stuck**: new session
 - **User says "start over" / "reset"**: new session
 
-If `claude_code` returns a `session_id`, remember it. Pass it on the next call to the same project.
+Session reuse is automatic. Consecutive calls with the same `cwd` and `agent` variant reuse the existing session context without any additional parameters.
 
 ## Prompt writing examples
 
@@ -162,5 +162,5 @@ User: "what changed in openclaw recently?"
 
 User: "用 codex 看一下 moltbot-app 的 test 有沒有過"
 -> Query agent list, find entry with cwd containing `moltbot-app` and `runtime.acp.agent === "codex"`
--> Call `claude_code` with `agent: "codex"` and the matched cwd
+-> Call `run_coder` with `agent: "codex"` and the matched cwd
 > Run the test suite and report pass/fail results.

@@ -1,4 +1,4 @@
-// Tool registration for claude_code — the LLM-invocable Claude Code tool.
+// Tool registration for run_coder — the LLM-invocable coding task dispatch tool.
 // Uses a tool factory to access sessionKey from OpenClawPluginToolContext.
 // Must be called during plugin register() phase (not service start()) so the
 // tool appears in the agent's tool catalog. Runtime and config are resolved
@@ -61,14 +61,14 @@ export function registerCodingTool(
 ): void {
   const sessionMgr = new SessionManager();
 
-  log.info(`registerCodingTool: registering claude_code tool`);
+  log.info(`registerCodingTool: registering run_coder tool`);
 
   // Tool factory — invoked per agent turn with context containing sessionKey
   api.registerTool((ctx) => ({
-    name: "claude_code",
-    label: "Claude Code",
+    name: "run_coder",
+    label: "Run Coder",
     description:
-      "Execute a coding agent CLI on the remote Mac to perform coding tasks. " +
+      "Run a remote coding agent (Claude Code, Codex, etc.) on the paired Mac to perform a coding task. " +
       "Returns a structured result with Operations (tool calls made) and Message (developer reply). " +
       "Use this when the user needs code changes, codebase exploration, " +
       "git operations, tests, builds, or any task requiring source code access.",

@@ -1,5 +1,5 @@
 // Caches AcpRuntimeHandle objects by sessionKey for session reuse.
-// When the same conversation calls claude_code multiple times,
+// When the same conversation calls run_coder multiple times,
 // the cached session keeps the coding agent's conversation context.
 
 import type { AcpRuntimeHandle } from "openclaw/plugin-sdk/remote-acpx";

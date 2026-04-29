@@ -1,7 +1,7 @@
 // Service lifecycle for remote-acpx extension.
 // Registers the AcpRuntime backend and the node event handler on start.
 // Unregisters all on stop.
-// claude_code tool is registered in register() phase (index.ts) with lazy deps.
+// run_coder tool is registered in register() phase (index.ts) with lazy deps.
 
 import type {
   OpenClawPluginService,
@@ -35,7 +35,7 @@ export function resolveConfig(rawConfig: unknown): FullConfig {
   };
 }
 
-/** Shared mutable state — set by service start(), read by claude_code tool execute(). */
+/** Shared mutable state — set by service start(), read by run_coder tool execute(). */
 export type ServiceState = {
   runtime: RemoteAcpxRuntime | null;
   config: FullConfig;
@@ -49,7 +49,7 @@ export function createRemoteAcpxService(params: {
     id: "remote-acpx-runtime",
     async start(ctx: OpenClawPluginServiceContext): Promise<void> {
       const config = resolveConfig(params.pluginConfig);
-      // Update shared state so claude_code tool can access runtime and config
+      // Update shared state so run_coder tool can access runtime and config
       Object.assign(params.state, { config });
 
       const runtime = new RemoteAcpxRuntime(config, { logger: ctx.logger });
