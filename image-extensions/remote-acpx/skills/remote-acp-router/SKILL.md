@@ -28,6 +28,48 @@ Do not trigger when:
 - When users say "cc", treat it as "Claude Code" (agent variant: `claude`).
 - When users say "cx", treat it as "Codex" (agent variant: `codex`).
 
+## Skill and plugin resolution priority
+
+When a coding channel receives a task, resolve the execution target using the following priority chain. Stop at the first match.
+
+### Resolution chain
+
+| Priority | Target | When to use |
+|----------|--------|-------------|
+| 1 | **Installed skill / plugin** | A locally installed skill or plugin directly handles the intent (e.g., `manage-config`, `manage-secrets`). Prefer these — they encode domain-specific knowledge and guardrails. |
+| 2 | **ACP / harness command** (`claude_code`) | No skill covers the intent. Route to the remote coding agent for general-purpose code tasks. |
+| 3 | **Repo-local script / Make target** | The task maps to an existing script (e.g., `make deploy`, `scripts/lint.sh`). Instruct the coding agent to invoke the script, or ask the user to run it locally if it requires interactive input. |
+
+### Pre-invocation verification
+
+Before dispatching to any target:
+
+1. **Confirm target exists** — verify the skill is installed, the agent is reachable (via `coding_agents_list`), or the script / Makefile target exists in the repo.
+2. **Check scope alignment** — ensure the task falls within the target's documented capabilities. Do not route a secrets-management task to a generic coding agent if `manage-secrets` is available.
+3. **Validate parameters** — confirm all required parameters (cwd, agent variant, file paths) are resolved. Do not invoke with placeholder values.
+4. **User confirmation for destructive actions** — if the task involves destructive operations (force push, database migration, production deploy), confirm with the user before dispatching.
+
+### Failure taxonomy
+
+When an invocation fails, classify the error and present a clear user-facing message:
+
+| Category | Cause | User-facing message pattern |
+|----------|-------|-----------------------------|
+| `RESOLUTION_FAILED` | No skill, agent, or script matches the intent | 「找不到合適的工具來處理這個請求。請確認相關的 skill 或 agent 是否已安裝。」 |
+| `AGENT_UNREACHABLE` | Remote node is offline or `coding_agents_list` returns empty | 「遠端節點目前無法連線。請確認節點狀態後再試。」 |
+| `INVOCATION_ERROR` | Tool call returned an error (timeout, crash, permission denied) | 「執行過程中發生錯誤：{error_summary}。建議開啟新的 session 重試。」 |
+| `SCOPE_MISMATCH` | Task routed to a target that cannot handle it | 「這個任務超出了 {target} 的處理範圍。正在嘗試替代方案…」 |
+
+On `INVOCATION_ERROR`, suggest starting a new session. On `RESOLUTION_FAILED`, list available skills and agents so the user can choose manually.
+
+### Anti-patterns
+
+- **Bypassing installed skills** — Do not route to `claude_code` for tasks that a specialized skill already handles (e.g., sending config changes through the generic agent when `manage-config` is available). Skills encode validated workflows; bypassing them loses guardrails.
+- **Guessing script paths** — Do not fabricate script paths or Make targets. Verify existence through the agent or ask the user.
+- **Silent fallback** — Do not silently fall through the priority chain. If the preferred target is unavailable, inform the user before trying the next level.
+- **Retry loops** — Do not retry the same failed invocation more than once. Classify the failure, report it, and suggest an alternative approach.
+- **Mixing resolution levels** — Do not combine a skill invocation with a direct agent call for the same logical task. Pick one target and commit to it.
+
 ## Your responsibilities
 
 ### 1. Decompose and delegate
