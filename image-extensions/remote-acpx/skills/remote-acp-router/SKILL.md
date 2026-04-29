@@ -102,7 +102,7 @@ When calling `run_coder`, pass the `agent` parameter if the resolved variant dif
 - **Previous operation failed or stuck**: new session
 - **User says "start over" / "reset"**: new session
 
-If `run_coder` returns a `session_id`, remember it. Pass it on the next call to the same project.
+Session reuse is automatic. Consecutive calls with the same `cwd` and `agent` variant reuse the existing session context without any additional parameters.
 
 ## Prompt writing examples
 
