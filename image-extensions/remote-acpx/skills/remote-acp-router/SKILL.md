@@ -37,7 +37,7 @@ When a coding channel receives a task, resolve the execution target using the fo
 If the user explicitly designated a registered executor alias — `cc`, `claude`, `claude code`, `cx`, `codex`, or any agent name from the Aliases section — in executor position (e.g. "讓 cc 去執行 …", "用 codex 跑 …", "claude code 幫我做 …"), **skip the resolution chain entirely**:
 
 1. Resolve only the executor alias to the correct agent variant (e.g. `cc` → `claude`).
-2. Pass the **entire action clause** — including any named skill, tool, or slash-command text — to `run_coder` as opaque delegation payload. Do not locally resolve, validate, substitute, or execute the referenced skill/tool.
+2. Pass the **entire action clause** — including any named skill, tool, or slash-command text — to `run_coder`. The clause should still be translated into an English coder prompt (per the Decompose and delegate section), but treated as an opaque instruction for the remote agent: do not locally resolve, validate, substitute, or execute the referenced skill/tool.
 3. If the designated agent is unreachable or `coding_agents_list` returns no match for that variant, surface the failure to the user. **Do not silently fall back to local execution or a different agent.** Require explicit user confirmation before attempting any alternative.
 
 This override exists because the user's intent is to delegate to a specific remote agent that has its own skill/tool catalog. Local resolution would incorrectly intercept and substitute what should be an opaque instruction for that agent.
