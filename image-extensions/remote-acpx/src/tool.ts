@@ -11,6 +11,7 @@ import { isAcpRuntimeError } from "openclaw/plugin-sdk/remote-acpx";
 import type { RemoteAcpxRuntime } from "./runtime.js";
 import { SessionManager } from "./session-manager.js";
 import { collectTurnOutput, type CollectedResult, type OperationEntry } from "./output-collector.js";
+import { resolveAgentById } from "./agent-roster.js";
 import { log } from "./log.js";
 
 export type CodingToolConfig = {
@@ -78,17 +79,27 @@ export function registerCodingTool(
           "Complete technical instruction for the coding agent (English). " +
           "Include specific file paths, module names, function names, and expected behavior.",
       }),
+      agentId: Type.Optional(
+        Type.String({
+          description:
+            "Agent id from the roster (e.g. 'store', 'admin', 'moltbot-env'). " +
+            "Resolves cwd and agent variant automatically from agent config. " +
+            "Preferred over explicit cwd/agent — use this when routing to a known agent.",
+        }),
+      ),
       cwd: Type.Optional(
         Type.String({
           description:
             "Absolute path to the working directory on the remote Mac. " +
-            "If omitted, uses the session's existing cwd.",
+            "Overrides the cwd resolved from agentId. " +
+            "If both agentId and cwd are omitted, uses the session's existing cwd.",
         }),
       ),
       agent: Type.Optional(
         Type.String({
           description:
             "ACP agent variant (e.g. 'claude', 'codex'). " +
+            "Overrides the variant resolved from agentId. " +
             "If omitted, uses the plugin default.",
         }),
       ),
@@ -103,16 +114,31 @@ export function registerCodingTool(
         };
       }
 
-      const { prompt, cwd, agent } = params as { prompt: string; cwd?: string; agent?: string };
-      const resolvedAgent = agent || config.defaultAgent;
+      const { prompt, agentId, cwd, agent } = params as {
+        prompt: string; agentId?: string; cwd?: string; agent?: string;
+      };
+
+      // Resolve cwd and variant: explicit params > agentId lookup > defaults
+      let resolvedCwd = cwd || "";
+      let resolvedAgent = agent || "";
+      if (agentId && (!cwd || !agent)) {
+        const roster = resolveAgentById(agentId);
+        if (roster) {
+          if (!cwd) resolvedCwd = roster.cwd;
+          if (!agent && roster.agent) resolvedAgent = roster.agent;
+        } else {
+          log.warn(`execute: agentId="${agentId}" not found in roster, falling back to defaults`);
+        }
+      }
+      if (!resolvedAgent) resolvedAgent = config.defaultAgent;
       const sessionKey = ctx.sessionKey || "default";
 
       try {
-        log.info(`execute: sessionKey=${sessionKey} agent=${resolvedAgent} cwd=${cwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
+        log.info(`execute: sessionKey=${sessionKey} agentId=${agentId || "(none)"} agent=${resolvedAgent} cwd=${resolvedCwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
 
         const handle = await sessionMgr.getOrCreate(sessionKey, runtime, {
           agent: resolvedAgent,
-          cwd: cwd || "",
+          cwd: resolvedCwd,
         });
 
         const events = runtime.runTurn({

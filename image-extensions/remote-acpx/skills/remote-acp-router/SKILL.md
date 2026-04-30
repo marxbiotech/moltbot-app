@@ -128,21 +128,30 @@ Use the following tools to manage the agent roster. Always call `coding_agents_l
 
 Cache the `coding_agents_list` result within the session. Re-query only after add/remove/sync operations.
 
-## CWD and variant decision flow
+## Agent selection and `agentId`
 
-1. **Get agent list** (once per conversation via `coding_agents_list`)
-2. **User specifies a project** -> match by `id` or keywords in `cwd` path
-3. **User mentions a specific file or module** -> infer project from context, match agent list
-4. **Variant disambiguation** — when multiple agents share the same `cwd` but have different `runtime.acp.agent` values:
-   - User explicitly named a variant (e.g. "use Codex", "cx", "cc") → select the matching entry
-   - User did not specify → prefer the entry with `isDefault: true`, then fall back to `claude`
-   - Still ambiguous → list available variants and ask the user to choose
-5. **Continuing a previous task** -> reuse the last `cwd` and variant
-6. **Cannot determine** -> list available agents and ask the user to choose
+`run_coder` accepts an `agentId` parameter that automatically resolves the cwd and agent variant from the configured roster. **Always prefer `agentId` over explicit `cwd`/`agent` parameters.**
 
-**Do not guess paths**: if no agent matches, ask the user.
+### Decision flow
 
-When calling `run_coder`, pass the `agent` parameter if the resolved variant differs from the plugin default. Omit it when using the default variant.
+1. **Channel system prompt names the target agent** (e.g. "派送至 store agent 處理") → use that id directly: `run_coder({ agentId: "store", prompt: "…" })`
+2. **User specifies a project** → match by agent `id` or keywords in channel context, pass the matched `agentId`
+3. **User mentions a specific file or module** → infer project from context, resolve `agentId`
+4. **Variant override** — user explicitly named a variant (e.g. "use Codex", "cx"):
+   - Pass `agent: "codex"` alongside `agentId` to override the roster default
+5. **Continuing a previous task** → reuse the last `agentId` and variant
+6. **Cannot determine** → call `coding_agents_list` to discover available agents, then ask the user to choose
+
+**Do not guess paths or ids**: if no agent matches, ask the user.
+
+### When to use `coding_agents_list`
+
+Call `coding_agents_list` only when:
+- The target agent is ambiguous (no channel hint, no user project mention)
+- After `coding_agent_add` / `coding_agent_remove` / `coding_agent_sync` operations
+- To display available agents to the user
+
+Do NOT call it as a prerequisite for every `run_coder` invocation — `agentId` makes roster lookup automatic.
 
 ## Session reuse logic
 
@@ -154,23 +163,26 @@ When calling `run_coder`, pass the `agent` parameter if the resolved variant dif
 - **Previous operation failed or stuck**: new session
 - **User says "start over" / "reset"**: new session
 
-Session reuse is automatic. Consecutive calls with the same `cwd` and `agent` variant reuse the existing session context without any additional parameters.
+Session reuse is automatic. Consecutive calls with the same `agentId` (and therefore the same resolved cwd + variant) reuse the existing session context without any additional parameters.
 
 ## Prompt writing examples
 
 User: "env deploy script add a dry-run flag"
--> Query agent list, match agent whose cwd contains `env`, use its `cwd`
+-> Channel context or user mention identifies `moltbot-env` agent
+-> `run_coder({ agentId: "moltbot-env", prompt: "…" })`
 > Add a --dry-run flag to scripts/deploy.sh. When set, execute the full pipeline (clone, merge config) but skip the actual `wrangler deploy` and `wrangler secret bulk` steps. Print what would have been executed instead. Update the usage message.
 
-User: "moltbot add a new env var FEATURE_FLAG"
--> Query agent list, match agent whose cwd contains `moltbot-app`
+User: "store 加一個新的 env var FEATURE_FLAG"
+-> Channel prompt says "派送至 store agent 處理"
+-> `run_coder({ agentId: "store", prompt: "…" })`
 > Add a new environment variable FEATURE_FLAG. Update src/gateway/env.ts to declare it, add it to wrangler.jsonc env bindings, and forward it in start-openclaw.sh if needed.
 
 User: "what changed in openclaw recently?"
--> Query agent list, match agent whose cwd contains `openclaw`
+-> No channel hint; call `coding_agents_list`, match agent whose cwd contains `openclaw`
+-> `run_coder({ agentId: "openclaw", prompt: "…" })`
 > Run `git log --oneline -20` and summarize the recent changes.
 
-User: "用 codex 看一下 moltbot-app 的 test 有沒有過"
--> Query agent list, find entry with cwd containing `moltbot-app` and `runtime.acp.agent === "codex"`
--> Call `run_coder` with `agent: "codex"` and the matched cwd
+User: "用 codex 看一下 store 的 test 有沒有過"
+-> User specifies variant override + project
+-> `run_coder({ agentId: "store", agent: "codex", prompt: "…" })`
 > Run the test suite and report pass/fail results.

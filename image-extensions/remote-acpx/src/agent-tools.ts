@@ -2,51 +2,16 @@
 // These tools let the LLM manage the agent roster (list / add / remove / sync)
 // without needing to know filesystem paths or CLI invocations.
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import {
+  type AgentEntry,
+  openclaw,
+  resolveEffectiveCwd,
+  readConfig,
+  writeConfig,
+} from "./agent-roster.js";
 import { log } from "./log.js";
-
-type AgentEntry = {
-  id: string;
-  name?: string;
-  workspace?: string;
-  model?: string;
-  isDefault?: boolean;
-  runtime?: {
-    type: string;
-    acp?: { agent?: string; cwd?: string; nodeName?: string };
-  };
-};
-
-/** Resolve openclaw config path: $OPENCLAW_STATE_DIR/openclaw.json or ~/.openclaw/openclaw.json */
-function resolveConfigPath(): string {
-  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-  const base = stateDir || path.join(os.homedir(), ".openclaw");
-  return path.join(base, "openclaw.json");
-}
-
-function openclaw(...args: string[]): string {
-  return execFileSync("openclaw", args, { encoding: "utf8", timeout: 30_000 }).trim();
-}
-
-function resolveEffectiveCwd(agent: AgentEntry): string {
-  if (agent.runtime?.type === "acp" && agent.runtime.acp?.cwd) {
-    return agent.runtime.acp.cwd;
-  }
-  return agent.workspace ?? "";
-}
-
-function readConfig(): { agents: { list: AgentEntry[] } } {
-  return JSON.parse(fs.readFileSync(resolveConfigPath(), "utf8"));
-}
-
-function writeConfig(config: unknown): void {
-  fs.writeFileSync(resolveConfigPath(), JSON.stringify(config, null, 2));
-}
 
 function textResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
