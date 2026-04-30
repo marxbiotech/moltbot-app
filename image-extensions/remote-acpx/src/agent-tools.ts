@@ -2,51 +2,16 @@
 // These tools let the LLM manage the agent roster (list / add / remove / sync)
 // without needing to know filesystem paths or CLI invocations.
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import {
+  type AgentEntry,
+  openclaw,
+  resolveEffectiveCwd,
+  readConfig,
+  writeConfig,
+} from "./agent-roster.js";
 import { log } from "./log.js";
-
-type AgentEntry = {
-  id: string;
-  name?: string;
-  workspace?: string;
-  model?: string;
-  isDefault?: boolean;
-  runtime?: {
-    type: string;
-    acp?: { agent?: string; cwd?: string; nodeName?: string };
-  };
-};
-
-/** Resolve openclaw config path: $OPENCLAW_STATE_DIR/openclaw.json or ~/.openclaw/openclaw.json */
-function resolveConfigPath(): string {
-  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-  const base = stateDir || path.join(os.homedir(), ".openclaw");
-  return path.join(base, "openclaw.json");
-}
-
-function openclaw(...args: string[]): string {
-  return execFileSync("openclaw", args, { encoding: "utf8", timeout: 30_000 }).trim();
-}
-
-function resolveEffectiveCwd(agent: AgentEntry): string {
-  if (agent.runtime?.type === "acp" && agent.runtime.acp?.cwd) {
-    return agent.runtime.acp.cwd;
-  }
-  return agent.workspace ?? "";
-}
-
-function readConfig(): { agents: { list: AgentEntry[] } } {
-  return JSON.parse(fs.readFileSync(resolveConfigPath(), "utf8"));
-}
-
-function writeConfig(config: unknown): void {
-  fs.writeFileSync(resolveConfigPath(), JSON.stringify(config, null, 2));
-}
 
 function textResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
@@ -64,10 +29,8 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
     async execute() {
       try {
         const agents: AgentEntry[] = JSON.parse(openclaw("agents", "list", "--json"));
-        for (const agent of agents) {
-          (agent as AgentEntry & { cwd: string }).cwd = resolveEffectiveCwd(agent);
-        }
-        return textResult(JSON.stringify(agents, null, 2));
+        const enriched = agents.map((a) => ({ ...a, cwd: resolveEffectiveCwd(a) }));
+        return textResult(JSON.stringify(enriched, null, 2));
       } catch (err) {
         const msg = err instanceof Error ? (err as { stderr?: string }).stderr || err.message : String(err);
         log.error(`coding_agents_list failed: ${msg}`);
@@ -81,7 +44,7 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
     name: "coding_agent_add",
     label: "Add Coding Agent",
     description:
-      "Add a new coding agent to the roster. " +
+      "Add or replace a coding agent in the roster. " +
       "For remote ACP agents, provide nodeName to route via the paired node. " +
       "Use the agent parameter to specify the ACP agent variant (e.g. 'claude', 'codex'); defaults to 'claude'.",
     parameters: Type.Object({
@@ -101,6 +64,7 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
       };
       try {
         const config = readConfig();
+        const existing = config.agents.list.findIndex((a) => a.id === name);
         const newAgent: AgentEntry = { id: name, name };
 
         if (nodeName) {
@@ -112,7 +76,12 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
           newAgent.model = model;
         }
 
-        config.agents.list.push(newAgent);
+        if (existing !== -1) {
+          log.warn(`coding_agent_add: replacing existing agent "${name}"`);
+          config.agents.list[existing] = newAgent;
+        } else {
+          config.agents.list.push(newAgent);
+        }
         writeConfig(config);
         log.info(`coding_agent_add: added "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "n/a"})`);
         return textResult(`Added agent "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "local"}).`);
