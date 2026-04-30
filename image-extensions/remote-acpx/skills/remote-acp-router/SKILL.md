@@ -25,7 +25,7 @@ Do not trigger when:
 
 ## Aliases
 
-- `cc` / `claude` → agent variant: `claude`
+- `cc` / `claude` / `claude code` → agent variant: `claude`
 - `cx` / `codex` → agent variant: `codex`
 
 ## Skill and plugin resolution priority
@@ -34,7 +34,7 @@ When a coding channel receives a task, resolve the execution target using the fo
 
 ### Explicit executor override (evaluate FIRST, before the resolution chain)
 
-If the user explicitly designated a registered executor alias — `cc`, `claude`, `cx`, `codex`, or any agent name from the Aliases section — in executor position (e.g. "讓 cc 去執行 …", "用 codex 跑 …", "claude 幫我做 …"), **skip the resolution chain entirely**:
+If the user explicitly designated a registered executor alias — `cc`, `claude`, `claude code`, `cx`, `codex`, or any agent name from the Aliases section — in executor position (e.g. "讓 cc 去執行 …", "用 codex 跑 …", "claude code 幫我做 …"), **skip the resolution chain entirely**:
 
 1. Resolve only the executor alias to the correct agent variant (e.g. `cc` → `claude`).
 2. Pass the **entire action clause** — including any named skill, tool, or slash-command text — to `run_coder` as opaque delegation payload. Do not locally resolve, validate, substitute, or execute the referenced skill/tool.
