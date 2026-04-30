@@ -25,14 +25,24 @@ Do not trigger when:
 
 ## Aliases
 
-- When users say "cc", treat it as "Claude Code" (agent variant: `claude`).
-- When users say "cx", treat it as "Codex" (agent variant: `codex`).
+- `cc` / `claude` / `claude code` → agent variant: `claude`
+- `cx` / `codex` → agent variant: `codex`
 
 ## Skill and plugin resolution priority
 
 When a coding channel receives a task, resolve the execution target using the following priority chain. Stop at the first match.
 
-### Resolution chain
+### Explicit executor override (evaluate FIRST, before the resolution chain)
+
+If the user explicitly designated a registered executor alias — `cc`, `claude`, `claude code`, `cx`, `codex`, or any agent name from the Aliases section — in executor position (e.g. "讓 cc 去執行 …", "用 codex 跑 …", "claude code 幫我做 …"), **skip the resolution chain entirely**:
+
+1. Resolve only the executor alias to the correct agent variant (e.g. `cc` → `claude`).
+2. Pass the **entire action clause** — including any named skill, tool, or slash-command text — to `run_coder`. The clause should still be translated into an English coder prompt (per the Decompose and delegate section), but treated as an opaque instruction for the remote agent: do not locally resolve, validate, substitute, or execute the referenced skill/tool.
+3. If the designated agent is unreachable or `coding_agents_list` returns no match for that variant, surface the failure to the user. **Do not silently fall back to local execution or a different agent.** Require explicit user confirmation before attempting any alternative.
+
+This override exists because the user's intent is to delegate to a specific remote agent that has its own skill/tool catalog. Local resolution would incorrectly intercept and substitute what should be an opaque instruction for that agent.
+
+### Resolution chain (only when no explicit executor is designated)
 
 | Priority | Target | When to use |
 |----------|--------|-------------|
@@ -64,7 +74,7 @@ On `INVOCATION_ERROR`, suggest starting a new session. On `RESOLUTION_FAILED`, l
 
 ### Anti-patterns
 
-- **Bypassing installed skills** — Do not route to `claude_code` for tasks that a specialized skill already handles (e.g., sending config changes through the generic agent when `manage-config` is available). Skills encode validated workflows; bypassing them loses guardrails.
+- **Bypassing installed skills** (when no explicit executor is designated) — Do not route to `claude_code` for tasks that a specialized skill already handles (e.g., sending config changes through the generic agent when `manage-config` is available). Skills encode validated workflows; bypassing them loses guardrails. **Exception:** when the user explicitly names an executor alias (cc, cx, etc.), the explicit executor override takes precedence — pass the action through as opaque payload regardless of local skill availability.
 - **Guessing script paths** — Do not fabricate script paths or Make targets. Verify existence through the agent or ask the user.
 - **Silent fallback** — Do not silently fall through the priority chain. If the preferred target is unavailable, inform the user before trying the next level.
 - **Retry loops** — Do not retry the same failed invocation more than once. Classify the failure, report it, and suggest an alternative approach.
