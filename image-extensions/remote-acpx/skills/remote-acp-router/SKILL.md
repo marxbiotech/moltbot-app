@@ -122,7 +122,7 @@ Use the following tools to manage the agent roster. When the target agent is unk
 | Tool | Purpose |
 |------|---------|
 | `coding_agents_list` | List all agents with effective cwd, runtime info, isDefault flag |
-| `coding_agent_add` | Add a new agent (local or ACP remote); supports `agent` parameter for variant |
+| `coding_agent_add` | Add or replace an agent (local or ACP remote); supports `agent` parameter for variant |
 | `coding_agent_remove` | Remove an agent by id |
 | `coding_agent_sync` | Copy workspace/runtime config from source to target agent |
 
