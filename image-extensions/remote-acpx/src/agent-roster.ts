@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { log } from "./log.js";
 
 export type AgentEntry = {
   id: string;
@@ -54,7 +55,8 @@ export function resolveAgentById(agentId: string): { cwd: string; agent: string 
       cwd: resolveEffectiveCwd(entry),
       agent: entry.runtime?.acp?.agent ?? "",
     };
-  } catch {
+  } catch (err) {
+    log.error(`resolveAgentById: failed to read config for agentId="${agentId}": ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

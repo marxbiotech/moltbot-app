@@ -47,7 +47,7 @@ This override exists because the user's intent is to delegate to a specific remo
 | Priority | Target | When to use |
 |----------|--------|-------------|
 | 1 | **Installed skill / plugin** | A locally installed skill or plugin directly handles the intent (e.g., `manage-config`, `manage-secrets`). Prefer these — they encode domain-specific knowledge and guardrails. |
-| 2 | **ACP / harness command** (`claude_code`) | No skill covers the intent. Route to the remote coding agent for general-purpose code tasks. |
+| 2 | **ACP / harness command** (`run_coder`) | No skill covers the intent. Route to the remote coding agent for general-purpose code tasks. |
 | 3 | **Repo-local script / Make target** | The task maps to an existing script (e.g., `make deploy`, `scripts/lint.sh`). Instruct the coding agent to invoke the script, or ask the user to run it locally if it requires interactive input. |
 
 ### Pre-invocation verification
@@ -74,7 +74,7 @@ On `INVOCATION_ERROR`, suggest starting a new session. On `RESOLUTION_FAILED`, l
 
 ### Anti-patterns
 
-- **Bypassing installed skills** (when no explicit executor is designated) — Do not route to `claude_code` for tasks that a specialized skill already handles (e.g., sending config changes through the generic agent when `manage-config` is available). Skills encode validated workflows; bypassing them loses guardrails. **Exception:** when the user explicitly names an executor alias (cc, cx, etc.), the explicit executor override takes precedence — pass the action through as opaque payload regardless of local skill availability.
+- **Bypassing installed skills** (when no explicit executor is designated) — Do not route to `run_coder` for tasks that a specialized skill already handles (e.g., sending config changes through the generic agent when `manage-config` is available). Skills encode validated workflows; bypassing them loses guardrails. **Exception:** when the user explicitly names an executor alias (cc, cx, etc.), the explicit executor override takes precedence — pass the action through as opaque payload regardless of local skill availability.
 - **Guessing script paths** — Do not fabricate script paths or Make targets. Verify existence through the agent or ask the user.
 - **Silent fallback** — Do not silently fall through the priority chain. If the preferred target is unavailable, inform the user before trying the next level.
 - **Retry loops** — Do not retry the same failed invocation more than once. Classify the failure, report it, and suggest an alternative approach.
@@ -117,7 +117,7 @@ For multi-step tasks, proactively track completed and pending steps without requ
 
 ## Agent roster management
 
-Use the following tools to manage the agent roster. Always call `coding_agents_list` before the first `run_coder` invocation in a conversation to discover available agents and their working directories.
+Use the following tools to manage the agent roster. When the target agent is unknown, call `coding_agents_list` to discover available agents and their working directories.
 
 | Tool | Purpose |
 |------|---------|

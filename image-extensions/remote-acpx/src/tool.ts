@@ -92,7 +92,7 @@ export function registerCodingTool(
           description:
             "Absolute path to the working directory on the remote Mac. " +
             "Overrides the cwd resolved from agentId. " +
-            "If both agentId and cwd are omitted, uses the session's existing cwd.",
+            "If both agentId and cwd are omitted, falls back to the plugin-configured default cwd.",
         }),
       ),
       agent: Type.Optional(
@@ -121,7 +121,9 @@ export function registerCodingTool(
       // Resolve cwd and variant: explicit params > agentId lookup > defaults
       let resolvedCwd = cwd || "";
       let resolvedAgent = agent || "";
-      if (agentId && (!cwd || !agent)) {
+      if (agentId && cwd && agent) {
+        log.info(`execute: agentId="${agentId}" ignored — explicit cwd and agent provided`);
+      } else if (agentId && (!cwd || !agent)) {
         const roster = resolveAgentById(agentId);
         if (roster) {
           if (!cwd) resolvedCwd = roster.cwd;
