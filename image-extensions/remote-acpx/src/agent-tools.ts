@@ -44,7 +44,7 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
     name: "coding_agent_add",
     label: "Add Coding Agent",
     description:
-      "Add a new coding agent to the roster. " +
+      "Add or replace a coding agent in the roster. " +
       "For remote ACP agents, provide nodeName to route via the paired node. " +
       "Use the agent parameter to specify the ACP agent variant (e.g. 'claude', 'codex'); defaults to 'claude'.",
     parameters: Type.Object({

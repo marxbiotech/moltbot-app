@@ -100,7 +100,7 @@ export function registerCodingTool(
           description:
             "ACP agent variant (e.g. 'claude', 'codex'). " +
             "Overrides the variant resolved from agentId. " +
-            "If omitted, uses the plugin default.",
+            "If omitted, uses the variant from the agentId roster entry (if set), otherwise the plugin default.",
         }),
       ),
     }),
