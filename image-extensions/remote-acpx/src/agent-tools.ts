@@ -29,10 +29,8 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
     async execute() {
       try {
         const agents: AgentEntry[] = JSON.parse(openclaw("agents", "list", "--json"));
-        for (const agent of agents) {
-          (agent as AgentEntry & { cwd: string }).cwd = resolveEffectiveCwd(agent);
-        }
-        return textResult(JSON.stringify(agents, null, 2));
+        const enriched = agents.map((a) => ({ ...a, cwd: resolveEffectiveCwd(a) }));
+        return textResult(JSON.stringify(enriched, null, 2));
       } catch (err) {
         const msg = err instanceof Error ? (err as { stderr?: string }).stderr || err.message : String(err);
         log.error(`coding_agents_list failed: ${msg}`);
@@ -66,6 +64,7 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
       };
       try {
         const config = readConfig();
+        const existing = config.agents.list.findIndex((a) => a.id === name);
         const newAgent: AgentEntry = { id: name, name };
 
         if (nodeName) {
@@ -77,7 +76,12 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
           newAgent.model = model;
         }
 
-        config.agents.list.push(newAgent);
+        if (existing !== -1) {
+          log.warn(`coding_agent_add: replacing existing agent "${name}"`);
+          config.agents.list[existing] = newAgent;
+        } else {
+          config.agents.list.push(newAgent);
+        }
         writeConfig(config);
         log.info(`coding_agent_add: added "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "n/a"})`);
         return textResult(`Added agent "${name}" (ACP: ${nodeName || "no"}, agent: ${newAgent.runtime?.acp?.agent ?? "local"}).`);

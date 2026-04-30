@@ -82,7 +82,7 @@ export function registerCodingTool(
       agentId: Type.Optional(
         Type.String({
           description:
-            "Agent id from the roster (e.g. 'store', 'admin', 'moltbot-env'). " +
+            "Agent id from the roster (as returned by coding_agents_list). " +
             "Resolves cwd and agent variant automatically from agent config. " +
             "Preferred over explicit cwd/agent — use this when routing to a known agent.",
         }),
