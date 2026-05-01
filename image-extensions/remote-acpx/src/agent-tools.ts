@@ -2,7 +2,7 @@
 // These tools let the LLM manage the agent roster (list / add / remove / sync)
 // without needing to know filesystem paths or CLI invocations.
 
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import {
   type AgentEntry,

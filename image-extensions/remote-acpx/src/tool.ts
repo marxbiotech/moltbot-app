@@ -5,7 +5,7 @@
 // lazily via getters since the service hasn't started yet at registration time.
 
 import { randomUUID } from "node:crypto";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { isAcpRuntimeError } from "openclaw/plugin-sdk/remote-acpx";
 import type { RemoteAcpxRuntime } from "./runtime.js";

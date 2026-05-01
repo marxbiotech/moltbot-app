@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock external dependencies not installed in dev environment
-vi.mock("@sinclair/typebox", () => ({
+vi.mock("typebox", () => ({
   Type: { Object: (s: unknown) => s, String: (opts?: unknown) => opts ?? {} },
 }));
 

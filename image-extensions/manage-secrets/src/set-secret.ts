@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { resolveContext, dispatchWorkflow, fetchRunsSection, toolResult, type ToolResult } from "./shared.ts";
 
 const WORKFLOW_FILE = "set-secret.yml";
