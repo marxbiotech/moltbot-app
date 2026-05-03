@@ -30,6 +30,51 @@ export const REMOTE_ACPX_BACKEND_ID = "remote-acpx";
 
 const HANDLE_PREFIX = "remote-acpx:v1:";
 
+// Config option keys that map cleanly to acpx CLI flags on each turn.
+// Keys outside this list are rejected by the control-plane via configOptionKeys
+// rather than silently dropped. `thinking` is intentionally excluded: acpx CLI
+// has no per-turn flag for it and would require JSON-RPC against a long-lived
+// process, which the per-turn-fresh-spawn model here does not provide.
+const SUPPORTED_CONFIG_OPTION_KEYS = [
+  "model",
+  "timeout",
+  "max_turns",
+  "system_prompt",
+  "append_system_prompt",
+  "allowed_tools",
+  "auth_policy",
+  "approval_policy",
+] as const;
+
+// Per-acpSessionId cached config options, applied as CLI flags on each acp.turn.
+// Stored under a global Symbol so the map survives jiti loader reloads, matching
+// the pattern in event-router.ts and session-manager.ts.
+type SessionConfigOptions = Map<string, string>;
+type ConfigCacheState = { options: Map<string, SessionConfigOptions> };
+const CONFIG_CACHE_STATE_KEY = Symbol.for("moltbot.remoteAcpxConfigOptionCache");
+function resolveConfigCacheState(): ConfigCacheState {
+  const g = globalThis as typeof globalThis & { [CONFIG_CACHE_STATE_KEY]?: ConfigCacheState };
+  if (!g[CONFIG_CACHE_STATE_KEY]) {
+    g[CONFIG_CACHE_STATE_KEY] = { options: new Map() };
+  }
+  return g[CONFIG_CACHE_STATE_KEY];
+}
+function getSessionOptions(acpSessionId: string): SessionConfigOptions | undefined {
+  return resolveConfigCacheState().options.get(acpSessionId);
+}
+function setSessionOption(acpSessionId: string, key: string, value: string): void {
+  const state = resolveConfigCacheState();
+  let session = state.options.get(acpSessionId);
+  if (!session) {
+    session = new Map();
+    state.options.set(acpSessionId, session);
+  }
+  session.set(key, value);
+}
+function clearSessionOptions(acpSessionId: string): void {
+  resolveConfigCacheState().options.delete(acpSessionId);
+}
+
 type RemoteHandleState = {
   acpSessionId: string;
   nodeId: string;
@@ -132,6 +177,19 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     const agent = input.agent || this.config.defaultAgent;
     const cwd = input.cwd || this.config.cwd || "";
     const sessionName = input.sessionKey;
+
+    // Seed the per-session config cache from spawn-time options. ensureSession
+    // exposes model/thinking on the input — without this they'd be silently
+    // dropped, since the control-plane only re-pushes them through
+    // setConfigOption *after* ensureSession completes.
+    if (input.model) {
+      setSessionOption(acpSessionId, "model", input.model);
+    }
+    if (input.thinking) {
+      // Cached for future use; node-host turn handler ignores it today (no acpx
+      // CLI flag). Kept so a later per-session JSON-RPC path can pick it up.
+      setSessionOption(acpSessionId, "thinking", input.thinking);
+    }
 
     // Send acp.spawn and wait for acp.spawned response
     const spawnPromise = new Promise<void>((resolve, reject) => {
@@ -269,6 +327,15 @@ export class RemoteAcpxRuntime implements AcpRuntime {
       }, this.config.turnTimeoutMs);
     }
 
+    // Snapshot the cached config options so the node-host can translate them
+    // into acpx CLI flags on this fresh process invocation. The cache is the
+    // sole record of options applied since spawn — each acpx process is short
+    // lived, so there is no JSON-RPC channel that survives between turns.
+    const sessionOptions = getSessionOptions(state.acpSessionId);
+    const configOptions: Record<string, string> = sessionOptions
+      ? Object.fromEntries(sessionOptions)
+      : {};
+
     // Send acp.turn event to node
     const sent = sendAcpEventToNode(state.nodeId, "acp.turn", {
       acpSessionId: state.acpSessionId,
@@ -279,6 +346,7 @@ export class RemoteAcpxRuntime implements AcpRuntime {
       permissionMode: this.config.permissionMode,
       agentCommand: this.config.agentCommand,
       mode: input.mode || "prompt",
+      configOptions,
     });
 
     if (!sent) {
@@ -333,7 +401,25 @@ export class RemoteAcpxRuntime implements AcpRuntime {
   }
 
   getCapabilities(): AcpRuntimeCapabilities {
-    return { controls: [] };
+    return {
+      controls: ["session/set_config_option"],
+      configOptionKeys: [...SUPPORTED_CONFIG_OPTION_KEYS],
+    };
+  }
+
+  // Cache the config option for this session. Each acp.turn rebuilds the
+  // outbound payload from the cache, so the option takes effect on the next
+  // turn (no live ACP JSON-RPC channel exists between turns).
+  async setConfigOption(input: {
+    handle: AcpRuntimeHandle;
+    key: string;
+    value: string;
+  }): Promise<void> {
+    const state = decodeHandle(input.handle.runtimeSessionName);
+    if (!state) {
+      throw new AcpRuntimeError("ACP_TURN_FAILED", "Invalid remote-acpx handle.");
+    }
+    setSessionOption(state.acpSessionId, input.key, input.value);
   }
 
   // Design Decision: cancel() silently returns on failure (invalid handle or send failure) rather than
@@ -354,6 +440,10 @@ export class RemoteAcpxRuntime implements AcpRuntime {
   }
 
   async close(input: { handle: AcpRuntimeHandle; reason: string }): Promise<void> {
+    const state = decodeHandle(input.handle.runtimeSessionName);
+    if (state) {
+      clearSessionOptions(state.acpSessionId);
+    }
     await this.cancel({ handle: input.handle, reason: input.reason });
   }
 }
