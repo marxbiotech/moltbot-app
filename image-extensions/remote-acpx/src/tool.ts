@@ -69,7 +69,7 @@ export function registerCodingTool(
     name: "run_coder",
     label: "Run Coder",
     description:
-      "Run a remote coding agent (Claude Code, Codex, etc.) on the paired Mac to perform a coding task. " +
+      "Run a remote coding agent (Claude Code, Codex, Gemini CLI, etc.) on the paired Mac to perform a coding task. " +
       "Returns a structured result with Operations (tool calls made) and Message (developer reply). " +
       "Use this when the user needs code changes, codebase exploration, " +
       "git operations, tests, builds, or any task requiring source code access.",
@@ -98,7 +98,7 @@ export function registerCodingTool(
       agent: Type.Optional(
         Type.String({
           description:
-            "ACP agent variant (e.g. 'claude', 'codex'). " +
+            "ACP agent variant (e.g. 'claude', 'codex', 'gemini'). " +
             "Overrides the variant resolved from agentId. " +
             "If omitted, uses the variant from the agentId roster entry (if set), otherwise the plugin default.",
         }),

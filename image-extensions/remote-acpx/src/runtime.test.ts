@@ -121,6 +121,39 @@ describe("RemoteAcpxRuntime — ensureSession seeding", () => {
       thinking: "high",
     });
   });
+
+  it("forwards the gemini agent variant unchanged on spawn and turn", async () => {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: "gemini",
+      mode: "persistent",
+      cwd: "/work",
+    });
+
+    const spawnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.spawn",
+    );
+    expect(spawnCall).toBeDefined();
+    const spawnPayload = (spawnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(spawnPayload.agent).toBe("gemini");
+
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    expect(turnCall).toBeDefined();
+    const turnPayload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(turnPayload.agent).toBe("gemini");
+  });
 });
 
 describe("RemoteAcpxRuntime — setConfigOption", () => {
