@@ -47,9 +47,12 @@ const SUPPORTED_CONFIG_OPTION_KEYS = [
 ] as const;
 
 // Gemini CLI model aliases. Mirrors the alias table in
-// openclaw/extensions/google/cli-backend.ts; acpx's `gemini --acp` adapter
-// does not resolve these short names itself, so we normalize on the gateway
-// side before caching the option. Keep in sync with the upstream source.
+// openclaw/extensions/google/cli-backend.ts; neither the openclaw node-host
+// turn handler (invoke-acp.ts) nor `gemini --acp` resolves these short names,
+// so we normalize on the gateway side before caching the option.
+// Keep in sync with the upstream source — values are duplicated cross-repo
+// because openclaw does not currently re-export this table from its plugin
+// SDK; consolidating to a shared export is tracked as follow-up work.
 const GEMINI_MODEL_ALIASES: Record<string, string> = {
   pro: "gemini-3.1-pro-preview",
   flash: "gemini-3.1-flash-preview",
@@ -439,6 +442,10 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     if (!state) {
       throw new AcpRuntimeError("ACP_TURN_FAILED", "Invalid remote-acpx handle.");
     }
+    // Mirror ensureSession's `if (input.model)` guard: an empty-string model
+    // would otherwise be cached and emitted as `--model ""` on the next turn,
+    // which most CLIs interpret as a literal empty model id rather than unset.
+    if (input.key === "model" && !input.value) return;
     const value = input.key === "model"
       ? normalizeModelForAgent(state.agent, input.value)
       : input.value;

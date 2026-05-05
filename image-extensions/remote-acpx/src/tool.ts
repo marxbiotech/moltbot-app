@@ -101,8 +101,8 @@ export function registerCodingTool(
             "ACP agent variant (e.g. 'claude', 'codex', 'gemini'). " +
             "Overrides the variant resolved from agentId. " +
             "If omitted, uses the variant from the agentId roster entry (if set), otherwise the plugin default. " +
-            "When set to 'gemini', the model parameter accepts the short aliases " +
-            "'pro' / 'flash' / 'flash-lite' in addition to full Gemini model ids.",
+            "Per-call model overrides aren't accepted here — set the model on the roster entry " +
+            "via `manage_agent` (Gemini short aliases 'pro' / 'flash' / 'flash-lite' work there).",
         }),
       ),
     }),

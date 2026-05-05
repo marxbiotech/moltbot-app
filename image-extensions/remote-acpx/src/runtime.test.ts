@@ -260,6 +260,82 @@ describe("RemoteAcpxRuntime — Gemini model normalization", () => {
     const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
     expect(payload.configOptions).toEqual({ model: "gemini-3.1-pro-preview" });
   });
+
+  it("normalizes when agent comes from defaultAgent fallback (no input.agent)", async () => {
+    const runtime = makeRuntime({ defaultAgent: "gemini" });
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      mode: "persistent",
+      model: "flash",
+      cwd: "/work",
+    });
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(payload.configOptions).toEqual({ model: "gemini-3.1-flash-preview" });
+  });
+
+  it("does not normalize non-model keys on a Gemini session", async () => {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: "gemini",
+      mode: "persistent",
+    });
+    // Value collides with a Gemini alias to verify only the model branch normalizes.
+    await runtime.setConfigOption({ handle, key: "approval_policy", value: "flash" });
+
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(payload.configOptions).toEqual({ approval_policy: "flash" });
+  });
+
+  it("ignores empty-string model on setConfigOption (mirrors ensureSession guard)", async () => {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: "gemini",
+      mode: "persistent",
+    });
+    await runtime.setConfigOption({ handle, key: "model", value: "" });
+
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    const opts = (payload.configOptions ?? {}) as Record<string, unknown>;
+    expect(opts).not.toHaveProperty("model");
+  });
 });
 
 describe("RemoteAcpxRuntime — setConfigOption", () => {
