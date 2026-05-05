@@ -118,18 +118,38 @@ export function registerCodingTool(
         prompt: string; agentId?: string; cwd?: string; agent?: string;
       };
 
-      // Resolve cwd and variant: explicit params > agentId lookup > defaults
+      // Resolve cwd and variant: explicit params > agentId lookup > defaults.
+      // When an unknown agentId is given without an explicit cwd, fail loud
+      // with AGENTID_UNRESOLVED — silent fallback to the default workspace
+      // would mask routing bugs and contradicts the remote-acp-router SKILL.md
+      // "do not guess paths or ids" rule. cwd is the workspace-safety anchor:
+      // an explicit `agent` alone is not enough to justify degradation, since
+      // we'd still be guessing the workspace. When the caller supplies an
+      // explicit cwd (with or without agent), an unknown agentId is treated
+      // as a roster miss and the call degrades to that cwd + the resolved
+      // agent variant.
       let resolvedCwd = cwd || "";
       let resolvedAgent = agent || "";
       if (agentId && cwd && agent) {
         log.info(`execute: agentId="${agentId}" ignored — explicit cwd and agent provided`);
-      } else if (agentId && (!cwd || !agent)) {
+      } else if (agentId) {
         const roster = resolveAgentById(agentId);
         if (roster) {
           if (!cwd) resolvedCwd = roster.cwd;
           if (!agent && roster.agent) resolvedAgent = roster.agent;
+        } else if (cwd) {
+          log.warn(`execute: agentId="${agentId}" not found in roster — proceeding with explicit cwd + ${agent ? "explicit agent" : "default agent"}`);
         } else {
-          log.warn(`execute: agentId="${agentId}" not found in roster, falling back to defaults`);
+          log.warn(`execute: agentId="${agentId}" not found in roster — returning AGENTID_UNRESOLVED`);
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Error: AGENTID_UNRESOLVED — agentId="${agentId}" is not in the roster. ` +
+                `Call coding_agents_list to see available ids, or pass an explicit cwd ` +
+                `(optionally with agent) to bypass roster lookup.`,
+            }],
+          };
         }
       }
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
