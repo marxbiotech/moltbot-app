@@ -133,20 +133,23 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
   }
 }
 
-// Flatten an ACP `session/update` content[] into a single text string.
-// Known shapes (all tolerated so claude/codex/gemini flatten consistently):
+// ACP `session/update` content[] arrives in three known shapes; flatten them
+// uniformly so claude/codex/gemini downstream see the same string:
 //   "..."                                                         — bare string
-//   [{ type: "content", content: { type: "text", text: "..." } }] — openclaw/translator emit
+//   [{ type: "content", content: { type: "text", text: "..." } }] — openclaw ACP server emit (event-mapper.ts:344)
 //   [{ type: "text", text: "..." }]                               — simpler agents
+// Single-object inputs are normalized to a one-element array; unknown block
+// shapes log a warn and are dropped (so protocol drift is observable).
 function flattenToolCallContent(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
-  if (!Array.isArray(value)) {
+  if (value === null || typeof value !== "object") {
     return "";
   }
+  const blocks = Array.isArray(value) ? value : [value];
   const parts: string[] = [];
-  for (const block of value) {
+  for (const block of blocks) {
     if (typeof block === "string") {
       parts.push(block);
       continue;
@@ -164,7 +167,9 @@ function flattenToolCallContent(value: unknown): string {
     }
     if (typeof entry.text === "string") {
       parts.push(entry.text);
+      continue;
     }
+    log.warn(`flattenToolCallContent: unrecognized block type=${String(entry.type)} keys=${Object.keys(entry).join(",")}`);
   }
   return parts.join("\n");
 }
@@ -200,11 +205,15 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
       return { type: "text_delta", text };
     }
 
-    // Codex / gemini turns are tool-driven and rarely emit agent_message_chunk;
-    // they signal progress via tool_call (creation) and tool_call_update (state
-    // transitions). Forward both as tool_call AcpRuntimeEvents so the downstream
-    // output-collector can surface them in the Operations: section. tag carries
-    // the originating sessionUpdate for any future dedupe-by-toolCallId logic.
+    // Codex turns are tool-driven and may not emit agent_message_chunk at all;
+    // gemini uses the same parser path but has not been live-verified. Forward
+    // tool_call (creation) and tool_call_update (state transitions) so they
+    // populate output-collector's operations[]. The `tag` carries the original
+    // sessionUpdate for downstream code that wants to distinguish them.
+    //
+    // Unlike agent_message_chunk above, this branch does NOT skip on empty
+    // text: tool_call creation events legitimately have no content yet (only
+    // title/status/toolCallId), and operationCount must include them.
     if (sessionUpdate === "tool_call" || sessionUpdate === "tool_call_update") {
       return {
         type: "tool_call",
@@ -315,7 +324,14 @@ export function routeNodeEvent(
       break;
     }
     case "acp.error": {
-      const errorMsg = typeof payload.error === "string" ? payload.error : "Unknown ACP error";
+      // Stringify object-shaped error payloads instead of replacing them with a
+      // useless placeholder; otherwise the log line below would lose the real cause.
+      const errorMsg =
+        typeof payload.error === "string"
+          ? payload.error
+          : payload.error != null
+            ? `non-string error payload: ${JSON.stringify(payload.error).slice(0, 500)}`
+            : "Unknown ACP error (no payload.error)";
       // Surface the payload so spawn-time failures (ENOENT, "Agent command not
       // found: acpx", chdir errors) are visible in the pod log without ssh.
       log.error(`acp.error: acpSessionId=${acpSessionId} error=${errorMsg}`);

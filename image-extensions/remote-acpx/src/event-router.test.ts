@@ -1,16 +1,23 @@
-// Tests for event-router's JSON-RPC session/update parsing. Focused on the
-// codex / gemini path that emits tool_call and tool_call_update notifications
-// instead of agent_message_chunk. Drives the public surface (routeNodeEvent +
-// registerSessionQueue) so the parsing logic is exercised end-to-end.
+// Drives the public surface (routeNodeEvent + registerSessionQueue) rather than
+// importing parseJsonRpcLine directly — keeps the parser internal and exercises
+// the codex/gemini tool_call paths end-to-end.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { AcpRuntimeEvent } from "openclaw/plugin-sdk/remote-acpx";
+
+vi.mock("./log.js", () => ({
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
 import { collectTurnOutput } from "./output-collector.js";
 import {
   registerSessionQueue,
+  registerSpawnResolver,
   routeNodeEvent,
   unregisterSessionQueue,
+  unregisterSpawnResolver,
 } from "./event-router.js";
+import { log } from "./log.js";
 
 type CapturedQueue = {
   events: AcpRuntimeEvent[];
@@ -230,7 +237,6 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
       feedLine(acpSessionId, line);
     }
 
-    // Drain the queue into an async iterable so collectTurnOutput can consume it.
     const iter = (async function* () {
       for (const event of queue.events) {
         yield event;
@@ -286,5 +292,166 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
 
     expect(queue.events).toEqual([]);
     unregisterSessionQueue(acpSessionId);
+  });
+});
+
+describe("event-router parseJsonRpcLine — flattenToolCallContent shapes", () => {
+  const acpSessionId = "shape-session";
+  let queue: CapturedQueue;
+
+  beforeEach(() => {
+    queue = makeCapturedQueue();
+    registerSessionQueue(acpSessionId, queue);
+  });
+
+  it("forwards bare-string content verbatim", () => {
+    const line = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: acpSessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_x",
+          status: "completed",
+          content: "raw stdout text",
+        },
+      },
+    });
+
+    feedLine(acpSessionId, line);
+
+    expect(queue.events).toHaveLength(1);
+    expect((queue.events[0] as { text: string }).text).toBe("raw stdout text");
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("normalizes a single-object content to a one-element array", () => {
+    // Some agents emit `content` as a single object instead of an array.
+    const line = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: acpSessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_y",
+          status: "completed",
+          content: { type: "text", text: "single block" },
+        },
+      },
+    });
+
+    feedLine(acpSessionId, line);
+
+    expect(queue.events).toHaveLength(1);
+    expect((queue.events[0] as { text: string }).text).toBe("single block");
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("logs a warn for unrecognized block shapes and drops them while keeping recognized ones", () => {
+    const warn = vi.mocked(log.warn);
+    warn.mockClear();
+
+    const line = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: acpSessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_z",
+          status: "completed",
+          content: [
+            { type: "image", url: "..." },
+            { type: "text", text: "kept" },
+            { type: "diff", oldText: "a", newText: "b" },
+          ],
+        },
+      },
+    });
+
+    feedLine(acpSessionId, line);
+
+    expect(queue.events).toHaveLength(1);
+    expect((queue.events[0] as { text: string }).text).toBe("kept");
+    // Two unrecognized blocks → two warn calls.
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[0]?.[0]).toContain("flattenToolCallContent: unrecognized block");
+    unregisterSessionQueue(acpSessionId);
+  });
+});
+
+describe("event-router routeNodeEvent — acp.error logging", () => {
+  beforeEach(() => {
+    vi.mocked(log.error).mockClear();
+    vi.mocked(log.warn).mockClear();
+  });
+
+  it("logs the payload and rejects the spawn resolver", async () => {
+    const acpSessionId = "spawn-fail-session";
+    const rejectPromise = new Promise<Error>((resolve) => {
+      registerSpawnResolver(acpSessionId, {
+        resolve: () => {},
+        reject: (err) => resolve(err),
+      });
+    });
+
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: { acpSessionId, error: "Agent command not found: acpx" },
+    });
+
+    const err = await rejectPromise;
+    expect(err.message).toBe("Agent command not found: acpx");
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      expect.stringContaining("acp.error: acpSessionId=spawn-fail-session"),
+    );
+    expect(vi.mocked(log.error).mock.calls[0]?.[0]).toContain("Agent command not found: acpx");
+    unregisterSpawnResolver(acpSessionId);
+  });
+
+  it("logs the payload and routes to the session queue when no spawn resolver is registered", () => {
+    const acpSessionId = "session-fail-session";
+    const queue = makeCapturedQueue();
+    registerSessionQueue(acpSessionId, queue);
+
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: { acpSessionId, error: "ENOENT: chdir failed" },
+    });
+
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      expect.stringContaining("acp.error: acpSessionId=session-fail-session"),
+    );
+    expect(queue.events).toEqual([{ type: "error", message: "ENOENT: chdir failed" }]);
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("logs even when no resolver and no queue are registered", () => {
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: { acpSessionId: "orphan-session", error: "stale error" },
+    });
+
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      expect.stringContaining("acp.error: acpSessionId=orphan-session"),
+    );
+  });
+
+  it("stringifies object-shaped error payloads instead of dropping them as 'Unknown ACP error'", () => {
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: {
+        acpSessionId: "obj-error-session",
+        error: { code: "ENOENT", path: "/usr/bin/acpx" },
+      },
+    });
+
+    const logged = vi.mocked(log.error).mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("non-string error payload");
+    expect(logged).toContain("ENOENT");
+    expect(logged).toContain("/usr/bin/acpx");
+    expect(logged).not.toContain("Unknown ACP error");
   });
 });
