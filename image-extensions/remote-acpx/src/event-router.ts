@@ -133,6 +133,42 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
   }
 }
 
+// Flatten an ACP `session/update` content[] into a single text string.
+// Known shapes (all tolerated so claude/codex/gemini flatten consistently):
+//   "..."                                                         — bare string
+//   [{ type: "content", content: { type: "text", text: "..." } }] — openclaw/translator emit
+//   [{ type: "text", text: "..." }]                               — simpler agents
+function flattenToolCallContent(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const parts: string[] = [];
+  for (const block of value) {
+    if (typeof block === "string") {
+      parts.push(block);
+      continue;
+    }
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const entry = block as Record<string, unknown>;
+    if (entry.type === "content" && typeof entry.content === "object" && entry.content !== null) {
+      const inner = entry.content as Record<string, unknown>;
+      if (typeof inner.text === "string") {
+        parts.push(inner.text);
+        continue;
+      }
+    }
+    if (typeof entry.text === "string") {
+      parts.push(entry.text);
+    }
+  }
+  return parts.join("\n");
+}
+
 // Parse JSON-RPC 2.0 messages from acpx / claude-agent-acp
 function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null {
   const method = typeof obj.method === "string" ? obj.method : "";
@@ -162,6 +198,22 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
       const text = content && typeof content.text === "string" ? content.text : "";
       if (!text) return null;
       return { type: "text_delta", text };
+    }
+
+    // Codex / gemini turns are tool-driven and rarely emit agent_message_chunk;
+    // they signal progress via tool_call (creation) and tool_call_update (state
+    // transitions). Forward both as tool_call AcpRuntimeEvents so the downstream
+    // output-collector can surface them in the Operations: section. tag carries
+    // the originating sessionUpdate for any future dedupe-by-toolCallId logic.
+    if (sessionUpdate === "tool_call" || sessionUpdate === "tool_call_update") {
+      return {
+        type: "tool_call",
+        text: flattenToolCallContent(update.content),
+        tag: sessionUpdate,
+        ...(typeof update.toolCallId === "string" ? { toolCallId: update.toolCallId } : {}),
+        ...(typeof update.title === "string" ? { title: update.title } : {}),
+        ...(typeof update.status === "string" ? { status: update.status } : {}),
+      };
     }
 
     // Ignore protocol/control messages (usage_update, available_commands_update, etc.)
@@ -264,7 +316,9 @@ export function routeNodeEvent(
     }
     case "acp.error": {
       const errorMsg = typeof payload.error === "string" ? payload.error : "Unknown ACP error";
-      // Check if this is a spawn error
+      // Surface the payload so spawn-time failures (ENOENT, "Agent command not
+      // found: acpx", chdir errors) are visible in the pod log without ssh.
+      log.error(`acp.error: acpSessionId=${acpSessionId} error=${errorMsg}`);
       const spawnResolver = spawnResolvers.get(acpSessionId);
       if (spawnResolver) {
         spawnResolvers.delete(acpSessionId);
