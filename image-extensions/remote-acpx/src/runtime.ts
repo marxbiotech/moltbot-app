@@ -46,6 +46,29 @@ const SUPPORTED_CONFIG_OPTION_KEYS = [
   "approval_policy",
 ] as const;
 
+// Gemini CLI model aliases. Mirrors the alias table in
+// openclaw/extensions/google/cli-backend.ts; neither the openclaw node-host
+// turn handler (invoke-acp.ts) nor `gemini --acp` resolves these short names,
+// so we normalize on the gateway side before caching the option.
+// Keep in sync with the upstream source — values are duplicated cross-repo
+// because openclaw does not currently re-export this table from its plugin
+// SDK; consolidating to a shared export is tracked as follow-up work.
+const GEMINI_MODEL_ALIASES: Record<string, string> = {
+  pro: "gemini-3.1-pro-preview",
+  flash: "gemini-3.1-flash-preview",
+  "flash-lite": "gemini-3.1-flash-lite-preview",
+};
+
+/** Resolve a Gemini short alias (`pro`/`flash`/`flash-lite`) to its full model id. Pass-through if unknown. */
+export function normalizeGeminiModel(model: string): string {
+  return GEMINI_MODEL_ALIASES[model] ?? model;
+}
+
+/** Apply per-agent model normalization. Today only `gemini` rewrites; other variants pass through. */
+export function normalizeModelForAgent(agent: string, model: string): string {
+  return agent === "gemini" ? normalizeGeminiModel(model) : model;
+}
+
 // Per-acpSessionId cached config options, applied as CLI flags on each acp.turn.
 // Stored under a global Symbol so the map survives jiti loader reloads, matching
 // the pattern in event-router.ts and session-manager.ts.
@@ -183,7 +206,7 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     // dropped, since the control-plane only re-pushes them through
     // setConfigOption *after* ensureSession completes.
     if (input.model) {
-      setSessionOption(acpSessionId, "model", input.model);
+      setSessionOption(acpSessionId, "model", normalizeModelForAgent(agent, input.model));
     }
     if (input.thinking) {
       // Cached for future use; node-host turn handler ignores it today (no acpx
@@ -419,7 +442,14 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     if (!state) {
       throw new AcpRuntimeError("ACP_TURN_FAILED", "Invalid remote-acpx handle.");
     }
-    setSessionOption(state.acpSessionId, input.key, input.value);
+    // Mirror ensureSession's `if (input.model)` guard: an empty-string model
+    // would otherwise be cached and emitted as `--model ""` on the next turn,
+    // which most CLIs interpret as a literal empty model id rather than unset.
+    if (input.key === "model" && !input.value) return;
+    const value = input.key === "model"
+      ? normalizeModelForAgent(state.agent, input.value)
+      : input.value;
+    setSessionOption(state.acpSessionId, input.key, value);
   }
 
   // Design Decision: cancel() silently returns on failure (invalid handle or send failure) rather than

@@ -43,7 +43,12 @@ vi.mock("./log.js", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { RemoteAcpxRuntime, type RemoteAcpxConfig } from "./runtime.js";
+import {
+  RemoteAcpxRuntime,
+  normalizeGeminiModel,
+  normalizeModelForAgent,
+  type RemoteAcpxConfig,
+} from "./runtime.js";
 
 // Reset the global config option cache between tests so leftover state from
 // one ensureSession call does not contaminate another.
@@ -153,6 +158,183 @@ describe("RemoteAcpxRuntime — ensureSession seeding", () => {
     expect(turnCall).toBeDefined();
     const turnPayload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
     expect(turnPayload.agent).toBe("gemini");
+  });
+});
+
+describe("normalizeGeminiModel", () => {
+  it("resolves the known short aliases to full Gemini model ids", () => {
+    expect(normalizeGeminiModel("flash")).toBe("gemini-3.1-flash-preview");
+    expect(normalizeGeminiModel("pro")).toBe("gemini-3.1-pro-preview");
+    expect(normalizeGeminiModel("flash-lite")).toBe("gemini-3.1-flash-lite-preview");
+  });
+
+  it("passes through unknown inputs unchanged", () => {
+    expect(normalizeGeminiModel("gemini-3.1-flash-preview")).toBe("gemini-3.1-flash-preview");
+    expect(normalizeGeminiModel("custom-model")).toBe("custom-model");
+    expect(normalizeGeminiModel("")).toBe("");
+  });
+});
+
+describe("normalizeModelForAgent", () => {
+  it("rewrites Gemini aliases only when the agent is gemini", () => {
+    expect(normalizeModelForAgent("gemini", "flash")).toBe("gemini-3.1-flash-preview");
+    expect(normalizeModelForAgent("claude", "flash")).toBe("flash");
+    expect(normalizeModelForAgent("codex", "pro")).toBe("pro");
+  });
+});
+
+describe("RemoteAcpxRuntime — Gemini model normalization", () => {
+  beforeEach(() => {
+    clearGlobalConfigCache();
+    mockSendAcpEventToNode.mockClear();
+    mockSendAcpEventToNode.mockReturnValue(true);
+  });
+
+  async function captureTurnConfigOptions(input: {
+    agent: string;
+    model: string;
+  }): Promise<Record<string, unknown> | undefined> {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: input.agent,
+      mode: "persistent",
+      model: input.model,
+      cwd: "/work",
+    });
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    if (!turnCall) return undefined;
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    return payload.configOptions as Record<string, unknown> | undefined;
+  }
+
+  it("normalizes a known Gemini alias on ensureSession", async () => {
+    const opts = await captureTurnConfigOptions({ agent: "gemini", model: "flash" });
+    expect(opts).toEqual({ model: "gemini-3.1-flash-preview" });
+  });
+
+  it("passes through an unknown Gemini model unchanged", async () => {
+    const opts = await captureTurnConfigOptions({
+      agent: "gemini",
+      model: "gemini-experimental-foo",
+    });
+    expect(opts).toEqual({ model: "gemini-experimental-foo" });
+  });
+
+  it("leaves non-gemini agents untouched even when the model collides with a Gemini alias", async () => {
+    const opts = await captureTurnConfigOptions({ agent: "claude", model: "flash" });
+    expect(opts).toEqual({ model: "flash" });
+  });
+
+  it("normalizes Gemini aliases on setConfigOption too", async () => {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: "gemini",
+      mode: "persistent",
+    });
+    await runtime.setConfigOption({ handle, key: "model", value: "pro" });
+
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(payload.configOptions).toEqual({ model: "gemini-3.1-pro-preview" });
+  });
+
+  it("normalizes when agent comes from defaultAgent fallback (no input.agent)", async () => {
+    const runtime = makeRuntime({ defaultAgent: "gemini" });
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      mode: "persistent",
+      model: "flash",
+      cwd: "/work",
+    });
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(payload.configOptions).toEqual({ model: "gemini-3.1-flash-preview" });
+  });
+
+  it("does not normalize non-model keys on a Gemini session", async () => {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: "gemini",
+      mode: "persistent",
+    });
+    // Value collides with a Gemini alias to verify only the model branch normalizes.
+    await runtime.setConfigOption({ handle, key: "approval_policy", value: "flash" });
+
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    expect(payload.configOptions).toEqual({ approval_policy: "flash" });
+  });
+
+  it("ignores empty-string model on setConfigOption (mirrors ensureSession guard)", async () => {
+    const runtime = makeRuntime();
+    const handle = await runtime.ensureSession({
+      sessionKey: "s1",
+      agent: "gemini",
+      mode: "persistent",
+    });
+    await runtime.setConfigOption({ handle, key: "model", value: "" });
+
+    const iter = runtime.runTurn({
+      handle,
+      text: "hi",
+      mode: "prompt",
+      requestId: "req-1",
+    });
+    void iter[Symbol.asyncIterator]().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const turnCall = mockSendAcpEventToNode.mock.calls.find(
+      (c) => (c as unknown as [string, string])[1] === "acp.turn",
+    );
+    const payload = (turnCall as unknown as [string, string, Record<string, unknown>])[2];
+    const opts = (payload.configOptions ?? {}) as Record<string, unknown>;
+    expect(opts).not.toHaveProperty("model");
   });
 });
 
