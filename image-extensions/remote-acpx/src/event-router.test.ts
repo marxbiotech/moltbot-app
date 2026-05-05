@@ -172,9 +172,12 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
     unregisterSessionQueue(acpSessionId);
   });
 
-  it("collectTurnOutput surfaces operations[] and operationCount for a codex turn", async () => {
+  it("collectTurnOutput merges tool_call + tool_call_update into one entry per toolCallId", async () => {
     // Replay a small but realistic codex transcript:
     //   tool_call (in_progress) → tool_call_update (completed) → done
+    // Regression for #29 — previously this produced 4 entries (2 logical calls
+    // × {creation, completion}) with the completion rows showing as
+    // `unknown [completed]` because tool_call_update has no title.
     const lines = [
       JSON.stringify({
         jsonrpc: "2.0",
@@ -247,15 +250,200 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
 
     expect(result.status).toBe("success");
     expect(result.stopReason).toBe("end_turn");
-    expect(result.operationCount).toBe(4); // 2 tool_call + 2 tool_call_update
-    expect(result.operations.map((op) => op.tool)).toEqual([
-      "Read file foo.ts",
-      "unknown", // tool_call_update has no title
-      "Edit file foo.ts",
-      "unknown",
+    expect(result.operationCount).toBe(2);
+    expect(result.operations).toEqual([
+      { tool: "Read file foo.ts", summary: "42 lines", status: "completed" },
+      { tool: "Edit file foo.ts", summary: "wrote 1 hunk", status: "completed" },
     ]);
-    expect(result.operations[1]?.summary).toBe("42 lines");
-    expect(result.operations[3]?.summary).toBe("wrote 1 hunk");
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("merges interleaved updates for multiple tool calls in original creation order", async () => {
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_a",
+            title: "pwd",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_b",
+            title: "ls /tmp",
+            status: "in_progress",
+          },
+        },
+      }),
+      // Updates arrive out of creation order — b completes before a.
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_b",
+            status: "completed",
+            content: [{ type: "text", text: "3 entries" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_a",
+            status: "completed",
+            content: [{ type: "text", text: "/Users/me" }],
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(2);
+    // Insertion order is creation order, not completion order.
+    expect(result.operations).toEqual([
+      { tool: "pwd", summary: "/Users/me", status: "completed" },
+      { tool: "ls /tmp", summary: "3 entries", status: "completed" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("backfills title when tool_call_update arrives before its tool_call", async () => {
+    // Defensive — if an update for a fresh toolCallId arrives first, the entry
+    // is created with `tool: \"unknown\"`. A later `tool_call` with the same id
+    // must backfill the title rather than push a duplicate row.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_late",
+            status: "completed",
+            content: [{ type: "text", text: "done" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_late",
+            title: "Read REVIEW.txt",
+            status: "in_progress",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    // Title backfilled from the late `tool_call`; status stays at the most
+    // recent value (`in_progress` here, since the late event was the create).
+    // Summary preserved from the earlier update — empty creation text must not
+    // clobber non-empty content already collected.
+    expect(result.operations).toEqual([
+      { tool: "Read REVIEW.txt", summary: "done", status: "in_progress" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("keeps tool_call events without toolCallId as separate entries", async () => {
+    // The simple-event-format path (event-router.ts:107-115) and any agent
+    // that omits toolCallId must not have its events merged into a single row.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            title: "first call",
+            status: "completed",
+            content: [{ type: "text", text: "alpha" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            title: "second call",
+            status: "completed",
+            content: [{ type: "text", text: "beta" }],
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(2);
+    expect(result.operations).toEqual([
+      { tool: "first call", summary: "alpha", status: "completed" },
+      { tool: "second call", summary: "beta", status: "completed" },
+    ]);
 
     unregisterSessionQueue(acpSessionId);
   });

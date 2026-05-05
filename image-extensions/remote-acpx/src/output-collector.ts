@@ -19,7 +19,7 @@ export type CollectedResult = {
   message: string;
   /** Structured tool call records. */
   operations: OperationEntry[];
-  /** Total tool_call events received (before cap). */
+  /** Total unique logical tool calls seen (before cap). */
   operationCount: number;
 };
 
@@ -44,6 +44,10 @@ export async function collectTurnOutput(
 ): Promise<CollectedResult> {
   const messageChunks: string[] = [];
   const operations: OperationEntry[] = [];
+  // Lookup for in-place merging of tool_call_update into the entry created by
+  // the originating tool_call. Entries also live in `operations` so insertion
+  // order is preserved.
+  const operationsById = new Map<string, OperationEntry>();
   let operationCount = 0;
   let status: "success" | "error" = "success";
   let stopReason: string | undefined;
@@ -67,15 +71,43 @@ export async function collectTurnOutput(
           break;
 
         case "tool_call": {
+          // ACP emits one `tool_call` (creation, with title) followed by one or
+          // more `tool_call_update`s (no title, terminal status/content). Merge
+          // by toolCallId so each logical call renders as a single row instead
+          // of `<title> [in_progress]` + `unknown [completed]` pairs.
+          const id = event.toolCallId;
+          const incomingSummary = event.text.slice(0, OPERATION_SUMMARY_LENGTH);
+          const existing = id ? operationsById.get(id) : undefined;
+
+          if (existing) {
+            // Backfill title only when we don't already have a real one — never
+            // overwrite a known title with the "unknown" placeholder from an
+            // update that lacks `title`.
+            if (event.title && existing.tool === "unknown") {
+              existing.tool = event.title;
+            }
+            if (event.status) {
+              existing.status = event.status;
+            }
+            // Empty text on creation must not clobber later content from an
+            // update that arrived first (defensive ordering).
+            if (incomingSummary) {
+              existing.summary = incomingSummary;
+            }
+            break;
+          }
+
           operationCount += 1;
           if (operations.length < MAX_OPERATIONS) {
-            const tool = event.title || "unknown";
-            const summary = event.text.slice(0, OPERATION_SUMMARY_LENGTH);
-            operations.push({
-              tool,
-              summary,
+            const entry: OperationEntry = {
+              tool: event.title || "unknown",
+              summary: incomingSummary,
               ...(event.status ? { status: event.status } : {}),
-            });
+            };
+            operations.push(entry);
+            if (id) {
+              operationsById.set(id, entry);
+            }
           }
           break;
         }
