@@ -118,7 +118,9 @@ export function registerCodingTool(
         prompt: string; agentId?: string; cwd?: string; agent?: string;
       };
 
-      // Resolve cwd and variant: explicit params > agentId lookup > defaults
+      // Resolve cwd and variant: explicit params > agentId lookup > defaults.
+      // Unknown agentId fails loud — silent fallback to defaults would mask
+      // routing bugs and contradicts the skill's "do not guess paths or ids" rule.
       let resolvedCwd = cwd || "";
       let resolvedAgent = agent || "";
       if (agentId && cwd && agent) {
@@ -129,7 +131,16 @@ export function registerCodingTool(
           if (!cwd) resolvedCwd = roster.cwd;
           if (!agent && roster.agent) resolvedAgent = roster.agent;
         } else {
-          log.warn(`execute: agentId="${agentId}" not found in roster, falling back to defaults`);
+          log.warn(`execute: agentId="${agentId}" not found in roster — returning AGENTID_UNRESOLVED`);
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Error: AGENTID_UNRESOLVED — agentId="${agentId}" is not in the roster. ` +
+                `Call coding_agents_list to see available ids, or pass explicit cwd and agent ` +
+                `parameters to bypass roster lookup.`,
+            }],
+          };
         }
       }
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
