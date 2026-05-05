@@ -151,7 +151,7 @@ When an invocation fails, classify the error and present a clear user-facing mes
 | `RESOLUTION_FAILED` | No skill or agent matches the intent | 「找不到合適的工具來處理這個請求。請確認相關的 skill 或 agent 是否已安裝。」 |
 | `AGENT_UNREACHABLE` | Remote node is offline or `coding_agents_list` returns empty | 「遠端節點目前無法連線。請確認節點狀態後再試。」 |
 | `INVOCATION_ERROR` | Tool call returned an error (timeout, crash, permission denied) | 「執行過程中發生錯誤：{error_summary}。建議開啟新的 run_coder session 重試。」 |
-| `AGENTID_UNRESOLVED` | `agentId` was passed alone (no `cwd` or `agent` overrides) and does not match any roster entry. The tool rejects the call rather than silently falling back to defaults. When the caller also supplies an explicit `cwd` or `agent`, an unknown `agentId` is treated as a roster miss and the call degrades to those overrides + plugin defaults — only the bare `agentId`-alone case fails loud. | 「找不到 agentId="{id}"。請呼叫 `coding_agents_list` 查看可用代號，或直接提供 cwd 與 agent 參數。」 |
+| `AGENTID_UNRESOLVED` | `agentId` was passed without an explicit `cwd` and does not match any roster entry. The tool rejects the call rather than silently routing to the default workspace. `cwd` is the workspace-safety anchor: an unknown `agentId` is only a recoverable miss when the caller pins the workspace explicitly. Behavior matrix when `agentId` is unknown: bare `agentId` → fail loud; `agentId` + `agent` only (no `cwd`) → fail loud; `agentId` + `cwd` (with or without `agent`) → degrade to that `cwd` + the resolved agent variant. | 「找不到 agentId="{id}"。請呼叫 `coding_agents_list` 查看可用代號，或直接提供 cwd（可搭配 agent）以略過 roster 查詢。」 |
 
 ### Anti-patterns
 

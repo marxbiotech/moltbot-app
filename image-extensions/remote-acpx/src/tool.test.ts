@@ -1,6 +1,7 @@
 // Focused tests for the run_coder agentId resolution logic.
-// Covers: fail-loud on bare unknown agentId, and graceful degradation
-// when the caller supplies explicit overrides alongside an unknown agentId.
+// Covers: fail-loud on unknown agentId without an explicit cwd anchor
+// (bare or with agent-only overrides), and graceful degradation when
+// the caller supplies an explicit cwd alongside an unknown agentId.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -18,6 +19,7 @@ vi.mock("./agent-roster.js", () => ({
 
 vi.mock("openclaw/plugin-sdk/remote-acpx", () => ({
   isAcpRuntimeError: () => false,
+  isAcpNodeConnected: () => false,
 }));
 
 // vitest's resolver cannot load typebox the way jiti does at runtime;
@@ -100,26 +102,91 @@ describe("run_coder — agentId resolution", () => {
     expect(text).toContain("coding_agents_list");
   });
 
-  it("does NOT fail loud when unknown agentId is given alongside explicit cwd (degrades gracefully)", async () => {
+  it("fails loud with AGENTID_UNRESOLVED when unknown agentId is given alongside explicit agent only (no cwd)", async () => {
     mockResolveAgentById.mockReturnValue(null);
 
     const { getTool, api } = captureRegisteredTool();
-    // Minimal stub — downstream calls past the resolution point will throw,
-    // get caught by the outer try/catch, and be returned as a generic error.
-    // The point is only to assert that the AGENTID_UNRESOLVED early-return
-    // did not fire.
-    const runtime = {} as never;
+    const runTurn = vi.fn();
+    const ensureSession = vi.fn();
+    const runtime = { runTurn, ensureSession } as never;
     registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
     const result = await getTool().execute("call-2", {
+      agentId: "does-not-exist",
+      agent: "codex",
+      prompt: "noop",
+    });
+
+    expect(mockResolveAgentById).toHaveBeenCalledWith("does-not-exist");
+
+    // cwd is the workspace-safety anchor — agent-only is not enough to
+    // justify graceful degradation. The runtime must not be touched.
+    expect(runTurn).not.toHaveBeenCalled();
+    expect(ensureSession).not.toHaveBeenCalled();
+
+    const text = getText(result);
+    expect(text).toContain("AGENTID_UNRESOLVED");
+    expect(text).toContain("does-not-exist");
+    expect(text).toContain("coding_agents_list");
+  });
+
+  it("does NOT fail loud when unknown agentId is given alongside explicit cwd (degrades gracefully with default agent)", async () => {
+    mockResolveAgentById.mockReturnValue(null);
+
+    const { getTool, api } = captureRegisteredTool();
+    // ensureSession resolves so the call advances past session setup.
+    // runTurn throws to short-circuit the rest of the turn — we only need
+    // to assert that ensureSession was reached and called with the
+    // explicit cwd + default agent.
+    const ensureSession = vi.fn().mockResolvedValue({ id: "fake-handle" });
+    const runTurn = vi.fn().mockImplementation(() => {
+      throw new Error("stop");
+    });
+    const runtime = { runTurn, ensureSession, close: vi.fn() } as never;
+    registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
+
+    const result = await getTool().execute("call-3", {
       agentId: "stale",
       cwd: "/explicit/path",
       prompt: "noop",
     });
 
-    // Roster was still consulted (because agent was missing), but the miss
-    // degraded to the explicit cwd + default agent rather than failing loud.
     expect(mockResolveAgentById).toHaveBeenCalledWith("stale");
     expect(getText(result)).not.toContain("AGENTID_UNRESOLVED");
+
+    // Pin the contract: explicit cwd + default agent are actually passed
+    // through to session setup, not the roster's (missing) values.
+    expect(ensureSession).toHaveBeenCalledTimes(1);
+    expect(ensureSession).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/explicit/path",
+      agent: config.defaultAgent,
+    }));
+  });
+
+  it("does NOT fail loud when unknown agentId is given alongside explicit cwd + agent (3-arg explicit override)", async () => {
+    // 3-arg explicit override skips roster lookup entirely.
+    const { getTool, api } = captureRegisteredTool();
+    const ensureSession = vi.fn().mockResolvedValue({ id: "fake-handle" });
+    const runTurn = vi.fn().mockImplementation(() => {
+      throw new Error("stop");
+    });
+    const runtime = { runTurn, ensureSession, close: vi.fn() } as never;
+    registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
+
+    const result = await getTool().execute("call-4", {
+      agentId: "stale",
+      cwd: "/explicit/path",
+      agent: "codex",
+      prompt: "noop",
+    });
+
+    expect(mockResolveAgentById).not.toHaveBeenCalled();
+    expect(getText(result)).not.toContain("AGENTID_UNRESOLVED");
+
+    expect(ensureSession).toHaveBeenCalledTimes(1);
+    expect(ensureSession).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/explicit/path",
+      agent: "codex",
+    }));
   });
 });
