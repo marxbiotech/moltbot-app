@@ -172,9 +172,12 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
     unregisterSessionQueue(acpSessionId);
   });
 
-  it("collectTurnOutput surfaces operations[] and operationCount for a codex turn", async () => {
+  it("collectTurnOutput merges tool_call + tool_call_update into one entry per toolCallId", async () => {
     // Replay a small but realistic codex transcript:
     //   tool_call (in_progress) → tool_call_update (completed) → done
+    // Each (tool_call, tool_call_update) pair must collapse into one entry —
+    // without merge, the completion update would render as
+    // `unknown [completed]` since tool_call_update has no `title`.
     const lines = [
       JSON.stringify({
         jsonrpc: "2.0",
@@ -247,15 +250,543 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
 
     expect(result.status).toBe("success");
     expect(result.stopReason).toBe("end_turn");
-    expect(result.operationCount).toBe(4); // 2 tool_call + 2 tool_call_update
-    expect(result.operations.map((op) => op.tool)).toEqual([
-      "Read file foo.ts",
-      "unknown", // tool_call_update has no title
-      "Edit file foo.ts",
-      "unknown",
+    expect(result.operationCount).toBe(2);
+    expect(result.operations).toEqual([
+      { tool: "Read file foo.ts", summary: "42 lines", status: "completed" },
+      { tool: "Edit file foo.ts", summary: "wrote 1 hunk", status: "completed" },
     ]);
-    expect(result.operations[1]?.summary).toBe("42 lines");
-    expect(result.operations[3]?.summary).toBe("wrote 1 hunk");
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("merges interleaved updates for multiple tool calls in original creation order", async () => {
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_a",
+            title: "pwd",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_b",
+            title: "ls /tmp",
+            status: "in_progress",
+          },
+        },
+      }),
+      // Updates arrive out of creation order — b completes before a.
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_b",
+            status: "completed",
+            content: [{ type: "text", text: "3 entries" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_a",
+            status: "completed",
+            content: [{ type: "text", text: "/Users/me" }],
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(2);
+    // Insertion order is creation order, not completion order.
+    expect(result.operations).toEqual([
+      { tool: "pwd", summary: "/Users/me", status: "completed" },
+      { tool: "ls /tmp", summary: "3 entries", status: "completed" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("backfills title when tool_call_update arrives before its tool_call", async () => {
+    // Defensive — if an update for a fresh toolCallId arrives first, the entry
+    // is created with `tool: \"unknown\"`. A later `tool_call` with the same id
+    // must backfill the title rather than push a duplicate row.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_late",
+            status: "completed",
+            content: [{ type: "text", text: "done" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_late",
+            title: "Read REVIEW.txt",
+            status: "in_progress",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    // Title backfilled from the late `tool_call`; status stays at the most
+    // recent value (`in_progress` here, since the late event was the create).
+    // Summary preserved from the earlier update — empty creation text must not
+    // clobber non-empty content already collected.
+    expect(result.operations).toEqual([
+      { tool: "Read REVIEW.txt", summary: "done", status: "in_progress" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("keeps tool_call events without toolCallId as separate entries", async () => {
+    // The simple-event-format path in event-router.ts (the legacy tool_call
+    // branch that omits toolCallId) and any agent that omits toolCallId must
+    // not have its events merged into a single row.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            title: "first call",
+            status: "completed",
+            content: [{ type: "text", text: "alpha" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            title: "second call",
+            status: "completed",
+            content: [{ type: "text", text: "beta" }],
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(2);
+    expect(result.operations).toEqual([
+      { tool: "first call", summary: "alpha", status: "completed" },
+      { tool: "second call", summary: "beta", status: "completed" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("status is last-write-wins across multiple tool_call_updates", async () => {
+    // Pins the if (event.status) guard against a future "monotonic transitions
+    // only" refactor — the merge policy is LWW for status, and a final
+    // completed_with_error must surface even if it follows another terminal.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_x",
+            title: "Run task",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_x",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_x",
+            status: "completed_with_error",
+            content: [{ type: "text", text: "boom" }],
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Run task", summary: "boom", status: "completed_with_error" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("empty tool_call_update content does not clobber non-empty creation summary", async () => {
+    // Pins the if (incomingSummary) guard against a polarity flip — a content-
+    // less terminal update must keep the creation's summary, since the more
+    // common real-world ordering is creation-with-content followed by an
+    // update that only carries the new status.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_y",
+            title: "Read config",
+            status: "in_progress",
+            content: [{ type: "text", text: "important detail" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_y",
+            status: "completed",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Read config", summary: "important detail", status: "completed" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("over-cap tool_call_updates do not re-inflate operationCount via tombstones", async () => {
+    // 35 unique-id tool_calls (5 over the MAX_OPERATIONS=30 cap), each
+    // followed by a completion update for the same id. The cap drops entries
+    // 31-35 from `operations`, but tombstones in operationsById keep their
+    // updates from re-incrementing operationCount.
+    const lines: string[] = [];
+    for (let i = 0; i < 35; i += 1) {
+      lines.push(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: acpSessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `call_${i}`,
+              title: `op ${i}`,
+              status: "in_progress",
+            },
+          },
+        }),
+      );
+      lines.push(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: acpSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: `call_${i}`,
+              status: "completed",
+              content: [{ type: "text", text: `done ${i}` }],
+            },
+          },
+        }),
+      );
+    }
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operations).toHaveLength(30);
+    // 35 unique creations — without the tombstone, the 5 over-cap updates
+    // would re-create-then-drop, pushing operationCount to 40.
+    expect(result.operationCount).toBe(35);
+    // Stored entries (the first 30) all merged their completion updates.
+    for (const op of result.operations) {
+      expect(op.status).toBe("completed");
+      expect(op.summary).toMatch(/^done \d+$/);
+    }
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("title drift: a second non-empty title for the same id is dropped and warned", async () => {
+    // Pins the title-drift detector — a real title must never be overwritten
+    // by a different real title from a later event for the same toolCallId.
+    vi.mocked(log.warn).mockClear();
+
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_drift",
+            title: "Original title",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_drift",
+            title: "Different title",
+            status: "in_progress",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Original title", summary: "", status: "in_progress" },
+    ]);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("title drift"),
+    );
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("orphan tool_call_update warns to surface protocol drift", async () => {
+    // Pins the orphan-update warn (covers both the missing-id and unknown-id
+    // protocol-drift cases). The entry is still pushed defensively, but the
+    // warn lets an operator distinguish drift from the legitimate simple-
+    // event-format path (which leaves event.tag undefined and stays silent).
+    vi.mocked(log.warn).mockClear();
+
+    feedLine(
+      acpSessionId,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_orphan",
+            status: "completed",
+            content: [{ type: "text", text: "result" }],
+          },
+        },
+      }),
+    );
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    // Defensive entry created so the row isn't silently lost.
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "unknown", summary: "result", status: "completed" },
+    ]);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("tool_call_update without prior tool_call"),
+    );
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("empty tool_call_update onto empty creation summary warns about content loss", async () => {
+    // Pins the empty-summary diagnostic — fires only when the row will render
+    // with no content at all (both creation and update content are empty).
+    // This is the post-#31 future-regression signal; legitimate "creation
+    // without content + update with content" stays silent.
+    vi.mocked(log.warn).mockClear();
+
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_empty",
+            title: "Run silent",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_empty",
+            status: "completed",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Run silent", summary: "", status: "completed" },
+    ]);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("had empty content"),
+    );
 
     unregisterSessionQueue(acpSessionId);
   });
