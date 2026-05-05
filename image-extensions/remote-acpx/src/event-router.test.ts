@@ -632,6 +632,165 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
     unregisterSessionQueue(acpSessionId);
   });
 
+  it("title drift: a second non-empty title for the same id is dropped and warned", async () => {
+    // Pins the title-drift detector — a real title must never be overwritten
+    // by a different real title from a later event for the same toolCallId.
+    vi.mocked(log.warn).mockClear();
+
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_drift",
+            title: "Original title",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_drift",
+            title: "Different title",
+            status: "in_progress",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Original title", summary: "", status: "in_progress" },
+    ]);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("title drift"),
+    );
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("orphan tool_call_update warns to surface protocol drift", async () => {
+    // Pins the orphan-update warn (covers both the missing-id and unknown-id
+    // protocol-drift cases). The entry is still pushed defensively, but the
+    // warn lets an operator distinguish drift from the legitimate simple-
+    // event-format path (which leaves event.tag undefined and stays silent).
+    vi.mocked(log.warn).mockClear();
+
+    feedLine(
+      acpSessionId,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_orphan",
+            status: "completed",
+            content: [{ type: "text", text: "result" }],
+          },
+        },
+      }),
+    );
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    // Defensive entry created so the row isn't silently lost.
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "unknown", summary: "result", status: "completed" },
+    ]);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("tool_call_update without prior tool_call"),
+    );
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("empty tool_call_update onto empty creation summary warns about content loss", async () => {
+    // Pins the empty-summary diagnostic — fires only when the row will render
+    // with no content at all (both creation and update content are empty).
+    // This is the post-#31 future-regression signal; legitimate "creation
+    // without content + update with content" stays silent.
+    vi.mocked(log.warn).mockClear();
+
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_empty",
+            title: "Run silent",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_empty",
+            status: "completed",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Run silent", summary: "", status: "completed" },
+    ]);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("had empty content"),
+    );
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
   it("ignores unrelated session/update tags (usage_update, plan, etc.)", () => {
     const lines = [
       JSON.stringify({
