@@ -175,13 +175,9 @@ function flattenToolCallContent(value: unknown): string {
 }
 
 // Build a string `errorMsg` for an `acp.error` payload of unknown shape.
-// Three cases the caller cares about:
-//   string                            → forward as-is
-//   non-null object/primitive (≠null) → JSON.stringify, truncate, mark truncation
-//   null/undefined                    → labelled placeholder
-// The try/catch is non-defensive: today the upstream contract is JSON.parse-derived
-// so cycles cannot arrive, but the alternative — letting JSON.stringify throw mid-
-// routing — would lose the very acp.error event we are trying to surface.
+// The try/catch is defense in depth: today the upstream contract is JSON.parse-
+// derived so cycles cannot arrive, but the alternative — letting JSON.stringify
+// throw mid-routing — would lose the very acp.error event we are trying to surface.
 const ERROR_PAYLOAD_MAX_CHARS = 500;
 function formatAcpErrorMessage(value: unknown): string {
   if (typeof value === "string") {
@@ -356,8 +352,8 @@ export function routeNodeEvent(
       break;
     }
     case "acp.error": {
-      // Stringify object-shaped error payloads instead of replacing them with an
-      // opaque placeholder; otherwise the log line below would lose the real cause.
+      // Stringify object-shaped error payloads; otherwise the log line below
+      // would lose the real cause.
       const errorMsg = formatAcpErrorMessage(payload.error);
       // Surface the payload so spawn-time failures (ENOENT, "Agent command not
       // found: acpx", chdir errors) are visible in the pod log without ssh.
