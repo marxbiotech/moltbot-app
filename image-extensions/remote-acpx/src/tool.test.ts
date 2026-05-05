@@ -1,6 +1,6 @@
-// Focused test for the run_coder fail-loud behavior on unresolved agentId.
-// The early-return path under test does not touch the runtime or the session
-// manager, so mocks here cover only what tool.ts imports at module load.
+// Focused tests for the run_coder agentId resolution logic.
+// Covers: fail-loud on bare unknown agentId, and graceful degradation
+// when the caller supplies explicit overrides alongside an unknown agentId.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -20,9 +20,9 @@ vi.mock("openclaw/plugin-sdk/remote-acpx", () => ({
   isAcpRuntimeError: () => false,
 }));
 
-// typebox is not installed in the test environment (jiti resolves it at runtime
-// in production). Stub the only methods registerCodingTool calls during
-// registration; schemas are not exercised by the early-return path under test.
+// vitest's resolver cannot load typebox the way jiti does at runtime;
+// stub the methods registerCodingTool calls during registration. The
+// resolution paths under test never exercise these schemas.
 vi.mock("typebox", () => ({
   Type: {
     Object: () => ({}),
@@ -36,7 +36,7 @@ import { registerCodingTool, type CodingToolConfig } from "./tool.js";
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 type ToolFactory = Parameters<OpenClawPluginApi["registerTool"]>[0];
-type ToolDef = ToolFactory extends (ctx: infer _C) => infer T ? T : never;
+type ToolDef = ReturnType<ToolFactory>;
 
 function captureRegisteredTool(): {
   getTool: () => ToolDef;
@@ -50,44 +50,76 @@ function captureRegisteredTool(): {
   } as unknown as OpenClawPluginApi;
 
   const getTool = (): ToolDef => {
-    if (typeof captured !== "function") {
+    const factory = captured;
+    if (!factory) {
       throw new Error("registerCodingTool did not register a factory");
     }
-    return (captured as (ctx: { sessionKey: string }) => ToolDef)({
-      sessionKey: "test-session",
-    });
+    return factory({ sessionKey: "test-session" });
   };
   return { getTool, api };
 }
 
 const config: CodingToolConfig = { defaultAgent: "claude", maxOutputChars: 6000 };
 
+function getText(result: { content: Array<{ type: "text"; text: string }> }): string {
+  return result.content[0]!.text;
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("run_coder — unresolved agentId", () => {
+describe("run_coder — agentId resolution", () => {
   beforeEach(() => {
     mockResolveAgentById.mockReset();
   });
 
-  it("returns AGENTID_UNRESOLVED instead of silently falling back to defaults", async () => {
+  it("fails loud with AGENTID_UNRESOLVED when bare unknown agentId is given (no overrides)", async () => {
     mockResolveAgentById.mockReturnValue(null);
 
     const { getTool, api } = captureRegisteredTool();
-    const getRuntime = vi.fn(() => ({}) as never);
-    registerCodingTool(api, { getRuntime, getConfig: () => config });
+    const runTurn = vi.fn();
+    const ensureSession = vi.fn();
+    const runtime = { runTurn, ensureSession } as never;
+    registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
-    const tool = getTool();
-    const result = await tool.execute("call-1", {
+    const result = await getTool().execute("call-1", {
       agentId: "does-not-exist",
       prompt: "noop",
     });
 
     expect(mockResolveAgentById).toHaveBeenCalledWith("does-not-exist");
-    expect(getRuntime).toHaveBeenCalledTimes(1);
 
-    const text = (result.content[0] as { type: "text"; text: string }).text;
+    // The load-bearing assertion: an unresolved agentId must not touch the
+    // remote runtime. If silent fallback regressed, runTurn or ensureSession
+    // would be invoked here.
+    expect(runTurn).not.toHaveBeenCalled();
+    expect(ensureSession).not.toHaveBeenCalled();
+
+    const text = getText(result);
     expect(text).toContain("AGENTID_UNRESOLVED");
-    expect(text).toContain('agentId="does-not-exist"');
+    expect(text).toContain("does-not-exist");
     expect(text).toContain("coding_agents_list");
+  });
+
+  it("does NOT fail loud when unknown agentId is given alongside explicit cwd (degrades gracefully)", async () => {
+    mockResolveAgentById.mockReturnValue(null);
+
+    const { getTool, api } = captureRegisteredTool();
+    // Minimal stub — downstream calls past the resolution point will throw,
+    // get caught by the outer try/catch, and be returned as a generic error.
+    // The point is only to assert that the AGENTID_UNRESOLVED early-return
+    // did not fire.
+    const runtime = {} as never;
+    registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
+
+    const result = await getTool().execute("call-2", {
+      agentId: "stale",
+      cwd: "/explicit/path",
+      prompt: "noop",
+    });
+
+    // Roster was still consulted (because agent was missing), but the miss
+    // degraded to the explicit cwd + default agent rather than failing loud.
+    expect(mockResolveAgentById).toHaveBeenCalledWith("stale");
+    expect(getText(result)).not.toContain("AGENTID_UNRESOLVED");
   });
 });

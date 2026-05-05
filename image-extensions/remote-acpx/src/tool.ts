@@ -119,8 +119,13 @@ export function registerCodingTool(
       };
 
       // Resolve cwd and variant: explicit params > agentId lookup > defaults.
-      // Unknown agentId fails loud — silent fallback to defaults would mask
-      // routing bugs and contradicts the skill's "do not guess paths or ids" rule.
+      // When an unknown agentId is given alone (no cwd or agent overrides),
+      // fail loud with AGENTID_UNRESOLVED — silent fallback to defaults would
+      // mask routing bugs and contradicts the remote-acp-router SKILL.md
+      // "do not guess paths or ids" rule. When the caller also supplies
+      // explicit cwd or agent, an unknown agentId is treated as a roster miss
+      // and the call degrades to those overrides + defaults (preserves the
+      // partial-override pattern documented in SKILL.md step 4).
       let resolvedCwd = cwd || "";
       let resolvedAgent = agent || "";
       if (agentId && cwd && agent) {
@@ -130,7 +135,7 @@ export function registerCodingTool(
         if (roster) {
           if (!cwd) resolvedCwd = roster.cwd;
           if (!agent && roster.agent) resolvedAgent = roster.agent;
-        } else {
+        } else if (!cwd && !agent) {
           log.warn(`execute: agentId="${agentId}" not found in roster — returning AGENTID_UNRESOLVED`);
           return {
             content: [{
@@ -141,6 +146,8 @@ export function registerCodingTool(
                 `parameters to bypass roster lookup.`,
             }],
           };
+        } else {
+          log.warn(`execute: agentId="${agentId}" not found in roster — proceeding with explicit overrides + defaults`);
         }
       }
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
