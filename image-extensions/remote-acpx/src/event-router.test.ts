@@ -175,9 +175,9 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
   it("collectTurnOutput merges tool_call + tool_call_update into one entry per toolCallId", async () => {
     // Replay a small but realistic codex transcript:
     //   tool_call (in_progress) → tool_call_update (completed) → done
-    // Regression for #29 — previously this produced 4 entries (2 logical calls
-    // × {creation, completion}) with the completion rows showing as
-    // `unknown [completed]` because tool_call_update has no title.
+    // Each (tool_call, tool_call_update) pair must collapse into one entry —
+    // without merge, the completion update would render as
+    // `unknown [completed]` since tool_call_update has no `title`.
     const lines = [
       JSON.stringify({
         jsonrpc: "2.0",
@@ -396,8 +396,9 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
   });
 
   it("keeps tool_call events without toolCallId as separate entries", async () => {
-    // The simple-event-format path (event-router.ts:107-115) and any agent
-    // that omits toolCallId must not have its events merged into a single row.
+    // The simple-event-format path in event-router.ts (the legacy tool_call
+    // branch that omits toolCallId) and any agent that omits toolCallId must
+    // not have its events merged into a single row.
     const lines = [
       JSON.stringify({
         jsonrpc: "2.0",
@@ -444,6 +445,189 @@ describe("event-router parseJsonRpcLine — codex tool_call path", () => {
       { tool: "first call", summary: "alpha", status: "completed" },
       { tool: "second call", summary: "beta", status: "completed" },
     ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("status is last-write-wins across multiple tool_call_updates", async () => {
+    // Pins the if (event.status) guard against a future "monotonic transitions
+    // only" refactor — the merge policy is LWW for status, and a final
+    // completed_with_error must surface even if it follows another terminal.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_x",
+            title: "Run task",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_x",
+            status: "in_progress",
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_x",
+            status: "completed_with_error",
+            content: [{ type: "text", text: "boom" }],
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Run task", summary: "boom", status: "completed_with_error" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("empty tool_call_update content does not clobber non-empty creation summary", async () => {
+    // Pins the if (incomingSummary) guard against a polarity flip — a content-
+    // less terminal update must keep the creation's summary, since the more
+    // common real-world ordering is creation-with-content followed by an
+    // update that only carries the new status.
+    const lines = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_y",
+            title: "Read config",
+            status: "in_progress",
+            content: [{ type: "text", text: "important detail" }],
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: acpSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_y",
+            status: "completed",
+          },
+        },
+      }),
+    ];
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operationCount).toBe(1);
+    expect(result.operations).toEqual([
+      { tool: "Read config", summary: "important detail", status: "completed" },
+    ]);
+
+    unregisterSessionQueue(acpSessionId);
+  });
+
+  it("over-cap tool_call_updates do not re-inflate operationCount via tombstones", async () => {
+    // 35 unique-id tool_calls (5 over the MAX_OPERATIONS=30 cap), each
+    // followed by a completion update for the same id. The cap drops entries
+    // 31-35 from `operations`, but tombstones in operationsById keep their
+    // updates from re-incrementing operationCount.
+    const lines: string[] = [];
+    for (let i = 0; i < 35; i += 1) {
+      lines.push(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: acpSessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `call_${i}`,
+              title: `op ${i}`,
+              status: "in_progress",
+            },
+          },
+        }),
+      );
+      lines.push(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId: acpSessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: `call_${i}`,
+              status: "completed",
+              content: [{ type: "text", text: `done ${i}` }],
+            },
+          },
+        }),
+      );
+    }
+
+    for (const line of lines) {
+      feedLine(acpSessionId, line);
+    }
+
+    const iter = (async function* () {
+      for (const event of queue.events) {
+        yield event;
+      }
+    })();
+
+    const result = await collectTurnOutput(iter, { maxOutputChars: 8000 });
+
+    expect(result.operations).toHaveLength(30);
+    // 35 unique creations — without the tombstone, the 5 over-cap updates
+    // would re-create-then-drop, pushing operationCount to 40.
+    expect(result.operationCount).toBe(35);
+    // Stored entries (the first 30) all merged their completion updates.
+    for (const op of result.operations) {
+      expect(op.status).toBe("completed");
+      expect(op.summary).toMatch(/^done \d+$/);
+    }
 
     unregisterSessionQueue(acpSessionId);
   });
