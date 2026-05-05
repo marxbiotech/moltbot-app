@@ -174,6 +174,38 @@ function flattenToolCallContent(value: unknown): string {
   return parts.join("\n");
 }
 
+// Build a string `errorMsg` for an `acp.error` payload of unknown shape.
+// Three cases the caller cares about:
+//   string                            → forward as-is
+//   non-null object/primitive (≠null) → JSON.stringify, truncate, mark truncation
+//   null/undefined                    → labelled placeholder
+// The try/catch is non-defensive: today the upstream contract is JSON.parse-derived
+// so cycles cannot arrive, but the alternative — letting JSON.stringify throw mid-
+// routing — would lose the very acp.error event we are trying to surface.
+const ERROR_PAYLOAD_MAX_CHARS = 500;
+function formatAcpErrorMessage(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value == null) {
+    return "Unknown ACP error (no payload.error)";
+  }
+  let raw: string;
+  try {
+    raw = JSON.stringify(value);
+  } catch (e) {
+    raw = `<unserializable: ${e instanceof Error ? e.message : String(e)}>`;
+  }
+  // JSON.stringify can return undefined for values like bare functions/symbols.
+  if (typeof raw !== "string") {
+    raw = String(value);
+  }
+  if (raw.length > ERROR_PAYLOAD_MAX_CHARS) {
+    return `non-string error payload: ${raw.slice(0, ERROR_PAYLOAD_MAX_CHARS)}…(truncated, ${raw.length} chars)`;
+  }
+  return `non-string error payload: ${raw}`;
+}
+
 // Parse JSON-RPC 2.0 messages from acpx / claude-agent-acp
 function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null {
   const method = typeof obj.method === "string" ? obj.method : "";
@@ -324,14 +356,9 @@ export function routeNodeEvent(
       break;
     }
     case "acp.error": {
-      // Stringify object-shaped error payloads instead of replacing them with a
-      // useless placeholder; otherwise the log line below would lose the real cause.
-      const errorMsg =
-        typeof payload.error === "string"
-          ? payload.error
-          : payload.error != null
-            ? `non-string error payload: ${JSON.stringify(payload.error).slice(0, 500)}`
-            : "Unknown ACP error (no payload.error)";
+      // Stringify object-shaped error payloads instead of replacing them with an
+      // opaque placeholder; otherwise the log line below would lose the real cause.
+      const errorMsg = formatAcpErrorMessage(payload.error);
       // Surface the payload so spawn-time failures (ENOENT, "Agent command not
       // found: acpx", chdir errors) are visible in the pod log without ssh.
       log.error(`acp.error: acpSessionId=${acpSessionId} error=${errorMsg}`);

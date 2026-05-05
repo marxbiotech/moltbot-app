@@ -428,7 +428,7 @@ describe("event-router routeNodeEvent — acp.error logging", () => {
     unregisterSessionQueue(acpSessionId);
   });
 
-  it("logs even when no resolver and no queue are registered", () => {
+  it("logs both error and the orphan warn when no resolver and no queue are registered", () => {
     routeNodeEvent("node-1", {
       event: "acp.error",
       payload: { acpSessionId: "orphan-session", error: "stale error" },
@@ -436,6 +436,12 @@ describe("event-router routeNodeEvent — acp.error logging", () => {
 
     expect(vi.mocked(log.error)).toHaveBeenCalledWith(
       expect.stringContaining("acp.error: acpSessionId=orphan-session"),
+    );
+    // The orphan warn is the operator's only signal that an acp.error arrived
+    // for an unknown session; assert it explicitly so a regression that drops
+    // the warn is caught.
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("acp.error with no handler: acpSessionId=orphan-session"),
     );
   });
 
@@ -453,5 +459,55 @@ describe("event-router routeNodeEvent — acp.error logging", () => {
     expect(logged).toContain("ENOENT");
     expect(logged).toContain("/usr/bin/acpx");
     expect(logged).not.toContain("Unknown ACP error");
+  });
+
+  it("falls back to the placeholder when payload.error is undefined", () => {
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: { acpSessionId: "no-error-session" },
+    });
+
+    const logged = vi.mocked(log.error).mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("Unknown ACP error (no payload.error)");
+  });
+
+  it("treats payload.error === null the same as missing", () => {
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: { acpSessionId: "null-error-session", error: null },
+    });
+
+    const logged = vi.mocked(log.error).mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("Unknown ACP error (no payload.error)");
+  });
+
+  it("does not throw when payload.error is a circular object, and still logs", () => {
+    const circular: Record<string, unknown> = { code: "ENOENT" };
+    circular.self = circular;
+
+    expect(() => {
+      routeNodeEvent("node-1", {
+        event: "acp.error",
+        payload: { acpSessionId: "circular-session", error: circular },
+      });
+    }).not.toThrow();
+
+    const logged = vi.mocked(log.error).mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("acp.error: acpSessionId=circular-session");
+    expect(logged).toContain("non-string error payload");
+    expect(logged).toContain("<unserializable:");
+  });
+
+  it("appends a truncation marker when the stringified payload exceeds the cap", () => {
+    const longPayload = { detail: "x".repeat(800) };
+
+    routeNodeEvent("node-1", {
+      event: "acp.error",
+      payload: { acpSessionId: "long-error-session", error: longPayload },
+    });
+
+    const logged = vi.mocked(log.error).mock.calls[0]?.[0] ?? "";
+    expect(logged).toContain("non-string error payload");
+    expect(logged).toMatch(/…\(truncated, \d+ chars\)/);
   });
 });
