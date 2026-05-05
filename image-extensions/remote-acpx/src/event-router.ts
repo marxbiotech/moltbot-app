@@ -133,6 +133,75 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
   }
 }
 
+// ACP `session/update` content[] arrives in three known shapes; flatten them
+// uniformly so claude/codex/gemini downstream see the same string:
+//   "..."                                                         — bare string
+//   [{ type: "content", content: { type: "text", text: "..." } }] — openclaw ACP server emit (event-mapper.ts:344)
+//   [{ type: "text", text: "..." }]                               — simpler agents
+// Single-object inputs are normalized to a one-element array; unknown block
+// shapes log a warn and are dropped (so protocol drift is observable).
+function flattenToolCallContent(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    return "";
+  }
+  const blocks = Array.isArray(value) ? value : [value];
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (typeof block === "string") {
+      parts.push(block);
+      continue;
+    }
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const entry = block as Record<string, unknown>;
+    if (entry.type === "content" && typeof entry.content === "object" && entry.content !== null) {
+      const inner = entry.content as Record<string, unknown>;
+      if (typeof inner.text === "string") {
+        parts.push(inner.text);
+        continue;
+      }
+    }
+    if (typeof entry.text === "string") {
+      parts.push(entry.text);
+      continue;
+    }
+    log.warn(`flattenToolCallContent: unrecognized block type=${String(entry.type)} keys=${Object.keys(entry).join(",")}`);
+  }
+  return parts.join("\n");
+}
+
+// Build a string `errorMsg` for an `acp.error` payload of unknown shape.
+// The try/catch is defense in depth: today the upstream contract is JSON.parse-
+// derived so cycles cannot arrive, but the alternative — letting JSON.stringify
+// throw mid-routing — would lose the very acp.error event we are trying to surface.
+const ERROR_PAYLOAD_MAX_CHARS = 500;
+function formatAcpErrorMessage(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value == null) {
+    return "Unknown ACP error (no payload.error)";
+  }
+  let raw: string;
+  try {
+    raw = JSON.stringify(value);
+  } catch (e) {
+    raw = `<unserializable: ${e instanceof Error ? e.message : String(e)}>`;
+  }
+  // JSON.stringify can return undefined for values like bare functions/symbols.
+  if (typeof raw !== "string") {
+    raw = String(value);
+  }
+  if (raw.length > ERROR_PAYLOAD_MAX_CHARS) {
+    return `non-string error payload: ${raw.slice(0, ERROR_PAYLOAD_MAX_CHARS)}…(truncated, ${raw.length} chars)`;
+  }
+  return `non-string error payload: ${raw}`;
+}
+
 // Parse JSON-RPC 2.0 messages from acpx / claude-agent-acp
 function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null {
   const method = typeof obj.method === "string" ? obj.method : "";
@@ -162,6 +231,26 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
       const text = content && typeof content.text === "string" ? content.text : "";
       if (!text) return null;
       return { type: "text_delta", text };
+    }
+
+    // Codex turns are tool-driven and may not emit agent_message_chunk at all;
+    // gemini uses the same parser path but has not been live-verified. Forward
+    // tool_call (creation) and tool_call_update (state transitions) so they
+    // populate output-collector's operations[]. The `tag` carries the original
+    // sessionUpdate for downstream code that wants to distinguish them.
+    //
+    // Unlike agent_message_chunk above, this branch does NOT skip on empty
+    // text: tool_call creation events legitimately have no content yet (only
+    // title/status/toolCallId), and operationCount must include them.
+    if (sessionUpdate === "tool_call" || sessionUpdate === "tool_call_update") {
+      return {
+        type: "tool_call",
+        text: flattenToolCallContent(update.content),
+        tag: sessionUpdate,
+        ...(typeof update.toolCallId === "string" ? { toolCallId: update.toolCallId } : {}),
+        ...(typeof update.title === "string" ? { title: update.title } : {}),
+        ...(typeof update.status === "string" ? { status: update.status } : {}),
+      };
     }
 
     // Ignore protocol/control messages (usage_update, available_commands_update, etc.)
@@ -263,8 +352,12 @@ export function routeNodeEvent(
       break;
     }
     case "acp.error": {
-      const errorMsg = typeof payload.error === "string" ? payload.error : "Unknown ACP error";
-      // Check if this is a spawn error
+      // Stringify object-shaped error payloads; otherwise the log line below
+      // would lose the real cause.
+      const errorMsg = formatAcpErrorMessage(payload.error);
+      // Surface the payload so spawn-time failures (ENOENT, "Agent command not
+      // found: acpx", chdir errors) are visible in the pod log without ssh.
+      log.error(`acp.error: acpSessionId=${acpSessionId} error=${errorMsg}`);
       const spawnResolver = spawnResolvers.get(acpSessionId);
       if (spawnResolver) {
         spawnResolvers.delete(acpSessionId);
