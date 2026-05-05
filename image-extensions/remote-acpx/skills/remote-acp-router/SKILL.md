@@ -49,6 +49,28 @@ The local `/acp` slash command spawns the same local-harness UX. The non-overlap
 - `cx` / `codex` → agent variant: `codex`
 - `gem` / `gemini` / `gemini cli` → agent variant: `gemini`
 
+### Variant prerequisites
+
+Each variant is dispatched as `acpx <variant> …` on the paired Mac, which in turn launches the variant's own CLI. The variant CLI must already be authenticated on the node — remote-acpx does not perform any auth handoff.
+
+| Variant | CLI | Auth prerequisite on the paired node |
+|---------|-----|---------------------------------------|
+| `claude` | Claude Code via `@agentclientprotocol/claude-agent-acp` | `claude` CLI logged in (Anthropic auth) |
+| `codex` | bundled `@zed-industries/codex-acp` (isolated CODEX_HOME) | OpenAI / Codex auth completed |
+| `gemini` | `gemini --acp` (Google Gemini CLI) | `gemini auth login` completed on the Mac |
+
+When a Gemini turn fails immediately at spawn with an auth-style error, surface it to the user and ask them to run `gemini auth login` on the paired Mac before retrying. Do not silently fall back to a different variant.
+
+### Gemini model aliases
+
+For `agent: "gemini"`, the `model` parameter accepts either a full Gemini model id (e.g. `gemini-3.1-flash-preview`) or one of the short aliases:
+
+- `pro` → `gemini-3.1-pro-preview`
+- `flash` → `gemini-3.1-flash-preview`
+- `flash-lite` → `gemini-3.1-flash-lite-preview`
+
+The aliases are normalized inside remote-acpx; unknown values pass through unchanged so newer model ids continue to work.
+
 ### Roster tools
 
 | Tool | Purpose |

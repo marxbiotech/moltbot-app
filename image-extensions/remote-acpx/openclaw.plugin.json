@@ -12,10 +12,12 @@
       },
       "agentCommand": {
         "type": "string",
+        "description": "Command on the paired node that dispatches ACP agents. Defaults to 'acpx', which routes to per-variant CLIs (e.g. 'gemini --acp' for variant 'gemini').",
         "default": "acpx"
       },
       "defaultAgent": {
         "type": "string",
+        "description": "ACP agent variant used when run_coder is called without an explicit 'agent'. Recognized variants: 'claude', 'codex', 'gemini'. Other strings pass through to acpx unchanged. Selecting 'gemini' requires the paired node to have completed 'gemini auth login'.",
         "default": "claude"
       },
       "cwd": {

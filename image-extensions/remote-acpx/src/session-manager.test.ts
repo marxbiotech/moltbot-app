@@ -125,6 +125,31 @@ describe("SessionManager", () => {
     expect(vi.mocked(runtime.close)).not.toHaveBeenCalled();
   });
 
+  it("reuses cached session for agent='gemini' on same key + cwd", async () => {
+    const h1 = await mgr.getOrCreate("s1", runtime, { agent: "gemini", cwd: "/work" });
+    const h2 = await mgr.getOrCreate("s1", runtime, { agent: "gemini", cwd: "/work" });
+
+    expect(h1).toBe(h2);
+    expect(vi.mocked(runtime.ensureSession)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runtime.close)).not.toHaveBeenCalled();
+  });
+
+  it("respawns and closes prior handle when switching claude → gemini on same key", async () => {
+    const h1 = await mgr.getOrCreate("s1", runtime, { agent: "claude", cwd: "/work" });
+    const h2 = await mgr.getOrCreate("s1", runtime, { agent: "gemini", cwd: "/work" });
+
+    expect(h1).not.toBe(h2);
+    expect(vi.mocked(runtime.ensureSession)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runtime.close)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runtime.close).mock.calls[0]?.[0]).toMatchObject({ reason: "stale" });
+    // Confirm the second spawn requested the gemini variant.
+    expect(vi.mocked(runtime.ensureSession).mock.calls[1]?.[0]).toMatchObject({
+      sessionKey: "s1",
+      agent: "gemini",
+      cwd: "/work",
+    });
+  });
+
   it("handles close failure gracefully on stale session", async () => {
     const failRuntime = makeFakeRuntime({
       close: vi.fn(async () => { throw new Error("close boom"); }),
