@@ -19,6 +19,16 @@ describe("isSecretLikePath", () => {
     expect(isSecretLikePath("messages.groupChat.mentionPatterns")).toBe(false);
     expect(isSecretLikePath("channels.telegram.groups")).toBe(false);
   });
+  it("matches per segment, not substring (regression: avoid over-redacting `author.name`, `authority.level`)", () => {
+    // Substring matching would incorrectly redact these because "author" and
+    // "authority" both contain the substring "auth". Segment-exact matching
+    // does not.
+    expect(isSecretLikePath("author.name")).toBe(false);
+    expect(isSecretLikePath("authority.level")).toBe(false);
+    expect(isSecretLikePath("contributors.author.handle")).toBe(false);
+    // But a path with `auth` as its own segment is still secret-like.
+    expect(isSecretLikePath("auth.openai.apiKey")).toBe(true);
+  });
 });
 
 describe("isEnvRefShape", () => {
