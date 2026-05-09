@@ -6,7 +6,7 @@ const GITHUB_HEADERS = {
   "X-GitHub-Api-Version": "2022-11-28",
 } as const;
 
-function getPersona(): string {
+export function getPersona(): string {
   // Try Tailscale hostname first (strip "moltbot-" prefix)
   try {
     const raw = execFileSync("tailscale", ["status", "--self", "--json"], {
