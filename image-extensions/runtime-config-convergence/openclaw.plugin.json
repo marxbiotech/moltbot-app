@@ -1,0 +1,11 @@
+{
+  "id": "runtime-config-convergence",
+  "name": "Runtime Config Convergence",
+  "description": "Foundation plugin (forked from manage-secrets) for runtime config management — drift detection, set_secret, set_config. Inert in Step 1 baseline; activated when detector port lands.",
+  "skills": [],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
