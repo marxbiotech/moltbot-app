@@ -23,7 +23,7 @@ import {
   formatCandidateNotification,
   type NotificationAdapter,
 } from "./notifications.js";
-import { runScan, type DetectorDeps } from "./detector.js";
+import { runScan as defaultRunScan, type DetectorDeps, type ScanResult } from "./detector.js";
 
 export interface CommandDeps {
   /** Resolved at register time. */
@@ -39,6 +39,12 @@ export interface CommandDeps {
   /** Optional shared notification adapter (so notify-test reuses the same one). */
   adapter?: NotificationAdapter;
   logger?: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
+  /**
+   * Optional scan runner. Defaults to the bare `runScan`. The plugin entry
+   * point injects a serialized version so the command, service-tick, and
+   * HTTP-route scan surfaces share a mutex (issue #35 §5 cross-surface race).
+   */
+  runScanFn?: (deps: DetectorDeps) => Promise<ScanResult>;
 }
 
 export interface CommandHandlerCtx {
@@ -96,27 +102,30 @@ function formatCandidateDetails(c: DriftCandidate): string {
   return lines.join("\n");
 }
 
-function dryRunPatchForCandidate(c: DriftCandidate): { patch: Record<string, unknown>; reason?: string } | { error: string } {
+/**
+ * Decide whether a candidate is patchable. The actual patch shape is built
+ * by the caller's segment-walking merge so siblings under shared parents
+ * accumulate correctly into the combined patch.
+ *
+ * v1 stub: real values are not stored in the queue (only hash + redacted
+ * summary), so the operator must re-fetch live values at apply time and
+ * substitute placeholders. This function only encodes the safety predicate.
+ *
+ * NOTE: the caller's segment walk does split the canonical path on `.` to
+ * build the placeholder patch shape. This is OK for v1 because patch
+ * generation only emits placeholders the operator must rewrite — paths with
+ * awkward characters (colons, `@`) are flagged as `compatible: no` so the
+ * operator does not auto-apply. The no-split-on-dot rule in `paths.ts` is a
+ * load-bearing invariant for *identity hashing*, not for placeholder UI.
+ */
+function dryRunPatchForCandidate(c: DriftCandidate): { ok: true } | { error: string } {
   if (c.reasonCode === "secret-shape-violation") {
     return { error: `Refusing to patch secret-shape-violation: ${c.canonicalPath}` };
   }
   if (c.summary.redacted) {
     return { error: `Refusing to patch redacted/secret-like path: ${c.canonicalPath}` };
   }
-  // v1: stub. Producing the actual patch requires the live value, which is
-  // not stored in the queue (we only keep the hash + redacted summary). The
-  // operator should re-fetch the live value at apply time. We emit a marker
-  // patch shape and a clear note.
-  const segments = c.canonicalPath.split(".");
-  let cursor: Record<string, unknown> = {};
-  const root = cursor;
-  for (let i = 0; i < segments.length - 1; i++) {
-    const next: Record<string, unknown> = {};
-    cursor[segments[i]] = next;
-    cursor = next;
-  }
-  cursor[segments[segments.length - 1]] = `<placeholder for ${c.canonicalPath}; live value not stored>`;
-  return { patch: root };
+  return { ok: true };
 }
 
 export async function handleCommand(
@@ -166,6 +175,13 @@ export async function handleCommand(
     }
 
     case "scan": {
+      // ctx.config is the live runtime config snapshot for this command call.
+      // The detector dives into diffConfig(undefined, desired) and reports
+      // every desired key as a missing-live drift if we let undefined pass
+      // through silently. Fail fast with a clear message instead.
+      if (ctx.config === undefined) {
+        return { text: "[FAIL] /config-drift scan requires a live config snapshot from the command context (ctx.config). Re-issue from a context that provides one." };
+      }
       const detectorDeps: DetectorDeps = {
         queuePath: deps.queuePath,
         persona: deps.persona,
@@ -174,7 +190,8 @@ export async function handleCommand(
         loadLiveConfig: deps.loadLiveConfigForScan(ctx.config),
         adapter,
       };
-      const result = await runScan(detectorDeps);
+      const runScanFn = deps.runScanFn ?? defaultRunScan;
+      const result = await runScanFn(detectorDeps);
       const lines = [
         `Scan complete.`,
         `  active=${result.active}, ignored=${result.ignored}, superseded=${result.superseded}`,
@@ -216,7 +233,11 @@ export async function handleCommand(
       if (!queue.candidates[id]) return { text: `[FAIL] No candidate with id ${id}` };
       const ok = queueIgnore(queue, id);
       if (!ok) return { text: `[FAIL] Cannot ignore ${id} (status: ${queue.candidates[id].status})` };
-      writeQueue(deps.queuePath, queue);
+      try {
+        writeQueue(deps.queuePath, queue);
+      } catch (e: unknown) {
+        return { text: `[FAIL] ${id} not persisted: ${e instanceof Error ? e.message : String(e)}` };
+      }
       return { text: `[PASS] Ignored ${id}. The exact (path, value) pair will not notify again.` };
     }
 
@@ -226,7 +247,11 @@ export async function handleCommand(
       if (!queue.candidates[id]) return { text: `[FAIL] No candidate with id ${id}` };
       const ok = queueUnignore(queue, id);
       if (!ok) return { text: `[FAIL] Cannot unignore ${id} (status: ${queue.candidates[id].status})` };
-      writeQueue(deps.queuePath, queue);
+      try {
+        writeQueue(deps.queuePath, queue);
+      } catch (e: unknown) {
+        return { text: `[FAIL] ${id} not persisted: ${e instanceof Error ? e.message : String(e)}` };
+      }
       return { text: `[PASS] Unignored ${id}.` };
     }
 
@@ -250,10 +275,22 @@ export async function handleCommand(
         if (c.status !== "active") { lines.push(`[SKIP] ${id}: status=${c.status}`); continue; }
         const r = dryRunPatchForCandidate(c);
         if ("error" in r) { lines.push(`[SKIP] ${id}: ${r.error}`); compatible = false; continue; }
-        // Merge naively (deep-merge would be needed for production patch generation).
-        Object.assign(combinedPatch, r.patch);
-        // Mark incompatible if path contains characters not allowed by current
-        // apply-config-patch.sh (issue #35 §9 / set-config preflight gate).
+        // Merge by walking the path segments so siblings under a shared
+        // ancestor (e.g. `auth.token` and `auth.user`) accumulate instead of
+        // overwriting each other — `Object.assign` does a shallow merge and
+        // would lose all but the last sibling's leaf when the patch object
+        // shares the root.
+        let cursor = combinedPatch;
+        const segments = c.canonicalPath.split(".");
+        for (let i = 0; i < segments.length - 1; i++) {
+          const next = cursor[segments[i]];
+          cursor = (typeof next === "object" && next !== null && !Array.isArray(next)
+            ? next
+            : (cursor[segments[i]] = {})) as Record<string, unknown>;
+        }
+        cursor[segments[segments.length - 1]] = `<placeholder for ${c.canonicalPath}; live value not stored>`;
+        // Mark incompatible if path contains characters not allowed by the
+        // current set-config.yml preflight gate (issue #35 §9).
         if (!/^[a-zA-Z_][\w.-]*(?:\.[a-zA-Z_][\w.-]*)*$/.test(c.canonicalPath)) {
           compatible = false;
           lines.push(`[NOTE] ${id}: path "${c.canonicalPath}" contains characters not supported by current set-config.yml`);

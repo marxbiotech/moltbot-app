@@ -8,12 +8,16 @@
 //
 // Identity rules per issue #35 §3:
 //   - Key by `(canonicalPath, liveValueHash)`.
-//   - Re-seeing the same pair: bump seenCount + lastSeenAt only.
+//   - Re-seeing the same pair: bump seenCount + lastSeenAt; refresh
+//     reasonCode and desiredValueHash from the latest scan (these can change
+//     if the desired side or ownership policy was edited).
 //   - New (canonicalPath, *different* liveValueHash): create a new candidate;
-//     mark all prior `active` candidates for the same path as `superseded`
-//     and link via `supersededBy`.
+//     mark all prior `active`/`ignored` candidates for the same path as
+//     `superseded` and link via `supersededBy`.
 //   - Permanent ignore applies only to the exact pair. If the live value
-//     changes, the new pair is unignored (a fresh candidate).
+//     later changes, the prior ignored candidate is *superseded* and a fresh
+//     active candidate is created; "unignored" status is reserved for the
+//     explicit `unignoreCandidate` operation.
 
 import {
   closeSync,
@@ -32,6 +36,7 @@ import type {
   CandidateQueue,
   ClassifiedDrift,
   DriftCandidate,
+  Mutable,
 } from "./types.js";
 import { hashValue } from "./canonical-json.js";
 import { buildCandidateId } from "./paths.js";
@@ -163,8 +168,9 @@ export function upsertCandidate(
     if (otherId === id) continue;
     if (other.canonicalPath !== drift.canonicalPath) continue;
     if (other.status === "superseded") continue;
-    other.status = "superseded";
-    other.supersededBy = id;
+    const m = other as Mutable<DriftCandidate>;
+    m.status = "superseded";
+    m.supersededBy = id;
     supersededIds.push(otherId);
   }
 
@@ -191,9 +197,10 @@ export function ignoreCandidate(queue: CandidateQueue, id: string, now: () => Da
   const c = queue.candidates[id];
   if (!c) return false;
   if (c.status === "superseded") return false;
-  c.status = "ignored";
-  c.ignoreScope = "exact-pair";
-  c.ignoredAt = now().toISOString();
+  const m = c as Mutable<DriftCandidate>;
+  m.status = "ignored";
+  m.ignoreScope = "exact-pair";
+  m.ignoredAt = now().toISOString();
   return true;
 }
 
@@ -202,9 +209,10 @@ export function unignoreCandidate(queue: CandidateQueue, id: string): boolean {
   const c = queue.candidates[id];
   if (!c) return false;
   if (c.status !== "ignored") return false;
-  c.status = "active";
-  c.ignoreScope = undefined;
-  c.ignoredAt = undefined;
+  const m = c as Mutable<DriftCandidate>;
+  m.status = "active";
+  m.ignoreScope = undefined;
+  m.ignoredAt = undefined;
   return true;
 }
 

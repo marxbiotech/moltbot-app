@@ -116,6 +116,17 @@ describe("queue identity, dedup, supersession, ignore", () => {
     expect(r3.candidate.id).not.toBe(r1.candidate.id);
   });
 
+  it("paths whose normalized tails collide still produce distinct ids on the same value", () => {
+    // `a.b`, `a-b`, and `a_b` all sanitize to the tail `b` in the readable
+    // suffix. Distinct canonical paths must still hash to distinct dict keys
+    // so we never lose a candidate to identity collision.
+    const v = "live-x";
+    const r1 = upsertCandidate(emptyQueue("p"), freshDrift("a.b", v));
+    const r2 = upsertCandidate(emptyQueue("p"), freshDrift("a-b", v));
+    const r3 = upsertCandidate(emptyQueue("p"), freshDrift("a_b", v));
+    expect(new Set([r1.candidate.id, r2.candidate.id, r3.candidate.id]).size).toBe(3);
+  });
+
   it("redacts secret-like paths in summary (never stores raw secret)", () => {
     const r = upsertCandidate(q, freshDrift("auth.token", "xoxb-aaaaaaaaaaaaaaaaaaaaaaaa"));
     expect(r.candidate.summary.redacted).toBe(true);
@@ -168,5 +179,27 @@ describe("queue file I/O", () => {
     const text = readFileSync(path, "utf8");
     const parsed = JSON.parse(text);
     expect(parsed.schemaVersion).toBe(1);
+  });
+
+  it("ignored status, ignoreScope, and ignoredAt persist across writeQueue → readQueue (issue #35 acceptance)", () => {
+    // Round-tripping through handleCommand uses the same in-memory objects;
+    // a regression that drops `ignoreScope`/`ignoredAt` during JSON
+    // serialization would slip through. Use raw write/read to verify the
+    // on-disk format preserves the full ignore record.
+    const q = emptyQueue("p");
+    const r = upsertCandidate(q, freshDrift("auth.x", "value-a"));
+    const ignored = ignoreCandidate(q, r.candidate.id);
+    expect(ignored).toBe(true);
+
+    const path = join(dir, "queue.json");
+    writeQueue(path, q);
+    const back = readQueue(path, "p");
+
+    const c = back.candidates[r.candidate.id];
+    expect(c).toBeDefined();
+    expect(c.status).toBe("ignored");
+    expect(c.ignoreScope).toBe("exact-pair");
+    expect(c.ignoredAt).toBeDefined();
+    expect(typeof c.ignoredAt).toBe("string");
   });
 });

@@ -11,13 +11,15 @@
 
 import type { ValueKind } from "./types.js";
 
+// Lowercased to match per-segment after we lowercase the input. camelCase
+// variants (apiKey, privateKey) collapse into the lowercase form below, so
+// they don't need separate entries.
 const SECRET_PATH_TOKENS = [
   "secret",
   "secrets",
   "token",
   "tokens",
   "apikey",
-  "apiKey",
   "api_key",
   "password",
   "passwd",
@@ -33,8 +35,12 @@ const ENV_REF_RE = /^\$(\{[A-Z_][A-Z0-9_]*\}|ENV:[A-Z_][A-Z0-9_]*)$/;
 const TOKEN_LIKE_RE = /^[A-Za-z0-9_\-+/=.]{32,}$/;
 
 export function isSecretLikePath(path: string): boolean {
-  const lower = path.toLowerCase();
-  return SECRET_PATH_TOKENS.some((tok) => lower.includes(tok.toLowerCase()));
+  // Match per-segment exact (case-insensitive). Substring matching would
+  // over-redact paths like `author.name` or `authority.level` because they
+  // contain the substring `auth`. Splitting on `.` is correct here because
+  // the diff stage produces dot-joined canonical paths.
+  const segments = path.toLowerCase().split(".");
+  return segments.some((seg) => SECRET_PATH_TOKENS.includes(seg));
 }
 
 export function isEnvRefShape(value: unknown): boolean {

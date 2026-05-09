@@ -8,6 +8,19 @@
 //
 // Read-only with respect to live config — never calls `mutateConfigFile` or
 // `replaceConfigFile`.
+//
+// Concurrency: runScan is NOT internally serialized. Callers that wire
+// multiple scan entrypoints (service tick + command + HTTP route) must wrap
+// it in a per-instance mutex to avoid the read-classify-notify-write race.
+// See `index.ts` for the v1 wrapper.
+//
+// Notification persistence: the success path is "send → recordNotification
+// (in-memory) → writeQueue at end of scan". If `writeQueue` fails after a
+// successful send, the candidate's `firstNotifiedAt` mark is lost and the
+// next scan will treat the same drift as new and re-send. v1 accepts this
+// at-most-twice behavior as a pragmatic tradeoff: PVC write failures are
+// rare, the duplicate notification is annoying but not unsafe, and the
+// write error is surfaced via `result.errors[]` so the operator can act.
 
 import { existsSync, readFileSync } from "node:fs";
 import type {
@@ -30,6 +43,23 @@ import {
   formatCandidateNotification,
   type NotificationAdapter,
 } from "./notifications.js";
+
+/**
+ * Sentinel error thrown by `makeLoadLiveConfig` when the explicit
+ * `liveConfigPath` is configured but the file cannot be read or parsed.
+ * `runScan` recognises this and skips the diff stage to avoid producing a
+ * flood of false-positive "missing live" candidates from `live === undefined`
+ * vs a populated desired tree.
+ */
+export class LiveConfigReadError extends Error {
+  readonly path: string;
+  constructor(path: string, cause: unknown) {
+    const causeMsg = cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to read explicit liveConfigPath ${path}: ${causeMsg}`);
+    this.name = "LiveConfigReadError";
+    this.path = path;
+  }
+}
 
 export interface DetectorDeps {
   /** Path where the queue file lives (resolved at register time). */
@@ -173,9 +203,25 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
   const desired = loadDesiredConfig(deps.config.desiredConfigPath, logger);
   const policy = loadOwnershipPolicy(deps.config.ownershipPolicyPath, logger);
 
-  const live = deps.loadLiveConfig();
-  const diff = (desired === undefined)
-    ? [] // no desired config = no drift comparison possible; queue is unchanged
+  let live: unknown;
+  let liveReadFailed = false;
+  try {
+    live = deps.loadLiveConfig();
+  } catch (e: unknown) {
+    if (e instanceof LiveConfigReadError) {
+      // Explicit liveConfigPath read failed — running diff against an undefined
+      // live config would mark every desired key as missing-in-live and spam
+      // notifications. Surface the error and skip diff for this scan.
+      const msg = `live config read error: ${e.message}`;
+      logger.error(msg);
+      errors.push(msg);
+      liveReadFailed = true;
+    } else {
+      throw e;
+    }
+  }
+  const diff = (desired === undefined || liveReadFailed)
+    ? [] // no desired config or live read failed = no diff this scan
     : diffConfig(live, desired);
   const classified = classifyDiff(diff, policy);
 
@@ -191,9 +237,8 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
     const sendResult = await adapter.send(formatCandidateNotification(result.candidate));
     if (!sendResult.ok) {
       notifFailures++;
-      const errMsg = sendResult.error ?? "(unknown notification error)";
-      recordNotification(queue, result.candidate.id, { ok: false, error: errMsg });
-      errors.push(`notification for ${result.candidate.id}: ${errMsg}`);
+      recordNotification(queue, result.candidate.id, { ok: false, error: sendResult.error });
+      errors.push(`notification for ${result.candidate.id}: ${sendResult.error}`);
     } else if (!sendResult.noSend) {
       recordNotification(queue, result.candidate.id, { ok: true });
     }
@@ -225,9 +270,32 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
 }
 
 /**
+ * Wrap a scan-like function so all invocations against this instance run
+ * sequentially. The detector's read-classify-notify-write sequence is not
+ * internally serialized; if the service tick overlaps a command-issued or
+ * HTTP-triggered scan, both sides can read the same pre-update queue, both
+ * decide a candidate is new, both notify, and the last write wins. Wrapping
+ * with this helper at the surface boundary fixes the cross-surface race.
+ *
+ * A scan-failure on the chain is swallowed for chaining purposes (so the
+ * lock doesn't latch into a permanent rejected state) but is still propagated
+ * to the caller via the returned promise.
+ */
+export function makeSerializedScan<D, R>(scan: (deps: D) => Promise<R>): (deps: D) => Promise<R> {
+  let lock: Promise<unknown> = Promise.resolve();
+  return (deps) => {
+    const next = lock.catch(() => undefined).then(() => scan(deps));
+    lock = next.catch(() => undefined);
+    return next;
+  };
+}
+
+/**
  * Build a default `loadLiveConfig` for callers that should read the explicit
  * file (when `config.liveConfigPath` is set), falling back to the provided
- * runtime-config getter otherwise.
+ * runtime-config getter otherwise. On read/parse failure, throws
+ * `LiveConfigReadError` so `runScan` can short-circuit with a single error
+ * entry rather than diffing against `undefined` and spamming notifications.
  */
 export function makeLoadLiveConfig(
   config: ConvergenceConfig,
@@ -239,10 +307,7 @@ export function makeLoadLiveConfig(
       try {
         return JSON.parse(readFileSync(path, "utf8"));
       } catch (e: unknown) {
-        console.warn(
-          `[runtime-config-convergence] failed to read explicit liveConfigPath ${path}: ${e instanceof Error ? e.message : e}`,
-        );
-        return undefined;
+        throw new LiveConfigReadError(path, e);
       }
     };
   }

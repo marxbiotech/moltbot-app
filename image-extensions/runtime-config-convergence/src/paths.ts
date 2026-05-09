@@ -11,6 +11,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { sha256Hex } from "./canonical-json.js";
 
 const PLUGIN_QUEUE_SUBDIR = "runtime-config-convergence";
 const PLUGIN_QUEUE_FILE = "queue.json";
@@ -51,11 +52,17 @@ export function canonicalizePath(path: string): string {
 
 /**
  * Build a candidate id from `(canonicalPath, liveValueHash)`.
- * Format: `<short-hash-prefix>-<path-tail>` for human-readability in logs/chat
- * while keeping the pair identity stable.
+ * Format: `<pair-hash-prefix>-<path-tail>` for human-readability in logs/chat.
+ *
+ * The hash prefix is computed over BOTH the canonical path and the live value
+ * hash, using a length-prefix on the path so concatenation is unambiguous for
+ * any path contents. This means two distinct pairs cannot collide on the dict
+ * key even when their normalized path tails match (e.g. `a.b`, `a-b`, and
+ * `a_b` all sanitize to the same suffix). The 12-hex prefix gives ~48 bits of
+ * collision space, far more than the queue is ever expected to hold.
  */
 export function buildCandidateId(canonicalPath: string, liveValueHash: string): string {
-  const hashPrefix = liveValueHash.slice(0, 8);
+  const pairHash = sha256Hex(`${canonicalPath.length}:${canonicalPath}:${liveValueHash}`).slice(0, 12);
   const tail = canonicalPath.replace(/[^a-zA-Z0-9]+/g, "-").slice(-32).replace(/^-|-$/g, "");
-  return tail.length > 0 ? `${hashPrefix}-${tail}` : hashPrefix;
+  return tail.length > 0 ? `${pairHash}-${tail}` : pairHash;
 }

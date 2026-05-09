@@ -49,7 +49,7 @@ describe("buildAdapter", () => {
       const a = buildAdapter({ transport: "log-only" });
       const r = await a.send("hello");
       expect(r.ok).toBe(true);
-      expect(r.noSend).toBe(true);
+      if (r.ok) expect(r.noSend).toBe(true);
     });
   });
 
@@ -104,7 +104,7 @@ describe("buildAdapter", () => {
       );
       const r = await a.send("x");
       expect(r.ok).toBe(false);
-      expect(r.error).toContain("400");
+      if (!r.ok) expect(r.error).toContain("400");
     });
   });
 
@@ -148,7 +148,7 @@ describe("buildAdapter", () => {
       );
       const r = await a.send("hi");
       expect(r.ok).toBe(false);
-      expect(r.error).toContain("channel_not_found");
+      if (!r.ok) expect(r.error).toContain("channel_not_found");
     });
   });
 });

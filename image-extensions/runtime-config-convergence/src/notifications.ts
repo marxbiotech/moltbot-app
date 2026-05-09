@@ -11,13 +11,14 @@
 
 import type { DriftCandidate, NotificationConfig } from "./types.js";
 
-export interface NotificationResult {
-  ok: boolean;
-  /** When ok===false, a human-readable error string. */
-  error?: string;
-  /** "log-only" or "none" mark a no-send path explicitly. */
-  noSend?: boolean;
-}
+/**
+ * Discriminated union: the success branch never carries an error, and the
+ * failure branch always carries one. `noSend` means the adapter intentionally
+ * skipped the wire (log-only / none) but the contract was satisfied.
+ */
+export type NotificationResult =
+  | { ok: true; noSend?: boolean }
+  | { ok: false; error: string };
 
 export interface NotificationAdapter {
   /** Provider/transport label for logs and `notify-test` output. */
@@ -30,6 +31,11 @@ export interface NotificationAdapter {
 interface AdapterDeps {
   fetchImpl?: typeof fetch;
 }
+
+/** Per-request HTTP timeout for provider sends. Bounded so an unresponsive API
+ *  cannot stall the scan loop indefinitely (the service tick overlap guard
+ *  would otherwise starve subsequent ticks). */
+const SEND_TIMEOUT_MS = 10_000;
 
 class NoneAdapter implements NotificationAdapter {
   describe(): string { return "none (notifications disabled)"; }
@@ -79,6 +85,7 @@ class TelegramAdapter implements NotificationAdapter {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: this.chatId, text, disable_notification: true }),
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "<no body>");
@@ -123,10 +130,17 @@ class SlackAdapter implements NotificationAdapter {
           Authorization: `Bearer ${this.token}`,
         },
         body: JSON.stringify({ channel: this.channelId, text }),
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
       });
+      // Mirror the Telegram pattern: text() on non-2xx (Slack may return CDN
+      // HTML pages on 401/429/5xx that don't parse as JSON), json() on 2xx.
+      if (!res.ok) {
+        const body = await res.text().catch(() => "<no body>");
+        return { ok: false, error: `Slack chat.postMessage HTTP ${res.status}: ${body.slice(0, 200)}` };
+      }
       const json = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
-      if (!res.ok || json.ok === false) {
-        return { ok: false, error: `Slack chat.postMessage error: ${json.error ?? `HTTP ${res.status}`}` };
+      if (json.ok === false) {
+        return { ok: false, error: `Slack chat.postMessage error: ${json.error ?? "(no error string)"}` };
       }
       return { ok: true };
     } catch (e: unknown) {

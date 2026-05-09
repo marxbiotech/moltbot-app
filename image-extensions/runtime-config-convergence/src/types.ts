@@ -34,16 +34,22 @@ export interface DriftCandidate {
   liveValueHash: string;
   desiredValueHash?: string;
   reasonCode: ReasonCode;
-  status: CandidateStatus;
+  // State-machine fields are readonly externally so only queue.ts mutators
+  // (ignore/unignore/upsert supersession) can change them. queue.ts uses
+  // `Mutable<DriftCandidate>` casts at the mutation sites.
+  readonly status: CandidateStatus;
   firstSeenAt: string;
   lastSeenAt: string;
   seenCount: number;
-  supersededBy?: string;
-  ignoredAt?: string;
-  ignoreScope?: "exact-pair";
+  readonly supersededBy?: string;
+  readonly ignoredAt?: string;
+  readonly ignoreScope?: "exact-pair";
   notification: CandidateNotification;
   summary: CandidateSummary;
 }
+
+/** Strip readonly modifiers; used inside queue.ts at state-mutation sites. */
+export type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 export interface CandidateQueue {
   schemaVersion: 1;

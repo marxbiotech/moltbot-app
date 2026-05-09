@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runScan } from "./detector.js";
+import { runScan, makeLoadLiveConfig, makeSerializedScan } from "./detector.js";
 import type { ConvergenceConfig, OwnershipPolicy } from "./types.js";
 import { writeFileSync } from "node:fs";
 
@@ -127,5 +127,115 @@ describe("runScan integration", () => {
       loadLiveConfig: () => ({}),
     });
     expect(result.errors[0]).toContain("queue parse error");
+  });
+
+  it("expected-secret-drift candidates do NOT trigger notifications when expectedSecretDriftNotify=false", async () => {
+    // Live has a token-like value, desired has the env-ref shape; classifier
+    // marks this as `expected-secret-drift` (path listed in the policy's
+    // expectedSecretDriftPaths). With suppression on, we still create the
+    // candidate but never call the adapter.
+    writeFileSync(desiredPath, JSON.stringify({ auth: { token: "$ENV:TOKEN" } }));
+    writeFileSync(policyPath, JSON.stringify({
+      secretRefPaths: ["auth.token"],
+      expectedSecretDriftPaths: ["auth.token"],
+    } satisfies OwnershipPolicy));
+    const send = vi.fn().mockResolvedValue({ ok: true });
+    const adapter = {
+      describe: () => "mock",
+      ready: () => ({ ok: true as const }),
+      send,
+    };
+    const result = await runScan({
+      queuePath,
+      persona: "test",
+      config: buildConfig({
+        desiredConfigPath: desiredPath,
+        ownershipPolicyPath: policyPath,
+        expectedSecretDriftNotify: false,
+      }),
+      // Token-like value (32+ chars, opaque) so summarizeValue flags it.
+      loadLiveConfig: () => ({ auth: { token: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } }),
+      adapter,
+    });
+    expect(result.active).toBe(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("expected-secret-drift candidates DO trigger notifications when expectedSecretDriftNotify=true", async () => {
+    writeFileSync(desiredPath, JSON.stringify({ auth: { token: "$ENV:TOKEN" } }));
+    writeFileSync(policyPath, JSON.stringify({
+      secretRefPaths: ["auth.token"],
+      expectedSecretDriftPaths: ["auth.token"],
+    } satisfies OwnershipPolicy));
+    const send = vi.fn().mockResolvedValue({ ok: true });
+    const adapter = {
+      describe: () => "mock",
+      ready: () => ({ ok: true as const }),
+      send,
+    };
+    const result = await runScan({
+      queuePath,
+      persona: "test",
+      config: buildConfig({
+        desiredConfigPath: desiredPath,
+        ownershipPolicyPath: policyPath,
+        expectedSecretDriftNotify: true,
+      }),
+      loadLiveConfig: () => ({ auth: { token: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } }),
+      adapter,
+    });
+    expect(result.active).toBe(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("parallel scans against the same drift produce one notification (mutex serializes them)", async () => {
+    // Without serialization, two overlapping scan() calls can both read the
+    // pre-update queue, both decide the candidate is new, both call
+    // adapter.send, and the last queue write wins.
+    writeFileSync(desiredPath, JSON.stringify({ auth: { x: "desired" } }));
+    writeFileSync(policyPath, JSON.stringify({ repoOwnedPaths: ["auth.x"] } satisfies OwnershipPolicy));
+    const send = vi.fn().mockResolvedValue({ ok: true });
+    const adapter = {
+      describe: () => "mock",
+      ready: () => ({ ok: true as const }),
+      send,
+    };
+    const config = buildConfig({ desiredConfigPath: desiredPath, ownershipPolicyPath: policyPath });
+    const live = { auth: { x: "live" } };
+
+    const serialized = makeSerializedScan(runScan);
+    await Promise.all([
+      serialized({ queuePath, persona: "test", config, loadLiveConfig: () => live, adapter }),
+      serialized({ queuePath, persona: "test", config, loadLiveConfig: () => live, adapter }),
+    ]);
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("liveConfigPath read failure short-circuits the diff and is surfaced via errors[]", async () => {
+    // Without the runScan guard, an unreadable explicit liveConfigPath would
+    // pass `undefined` into diffConfig(undefined, desired), turning every
+    // desired key into a missing-live drift and spamming candidates.
+    writeFileSync(desiredPath, JSON.stringify({ auth: { x: "desired", y: "desired", z: "desired" } }));
+    writeFileSync(policyPath, JSON.stringify({
+      repoOwnedPaths: ["auth.x", "auth.y", "auth.z"],
+    } satisfies OwnershipPolicy));
+    const missingLivePath = join(dir, "does-not-exist.json");
+    const config = buildConfig({
+      desiredConfigPath: desiredPath,
+      ownershipPolicyPath: policyPath,
+      liveConfigPath: missingLivePath,
+    });
+    // Use the real makeLoadLiveConfig so the LiveConfigReadError path fires.
+    const loadLiveConfig = makeLoadLiveConfig(config, () => ({}));
+    const result = await runScan({
+      queuePath,
+      persona: "test",
+      config,
+      loadLiveConfig,
+    });
+    expect(result.newCandidates).toBe(0);
+    expect(result.active).toBe(0);
+    expect(result.errors.some((e) => e.includes("live config read error"))).toBe(true);
   });
 });

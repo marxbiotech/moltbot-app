@@ -9,10 +9,19 @@
 import { parseConvergenceConfig } from "./src/config.js";
 import { resolveQueuePath } from "./src/paths.js";
 import { detectPersona } from "./src/persona.js";
-import { runScan, makeLoadLiveConfig } from "./src/detector.js";
+import { runScan, makeLoadLiveConfig, makeSerializedScan } from "./src/detector.js";
 import { handleCommand } from "./src/commands.js";
 import { buildAdapter } from "./src/notifications.js";
 
+// Design Decision: this is a deliberately narrow local re-declaration of the
+// surface we use from openclaw's PluginApi (only the four register* methods
+// plus runtime/logger). openclaw's plugin-sdk does NOT currently expose a
+// `runtime-config-convergence` subpath that re-exports `OpenClawPluginApi`,
+// and v1 explicitly does not change openclaw core. Keeping this seam local
+// also makes the unit tests independent of openclaw-internal type churn.
+// When openclaw publishes a subpath barrel for this plugin (or the SDK
+// stabilises a generic re-export), import `OpenClawPluginApi` from there
+// and replace this interface — see how `remote-acpx/index.ts` does it.
 interface PluginApi {
   pluginConfig?: Record<string, unknown>;
   runtime: { config: { current: () => unknown } };
@@ -60,6 +69,9 @@ const plugin = {
     // Captured here so all three surfaces close over the same instances.
     const runtimeConfigGetter = () => api.runtime.config.current();
 
+    // Per-instance scan mutex. See `makeSerializedScan` for the rationale.
+    const serializedScan = makeSerializedScan(runScan);
+
     logger.info(`registered (queue=${queuePath}, persona=${persona || "(unset)"}, transport=${config.notification.transport})`);
 
     // ── /config-drift command ─────────────────────────────────────────────
@@ -78,6 +90,7 @@ const plugin = {
           loadLiveConfigForScan: (ctxConfig) => makeLoadLiveConfig(config, () => ctxConfig),
           adapter,
           logger,
+          runScanFn: serializedScan,
         },
         ctx,
       ),
@@ -89,10 +102,12 @@ const plugin = {
       let running = false;
 
       const tick = async () => {
-        if (running) return; // overlap guard
+        if (running) return; // overlap guard for back-to-back ticks
         running = true;
         try {
-          await runScan({
+          // Use the shared mutex so a tick cannot overlap a command-issued
+          // or HTTP-triggered scan on the same instance.
+          await serializedScan({
             queuePath,
             persona,
             config,
@@ -136,7 +151,7 @@ const plugin = {
         handler: async (_req, res) => {
           const r = res as { statusCode: number; setHeader: (k: string, v: string) => void; end: (body?: string) => void };
           try {
-            const result = await runScan({
+            const result = await serializedScan({
               queuePath,
               persona,
               config,
