@@ -16,7 +16,7 @@ COPY image-extensions/ /opt/moltbot/extensions/
 # Each image-baked plugin lives outside /app so Node module resolution does not
 # walk into /app/node_modules; per-plugin installs make their deps resolvable
 # from the plugin directory itself.
-RUN for ext in github-apps remote-acpx manage-secrets; do \
+RUN for ext in github-apps remote-acpx manage-secrets runtime-config-convergence; do \
       cd "/opt/moltbot/extensions/$ext" && \
       npm install --production --ignore-scripts; \
     done

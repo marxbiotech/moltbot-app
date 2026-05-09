@@ -1,0 +1,11 @@
+{
+  "name": "@moltbot/runtime-config-convergence",
+  "version": "2026.5.9",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "id": "runtime-config-convergence",
+  "name": "Runtime Config Convergence",
+  "description": "Detects drift between live runtime OpenClaw config and repo-rendered desired config. Maintains a PVC-local candidate queue, sends one direct chat notification per new non-ignored candidate, and surfaces a /config-drift command for review. v1: detector + queue + notifications only — no auto-promotion.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "liveConfigPath": {
+        "type": "string",
+        "description": "Optional explicit file read for byte/hash use cases. Default current-config access uses runtime.config.current() / ctx.config."
+      },
+      "queuePath": {
+        "type": "string",
+        "description": "Override path for the candidate queue JSON file. Default: ${OPENCLAW_HOME or ~/.openclaw}/runtime-config-convergence/queue.json"
+      },
+      "desiredConfigPath": {
+        "type": "string",
+        "description": "Path to the rendered desired openclaw.json (mounted by chart/env)."
+      },
+      "ownershipPolicyPath": {
+        "type": "string",
+        "description": "Path to the ownership/secrets policy file (mounted by chart/env)."
+      },
+      "scanIntervalMs": {
+        "type": "number",
+        "description": "Plugin-service scan cadence. Set to 0 to disable interval scans (commands and HTTP route will still trigger).",
+        "default": 0
+      },
+      "notification": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "transport": { "const": "telegram" },
+              "botTokenEnv": { "type": "string", "default": "TELEGRAM_BOT_TOKEN" },
+              "chatIdEnv": { "type": "string", "default": "TELEGRAM_LIFECYCLE_CHAT_ID" }
+            },
+            "required": ["transport"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "transport": { "const": "slack" },
+              "botTokenEnv": { "type": "string", "default": "SLACK_BOT_TOKEN" },
+              "channelIdEnv": { "type": "string", "default": "SLACK_LIFECYCLE_CHANNEL_ID" }
+            },
+            "required": ["transport"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "transport": { "const": "log-only" }
+            },
+            "required": ["transport"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "transport": { "const": "none" }
+            },
+            "required": ["transport"]
+          }
+        ]
+      },
+      "dryRun": {
+        "type": "boolean",
+        "default": false
+      },
+      "expectedSecretDriftNotify": {
+        "type": "boolean",
+        "description": "Whether to notify on expected-secret-drift candidates (default: false; informational suppress).",
+        "default": false
+      },
+      "httpRoute": {
+        "type": "object",
+        "description": "Optional HTTP trigger route. When set, registers an in-pod endpoint that runs one scan when invoked.",
+        "properties": {
+          "path": { "type": "string", "default": "/runtime-config-convergence/scan" },
+          "auth": { "enum": ["gateway", "plugin"], "default": "plugin" }
+        }
+      }
+    }
+  }
+}
