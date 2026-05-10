@@ -129,33 +129,44 @@ function unwrapHelmConfig(value: unknown): unknown {
   return value;
 }
 
-function loadDesiredConfig(path: string | undefined, logger: DetectorDeps["logger"]): unknown {
-  if (!path) return undefined;
+// Two failure modes are distinguished: file-not-present (logged as a warning,
+// treated as absent) vs file-present-but-unparseable (returned as a structured
+// `parseError` so `runScan` can surface it via `errors[]` and tighten the
+// `*Available` flag). Without that distinction a corrupt desired config or
+// ownership policy degrades silently into a "clean scan" report — see
+// `desired-config parse failure` / `ownership-policy parse failure` findings.
+
+function loadDesiredConfig(
+  path: string | undefined,
+  logger: DetectorDeps["logger"],
+): { value: unknown | undefined; parseError?: string } {
+  if (!path) return { value: undefined };
   if (!existsSync(path)) {
     logger?.warn(`desired config not found at ${path}; treating as no-desired-config`);
-    return undefined;
+    return { value: undefined };
   }
   try {
-    return unwrapHelmConfig(JSON.parse(readFileSync(path, "utf8")));
+    return { value: unwrapHelmConfig(JSON.parse(readFileSync(path, "utf8"))) };
   } catch (e: unknown) {
-    logger?.warn(`failed to parse desired config at ${path}: ${e instanceof Error ? e.message : e}`);
-    return undefined;
+    return { value: undefined, parseError: `failed to parse desired config at ${path}: ${e instanceof Error ? e.message : e}` };
   }
 }
 
-function loadOwnershipPolicy(path: string | undefined, logger: DetectorDeps["logger"]): OwnershipPolicy {
-  if (!path) return {};
+function loadOwnershipPolicy(
+  path: string | undefined,
+  logger: DetectorDeps["logger"],
+): { value: OwnershipPolicy; parseError?: string } {
+  if (!path) return { value: {} };
   if (!existsSync(path)) {
     logger?.warn(`ownership policy not found at ${path}; treating as empty policy`);
-    return {};
+    return { value: {} };
   }
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
-    if (parsed && typeof parsed === "object") return parsed as OwnershipPolicy;
-    return {};
+    if (parsed && typeof parsed === "object") return { value: parsed as OwnershipPolicy };
+    return { value: {} };
   } catch (e: unknown) {
-    logger?.warn(`failed to parse ownership policy at ${path}: ${e instanceof Error ? e.message : e}`);
-    return {};
+    return { value: {}, parseError: `failed to parse ownership policy at ${path}: ${e instanceof Error ? e.message : e}` };
   }
 }
 
@@ -212,8 +223,22 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
   // Refresh persona on the queue if it was previously unset.
   if (!queue.persona) queue.persona = deps.persona;
 
-  const desired = loadDesiredConfig(deps.config.desiredConfigPath, logger);
-  const policy = loadOwnershipPolicy(deps.config.ownershipPolicyPath, logger);
+  const desiredResult = loadDesiredConfig(deps.config.desiredConfigPath, logger);
+  const desired = desiredResult.value;
+  let desiredParseFailed = false;
+  if (desiredResult.parseError) {
+    logger.error(desiredResult.parseError);
+    errors.push(desiredResult.parseError);
+    desiredParseFailed = true;
+  }
+  const policyResult = loadOwnershipPolicy(deps.config.ownershipPolicyPath, logger);
+  const policy = policyResult.value;
+  let policyParseFailed = false;
+  if (policyResult.parseError) {
+    logger.error(policyResult.parseError);
+    errors.push(policyResult.parseError);
+    policyParseFailed = true;
+  }
 
   let live: unknown;
   let liveReadFailed = false;
@@ -296,8 +321,8 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
     adapter: adapter.describe(),
     queuePath: deps.queuePath,
     inputs: {
-      desiredConfigAvailable: !!deps.config.desiredConfigPath && existsSync(deps.config.desiredConfigPath),
-      ownershipPolicyAvailable: !!deps.config.ownershipPolicyPath && existsSync(deps.config.ownershipPolicyPath),
+      desiredConfigAvailable: !!deps.config.desiredConfigPath && existsSync(deps.config.desiredConfigPath) && !desiredParseFailed,
+      ownershipPolicyAvailable: !!deps.config.ownershipPolicyPath && existsSync(deps.config.ownershipPolicyPath) && !policyParseFailed,
     },
     errors,
   };

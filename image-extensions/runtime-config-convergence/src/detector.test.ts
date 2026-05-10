@@ -312,6 +312,41 @@ describe("runScan integration", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("desired-config parse failure is surfaced via errors[] and marks desiredConfigAvailable false", async () => {
+    // Without surfacing, a corrupt desired config (mid-deploy truncate, etc.)
+    // degrades into `desired === undefined` → `diff = []` → "clean scan".
+    // Operators couldn't distinguish that from a genuinely empty diff.
+    writeFileSync(desiredPath, "{not-json", "utf8");
+    writeFileSync(policyPath, JSON.stringify({} satisfies OwnershipPolicy));
+    const result = await runScan({
+      queuePath,
+      persona: "test",
+      config: buildConfig({ desiredConfigPath: desiredPath, ownershipPolicyPath: policyPath }),
+      loadLiveConfig: () => ({ auth: { x: "live" } }),
+    });
+    expect(result.errors.some((e) => e.includes("failed to parse desired config"))).toBe(true);
+    expect(result.inputs.desiredConfigAvailable).toBe(false);
+    expect(result.inputs.ownershipPolicyAvailable).toBe(true);
+    expect(result.newCandidates).toBe(0); // no diff possible without parsed desired
+  });
+
+  it("ownership-policy parse failure is surfaced via errors[] and marks ownershipPolicyAvailable false", async () => {
+    // Without surfacing, a corrupt policy silently mis-classifies all drift
+    // as `unknown-runtime-drift` and breaks `expectedSecretDriftNotify`
+    // suppression — flooding operators with false positives.
+    writeFileSync(desiredPath, JSON.stringify({ auth: { x: "desired" } }));
+    writeFileSync(policyPath, "{not-json", "utf8");
+    const result = await runScan({
+      queuePath,
+      persona: "test",
+      config: buildConfig({ desiredConfigPath: desiredPath, ownershipPolicyPath: policyPath }),
+      loadLiveConfig: () => ({ auth: { x: "live" } }),
+    });
+    expect(result.errors.some((e) => e.includes("failed to parse ownership policy"))).toBe(true);
+    expect(result.inputs.ownershipPolicyAvailable).toBe(false);
+    expect(result.inputs.desiredConfigAvailable).toBe(true);
+  });
+
   it("liveConfigPath read failure short-circuits the diff and is surfaced via errors[]", async () => {
     // Without the runScan guard, an unreadable explicit liveConfigPath would
     // pass `undefined` into diffConfig(undefined, desired), turning every

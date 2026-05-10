@@ -150,5 +150,36 @@ describe("buildAdapter", () => {
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain("channel_not_found");
     });
+
+    it("send returns ok=false when 200 body is not parseable JSON (CDN HTML / proxy)", async () => {
+      // A 200 with a non-JSON body must NOT be reported as a successful send.
+      // Slack's contract is that chat.postMessage always returns JSON with
+      // `ok: true|false`; anything else is a real failure (CDN intercept,
+      // content-type misconfig).
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => { throw new SyntaxError("Unexpected token <"); },
+      } as unknown as Response);
+      const a = buildAdapter(
+        { transport: "slack", botTokenEnv: TOKEN, channelIdEnv: CHAN },
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      );
+      const r = await a.send("hi");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("missing or invalid response body");
+    });
+
+    it("send returns ok=false when 200 body is JSON but missing ok flag", async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ message: "weird shape, no ok field" }),
+      } as unknown as Response);
+      const a = buildAdapter(
+        { transport: "slack", botTokenEnv: TOKEN, channelIdEnv: CHAN },
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      );
+      const r = await a.send("hi");
+      expect(r.ok).toBe(false);
+    });
   });
 });

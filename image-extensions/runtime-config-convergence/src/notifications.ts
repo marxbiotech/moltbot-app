@@ -138,9 +138,12 @@ class SlackAdapter implements NotificationAdapter {
         const body = await res.text().catch(() => "<no body>");
         return { ok: false, error: `Slack chat.postMessage HTTP ${res.status}: ${body.slice(0, 200)}` };
       }
-      const json = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
-      if (json.ok === false) {
-        return { ok: false, error: `Slack chat.postMessage error: ${json.error ?? "(no error string)"}` };
+      // Strict ok check: an unparseable / unexpected JSON body (CDN HTML on
+      // 200, content-type misconfig) must be treated as failure, not silently
+      // promoted to "ok" by the absence of `ok: false`.
+      const json = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!json || json.ok !== true) {
+        return { ok: false, error: `Slack chat.postMessage error: ${json?.error ?? "missing or invalid response body"}` };
       }
       return { ok: true };
     } catch (e: unknown) {
