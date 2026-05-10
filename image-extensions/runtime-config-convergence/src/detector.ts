@@ -129,13 +129,6 @@ function unwrapHelmConfig(value: unknown): unknown {
   return value;
 }
 
-// Two failure modes are distinguished: file-not-present (logged as a warning,
-// treated as absent) vs file-present-but-unparseable (returned as a structured
-// `parseError` so `runScan` can surface it via `errors[]` and tighten the
-// `*Available` flag). Without that distinction a corrupt desired config or
-// ownership policy degrades silently into a "clean scan" report — see
-// `desired-config parse failure` / `ownership-policy parse failure` findings.
-
 function loadDesiredConfig(
   path: string | undefined,
   logger: DetectorDeps["logger"],
@@ -168,6 +161,45 @@ function loadOwnershipPolicy(
   } catch (e: unknown) {
     return { value: {}, parseError: `failed to parse ownership policy at ${path}: ${e instanceof Error ? e.message : e}` };
   }
+}
+
+/**
+ * Parse-aware view of detector inputs shared by `runScan` and surfaces that
+ * report availability (e.g. `/config-drift status`). `*Available` is true
+ * only when the file is configured, present, AND parses successfully — so a
+ * corrupt desired or policy file cannot be reported as "available" on one
+ * surface and "missing" on another.
+ */
+export interface ResolvedInputs {
+  desired: unknown | undefined;
+  policy: OwnershipPolicy;
+  desiredConfigAvailable: boolean;
+  ownershipPolicyAvailable: boolean;
+  parseErrors: string[];
+}
+
+export function resolveInputs(
+  config: ConvergenceConfig,
+  logger?: DetectorDeps["logger"],
+): ResolvedInputs {
+  const desiredResult = loadDesiredConfig(config.desiredConfigPath, logger);
+  const policyResult = loadOwnershipPolicy(config.ownershipPolicyPath, logger);
+  const parseErrors: string[] = [];
+  if (desiredResult.parseError) {
+    logger?.error(desiredResult.parseError);
+    parseErrors.push(desiredResult.parseError);
+  }
+  if (policyResult.parseError) {
+    logger?.error(policyResult.parseError);
+    parseErrors.push(policyResult.parseError);
+  }
+  return {
+    desired: desiredResult.value,
+    policy: policyResult.value,
+    desiredConfigAvailable: !!config.desiredConfigPath && existsSync(config.desiredConfigPath) && !desiredResult.parseError,
+    ownershipPolicyAvailable: !!config.ownershipPolicyPath && existsSync(config.ownershipPolicyPath) && !policyResult.parseError,
+    parseErrors,
+  };
 }
 
 function countByStatus(queue: CandidateQueue): { active: number; ignored: number; superseded: number; resolved: number } {
@@ -223,22 +255,9 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
   // Refresh persona on the queue if it was previously unset.
   if (!queue.persona) queue.persona = deps.persona;
 
-  const desiredResult = loadDesiredConfig(deps.config.desiredConfigPath, logger);
-  const desired = desiredResult.value;
-  let desiredParseFailed = false;
-  if (desiredResult.parseError) {
-    logger.error(desiredResult.parseError);
-    errors.push(desiredResult.parseError);
-    desiredParseFailed = true;
-  }
-  const policyResult = loadOwnershipPolicy(deps.config.ownershipPolicyPath, logger);
-  const policy = policyResult.value;
-  let policyParseFailed = false;
-  if (policyResult.parseError) {
-    logger.error(policyResult.parseError);
-    errors.push(policyResult.parseError);
-    policyParseFailed = true;
-  }
+  const inputs = resolveInputs(deps.config, logger);
+  for (const e of inputs.parseErrors) errors.push(e);
+  const { desired, policy } = inputs;
 
   let live: unknown;
   let liveReadFailed = false;
@@ -321,8 +340,8 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
     adapter: adapter.describe(),
     queuePath: deps.queuePath,
     inputs: {
-      desiredConfigAvailable: !!deps.config.desiredConfigPath && existsSync(deps.config.desiredConfigPath) && !desiredParseFailed,
-      ownershipPolicyAvailable: !!deps.config.ownershipPolicyPath && existsSync(deps.config.ownershipPolicyPath) && !policyParseFailed,
+      desiredConfigAvailable: inputs.desiredConfigAvailable,
+      ownershipPolicyAvailable: inputs.ownershipPolicyAvailable,
     },
     errors,
   };

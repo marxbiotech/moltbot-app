@@ -8,7 +8,6 @@
 // a structurally-correct JSON patch but does NOT auto-dispatch to the
 // set-config workflow. See issue #35 §9.
 
-import { existsSync } from "node:fs";
 import type { ConvergenceConfig, DriftCandidate } from "./types.js";
 import {
   ignoreCandidate as queueIgnore,
@@ -23,7 +22,7 @@ import {
   formatCandidateNotification,
   type NotificationAdapter,
 } from "./notifications.js";
-import { runScan as defaultRunScan, type DetectorDeps, type ScanResult } from "./detector.js";
+import { runScan as defaultRunScan, resolveInputs, type DetectorDeps, type ScanResult } from "./detector.js";
 
 export interface CommandDeps {
   /** Resolved at register time. */
@@ -160,19 +159,24 @@ export async function handleCommand(
       const ignored = counts.filter((c) => c.status === "ignored").length;
       const superseded = counts.filter((c) => c.status === "superseded").length;
       const resolved = counts.filter((c) => c.status === "resolved").length;
-      const desiredAvailable = !!deps.config.desiredConfigPath && existsSync(deps.config.desiredConfigPath);
-      const policyAvailable = !!deps.config.ownershipPolicyPath && existsSync(deps.config.ownershipPolicyPath);
+      // Shared parse-aware availability check with runScan so a corrupt
+      // desired/policy file is reported consistently across both surfaces.
+      const inputs = resolveInputs(deps.config, deps.logger);
       const liveSource = deps.config.liveConfigPath ? `file:${deps.config.liveConfigPath}` : "ctx.config / runtime.config.current()";
       const lines = [
         `queuePath:        ${deps.queuePath}`,
         `persona:          ${deps.persona || "(unset)"}`,
         `live source:      ${liveSource}`,
-        `desired source:   ${deps.config.desiredConfigPath ?? "(unset)"} (${desiredAvailable ? "available" : "missing"})`,
-        `policy source:    ${deps.config.ownershipPolicyPath ?? "(unset)"} (${policyAvailable ? "available" : "missing"})`,
+        `desired source:   ${deps.config.desiredConfigPath ?? "(unset)"} (${inputs.desiredConfigAvailable ? "available" : "missing"})`,
+        `policy source:    ${deps.config.ownershipPolicyPath ?? "(unset)"} (${inputs.ownershipPolicyAvailable ? "available" : "missing"})`,
         `notification:     ${adapter.describe()}`,
         `last queue write: ${queue.updatedAt}`,
         `counts:           active=${active}, ignored=${ignored}, superseded=${superseded}, resolved=${resolved}`,
       ];
+      if (inputs.parseErrors.length > 0) {
+        lines.push("", "Input errors:");
+        for (const e of inputs.parseErrors) lines.push(`  - ${e}`);
+      }
       return { text: lines.join("\n") };
     }
 

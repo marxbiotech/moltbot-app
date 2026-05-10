@@ -79,6 +79,60 @@ describe("/config-drift command surface", () => {
     expect(r.text).toContain("mock-adapter");
   });
 
+  it("status reports corrupt desired/policy as missing, matching runScan.inputs", async () => {
+    // Regression for the divergent-availability bug: previously `status`
+    // used existsSync only and would report a corrupt desired file as
+    // `available`, while `runScan.inputs.desiredConfigAvailable` (correctly)
+    // reported it `missing` — the two operator surfaces disagreed.
+    writeQueue(queuePath, emptyQueue("p"));
+    const desiredPath = join(dir, "desired.json");
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(desiredPath, "{not-json", "utf8");
+    writeFileSync(policyPath, "{not-json", "utf8");
+
+    const config = buildConfig({ desiredConfigPath: desiredPath, ownershipPolicyPath: policyPath });
+    const r = await handleCommand(
+      {
+        queuePath,
+        persona: "p",
+        config,
+        loadLiveConfigForScan: () => () => ({}),
+        adapter: okAdapter,
+      },
+      { args: "status" },
+    );
+    expect(r.text).toContain(`desired source:   ${desiredPath} (missing)`);
+    expect(r.text).toContain(`policy source:    ${policyPath} (missing)`);
+    expect(r.text).toContain("Input errors:");
+    expect(r.text).toContain("failed to parse desired config");
+    expect(r.text).toContain("failed to parse ownership policy");
+  });
+
+  it("status agrees with runScan.inputs on availability for present-and-parseable files", async () => {
+    // Positive consistency: a present + parseable desired/policy must be
+    // reported `available` by `status`, matching what `runScan.inputs`
+    // would report. Pins the "shared logic" contract.
+    writeQueue(queuePath, emptyQueue("p"));
+    const desiredPath = join(dir, "desired.json");
+    const policyPath = join(dir, "policy.json");
+    writeFileSync(desiredPath, JSON.stringify({ auth: { x: "desired" } }));
+    writeFileSync(policyPath, JSON.stringify({ repoOwnedPaths: ["auth.x"] }));
+
+    const r = await handleCommand(
+      {
+        queuePath,
+        persona: "p",
+        config: buildConfig({ desiredConfigPath: desiredPath, ownershipPolicyPath: policyPath }),
+        loadLiveConfigForScan: () => () => ({}),
+        adapter: okAdapter,
+      },
+      { args: "status" },
+    );
+    expect(r.text).toContain(`desired source:   ${desiredPath} (available)`);
+    expect(r.text).toContain(`policy source:    ${policyPath} (available)`);
+    expect(r.text).not.toContain("Input errors:");
+  });
+
   it("list shows active candidates, --all includes superseded/ignored", async () => {
     const q = emptyQueue("p");
     upsertCandidate(q, {
