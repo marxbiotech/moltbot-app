@@ -7,7 +7,7 @@ export type ReasonCode =
   | "secret-shape-violation"
   | "expected-secret-drift";
 
-export type CandidateStatus = "active" | "ignored" | "superseded";
+export type CandidateStatus = "active" | "ignored" | "superseded" | "resolved";
 
 export type ValueKind =
   | "null"
@@ -44,6 +44,7 @@ export interface DriftCandidate {
   readonly supersededBy?: string;
   readonly ignoredAt?: string;
   readonly ignoreScope?: "exact-pair";
+  readonly resolvedAt?: string;
   notification: CandidateNotification;
   summary: CandidateSummary;
 }

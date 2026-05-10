@@ -9,6 +9,7 @@ import {
   QueueParseError,
   readQueue,
   recordNotification,
+  resolveStaleCandidates,
   unignoreCandidate,
   upsertCandidate,
   writeQueue,
@@ -106,6 +107,44 @@ describe("queue identity, dedup, supersession, ignore", () => {
     expect(listCandidates(q)).toHaveLength(1); // active only (the new p.b)
     expect(listCandidates(q, { includeIgnored: true })).toHaveLength(2);
     expect(listCandidates(q, { includeIgnored: true, includeSuperseded: true })).toHaveLength(3);
+  });
+
+  it("resolveStaleCandidates retires only active candidates absent from currentDriftIds", () => {
+    const a = upsertCandidate(q, freshDrift("p.a", 1));
+    const b = upsertCandidate(q, freshDrift("p.b", 1));
+    const cOld = upsertCandidate(q, freshDrift("p.c", 1));
+    ignoreCandidate(q, b.candidate.id); // b → ignored: must be left alone
+    const cNew = upsertCandidate(q, freshDrift("p.c", 2)); // supersedes cOld
+
+    // First reconciliation: both active candidates (a and cNew) are still
+    // observed in the current scan. Nothing should transition; ignored and
+    // superseded entries must be left alone regardless.
+    const transitioned = resolveStaleCandidates(q, new Set([a.candidate.id, cNew.candidate.id]));
+    expect(transitioned).toEqual([]);
+    expect(q.candidates[a.candidate.id].status).toBe("active");
+    expect(q.candidates[b.candidate.id].status).toBe("ignored");
+    expect(q.candidates[cOld.candidate.id].status).toBe("superseded");
+    expect(q.candidates[cNew.candidate.id].status).toBe("active");
+
+    // Second reconciliation: `a` no longer drifts (drops out of the current
+    // set). Must transition to resolved with a resolvedAt timestamp. cNew
+    // stays active because it's still observed.
+    const transitioned2 = resolveStaleCandidates(q, new Set([cNew.candidate.id]));
+    expect(transitioned2).toEqual([a.candidate.id]);
+    expect(q.candidates[a.candidate.id].status).toBe("resolved");
+    expect(q.candidates[a.candidate.id].resolvedAt).toBeDefined();
+    expect(q.candidates[cNew.candidate.id].status).toBe("active");
+    // Already-terminal entries (ignored / superseded) are still untouched.
+    expect(q.candidates[b.candidate.id].status).toBe("ignored");
+    expect(q.candidates[cOld.candidate.id].status).toBe("superseded");
+  });
+
+  it("listCandidates excludes resolved by default and includes them with includeResolved", () => {
+    const a = upsertCandidate(q, freshDrift("p.a", 1));
+    upsertCandidate(q, freshDrift("p.b", 1));
+    resolveStaleCandidates(q, new Set([a.candidate.id])); // resolves p.b
+    expect(listCandidates(q)).toHaveLength(1); // only p.a is active
+    expect(listCandidates(q, { includeResolved: true })).toHaveLength(2);
   });
 
   it("identical values produce identical ids; different values produce different ids", () => {

@@ -216,6 +216,45 @@ export function unignoreCandidate(queue: CandidateQueue, id: string): boolean {
   return true;
 }
 
+/**
+ * Reconcile active candidates against the current scan's drift set: any
+ * active candidate whose `(canonicalPath, liveValueHash)` id is no longer
+ * present in `currentDriftIds` has had its drift resolved (live now matches
+ * desired, or live changed in a way that no longer produces a diff entry —
+ * e.g. the desired side caught up).
+ *
+ * Marked candidates move to the terminal `resolved` status with a
+ * `resolvedAt` timestamp. We deliberately do not delete them: keeping the
+ * record preserves audit history (firstSeenAt → resolvedAt duration, total
+ * seenCount, and any notification trail). Default `listCandidates` /
+ * `countByStatus` callers filter resolved out so `/config-drift list` and
+ * the `active` ScanResult counter no longer surface stale entries.
+ *
+ * Only operates on `active` — `ignored` stays ignored (the operator's choice
+ * persists), `superseded` stays superseded (it has a successor), `resolved`
+ * is already terminal.
+ *
+ * Returns the ids that were transitioned, suitable for logging/test
+ * assertions.
+ */
+export function resolveStaleCandidates(
+  queue: CandidateQueue,
+  currentDriftIds: ReadonlySet<string>,
+  now: () => Date = () => new Date(),
+): string[] {
+  const transitioned: string[] = [];
+  const nowIso = now().toISOString();
+  for (const [id, c] of Object.entries(queue.candidates)) {
+    if (c.status !== "active") continue;
+    if (currentDriftIds.has(id)) continue;
+    const m = c as Mutable<DriftCandidate>;
+    m.status = "resolved";
+    m.resolvedAt = nowIso;
+    transitioned.push(id);
+  }
+  return transitioned;
+}
+
 /** Record notification success/failure for telemetry. */
 export function recordNotification(
   queue: CandidateQueue,
@@ -235,12 +274,13 @@ export function recordNotification(
 
 export function listCandidates(
   queue: CandidateQueue,
-  opts: { includeIgnored?: boolean; includeSuperseded?: boolean } = {},
+  opts: { includeIgnored?: boolean; includeSuperseded?: boolean; includeResolved?: boolean } = {},
 ): DriftCandidate[] {
   const out: DriftCandidate[] = [];
   for (const c of Object.values(queue.candidates)) {
     if (c.status === "ignored" && !opts.includeIgnored) continue;
     if (c.status === "superseded" && !opts.includeSuperseded) continue;
+    if (c.status === "resolved" && !opts.includeResolved) continue;
     out.push(c);
   }
   return out.sort((a, b) => a.canonicalPath.localeCompare(b.canonicalPath));

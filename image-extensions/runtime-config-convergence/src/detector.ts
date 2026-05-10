@@ -36,6 +36,7 @@ import {
   writeQueue,
   upsertCandidate,
   recordNotification,
+  resolveStaleCandidates,
   QueueParseError,
 } from "./queue.js";
 import {
@@ -87,7 +88,16 @@ export interface ScanResult {
   active: number;
   ignored: number;
   superseded: number;
+  resolved: number;
   newCandidates: number;
+  /**
+   * Candidates that crossed the active→resolved boundary on this specific
+   * scan because the drift disappeared (live now matches desired, or the
+   * desired side caught up). Distinct from the cumulative `resolved` count
+   * which includes prior resolutions. Useful for "how many issues did this
+   * scan close out" reporting in command output.
+   */
+  resolvedThisScan: number;
   notificationFailures: number;
   /** Adapter description (provider/target) used for this scan. */
   adapter: string;
@@ -149,14 +159,15 @@ function loadOwnershipPolicy(path: string | undefined, logger: DetectorDeps["log
   }
 }
 
-function countByStatus(queue: CandidateQueue): { active: number; ignored: number; superseded: number } {
-  let active = 0, ignored = 0, superseded = 0;
+function countByStatus(queue: CandidateQueue): { active: number; ignored: number; superseded: number; resolved: number } {
+  let active = 0, ignored = 0, superseded = 0, resolved = 0;
   for (const c of Object.values(queue.candidates)) {
     if (c.status === "active") active++;
     else if (c.status === "ignored") ignored++;
     else if (c.status === "superseded") superseded++;
+    else if (c.status === "resolved") resolved++;
   }
-  return { active, ignored, superseded };
+  return { active, ignored, superseded, resolved };
 }
 
 function shouldNotifyForReason(c: DriftCandidate, expectedSecretDriftNotify: boolean): boolean {
@@ -184,7 +195,8 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
       logger.error(msg);
       errors.push(msg);
       return {
-        active: 0, ignored: 0, superseded: 0, newCandidates: 0, notificationFailures: 0,
+        active: 0, ignored: 0, superseded: 0, resolved: 0,
+        newCandidates: 0, resolvedThisScan: 0, notificationFailures: 0,
         adapter: adapter.describe(),
         queuePath: deps.queuePath,
         inputs: {
@@ -225,14 +237,25 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
     : diffConfig(live, desired);
   const classified = classifyDiff(diff, policy);
 
+  // Build the current scan's candidate-id set in lockstep with the upsert
+  // loop so reconciliation can later transition any active candidate that
+  // is no longer present (drift resolved) to the `resolved` terminal status.
+  const currentDriftIds = new Set<string>();
   let newCount = 0;
   let notifFailures = 0;
   for (const drift of classified) {
     const result = upsertCandidate(queue, drift);
+    currentDriftIds.add(result.candidate.id);
     if (!result.isNew) continue;
     if (result.candidate.status === "ignored") continue; // shouldn't happen for new, but defensive
-    if (!shouldNotifyForReason(result.candidate, deps.config.expectedSecretDriftNotify)) continue;
+    // Count BEFORE notification-suppression checks so command/HTTP scan
+    // output reflects all newly-inserted queue entries, not just the ones
+    // that were eligible to be notified. Otherwise an `expected-secret-drift`
+    // entry with `expectedSecretDriftNotify=false` lands in the queue but
+    // the result reports `newCandidates=0`, which contradicts `/config-drift
+    // list` showing the new candidate.
     newCount++;
+    if (!shouldNotifyForReason(result.candidate, deps.config.expectedSecretDriftNotify)) continue;
     if (deps.config.dryRun) continue;
     const sendResult = await adapter.send(formatCandidateNotification(result.candidate));
     if (!sendResult.ok) {
@@ -242,6 +265,16 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
     } else if (!sendResult.noSend) {
       recordNotification(queue, result.candidate.id, { ok: true });
     }
+  }
+
+  // Reconcile resolved drift. Only safe to do this when we actually computed
+  // a real diff — if desired was missing or live read failed, `classified`
+  // is `[]` and every active candidate would look "missing" through the
+  // narrow lens of this scan. We must not retire candidates based on a
+  // scan that didn't actually observe the live/desired pair.
+  let resolvedThisScan = 0;
+  if (desired !== undefined && !liveReadFailed) {
+    resolvedThisScan = resolveStaleCandidates(queue, currentDriftIds).length;
   }
 
   // Persist queue. If write fails, surface the error but don't lose what we
@@ -258,6 +291,7 @@ export async function runScan(deps: DetectorDeps): Promise<ScanResult> {
   return {
     ...counts,
     newCandidates: newCount,
+    resolvedThisScan,
     notificationFailures: notifFailures,
     adapter: adapter.describe(),
     queuePath: deps.queuePath,

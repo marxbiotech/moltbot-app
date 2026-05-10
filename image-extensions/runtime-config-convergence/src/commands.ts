@@ -68,7 +68,7 @@ function showHelp(): string {
     "",
     "  status                — show queue path, inputs, and counts",
     "  scan                  — run one detection pass and report counts",
-    "  list [--all]          — list active candidates (--all includes ignored/superseded)",
+    "  list [--all]          — list active candidates (--all includes ignored/superseded/resolved)",
     "  show <id>             — show a candidate's full record",
     "  ignore <id>           — permanently ignore this exact (path, value) pair",
     "  unignore <id>         — return an ignored candidate to active",
@@ -96,6 +96,7 @@ function formatCandidateDetails(c: DriftCandidate): string {
   if (c.desiredValueHash) lines.push(`desiredValueHash: ${c.desiredValueHash}`);
   if (c.supersededBy) lines.push(`supersededBy:     ${c.supersededBy}`);
   if (c.ignoredAt) lines.push(`ignoredAt:        ${c.ignoredAt} (${c.ignoreScope ?? "exact-pair"})`);
+  if (c.resolvedAt) lines.push(`resolvedAt:       ${c.resolvedAt}`);
   if (c.notification.firstNotifiedAt) lines.push(`firstNotifiedAt:  ${c.notification.firstNotifiedAt}`);
   if (c.notification.lastNotificationError) lines.push(`lastNotificationError: ${c.notification.lastNotificationError}`);
   lines.push(`summary:          kind=${c.summary.valueKind}, redacted=${c.summary.redacted}`);
@@ -154,10 +155,11 @@ export async function handleCommand(
       return { text: showHelp() };
 
     case "status": {
-      const counts = listCandidates(queue, { includeIgnored: true, includeSuperseded: true });
+      const counts = listCandidates(queue, { includeIgnored: true, includeSuperseded: true, includeResolved: true });
       const active = counts.filter((c) => c.status === "active").length;
       const ignored = counts.filter((c) => c.status === "ignored").length;
       const superseded = counts.filter((c) => c.status === "superseded").length;
+      const resolved = counts.filter((c) => c.status === "resolved").length;
       const desiredAvailable = !!deps.config.desiredConfigPath && existsSync(deps.config.desiredConfigPath);
       const policyAvailable = !!deps.config.ownershipPolicyPath && existsSync(deps.config.ownershipPolicyPath);
       const liveSource = deps.config.liveConfigPath ? `file:${deps.config.liveConfigPath}` : "ctx.config / runtime.config.current()";
@@ -169,7 +171,7 @@ export async function handleCommand(
         `policy source:    ${deps.config.ownershipPolicyPath ?? "(unset)"} (${policyAvailable ? "available" : "missing"})`,
         `notification:     ${adapter.describe()}`,
         `last queue write: ${queue.updatedAt}`,
-        `counts:           active=${active}, ignored=${ignored}, superseded=${superseded}`,
+        `counts:           active=${active}, ignored=${ignored}, superseded=${superseded}, resolved=${resolved}`,
       ];
       return { text: lines.join("\n") };
     }
@@ -194,8 +196,8 @@ export async function handleCommand(
       const result = await runScanFn(detectorDeps);
       const lines = [
         `Scan complete.`,
-        `  active=${result.active}, ignored=${result.ignored}, superseded=${result.superseded}`,
-        `  new this scan=${result.newCandidates}`,
+        `  active=${result.active}, ignored=${result.ignored}, superseded=${result.superseded}, resolved=${result.resolved}`,
+        `  new this scan=${result.newCandidates}, resolved this scan=${result.resolvedThisScan}`,
         `  notification failures=${result.notificationFailures}`,
         `  adapter=${result.adapter}`,
       ];
@@ -210,9 +212,9 @@ export async function handleCommand(
 
     case "list": {
       const all = rest.includes("--all");
-      const items = listCandidates(queue, { includeIgnored: all, includeSuperseded: all });
+      const items = listCandidates(queue, { includeIgnored: all, includeSuperseded: all, includeResolved: all });
       if (items.length === 0) {
-        return { text: all ? "No candidates." : "No active candidates. (Use --all to include ignored/superseded.)" };
+        return { text: all ? "No candidates." : "No active candidates. (Use --all to include ignored/superseded/resolved.)" };
       }
       const lines = [`Candidates (${items.length}):`];
       for (const c of items) lines.push(formatCandidateLine(c));
