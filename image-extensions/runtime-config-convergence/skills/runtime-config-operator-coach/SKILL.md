@@ -97,8 +97,15 @@ external traffic, use:
    For `patch`, verification continues into the `set-config.yml` workflow
    run and a final `scan` to confirm `resolved`.
 
-For read-only subcommands (`status`, `scan`, `list`, `show`,
-`notify-test`), explain → suggest → done. No preview/ask gate.
+For read-only subcommands (`status`, `scan`, `list`, `show`),
+explain → suggest → done. No preview/ask gate.
+
+`notify-test` is a special case: it does not mutate queue state, but
+it does send outbound traffic through the configured transport. Treat
+it as an external side effect — explain the destination/transport,
+ask before the operator runs it, then verify delivery. It needs no
+`show` preview (nothing in the queue is being changed), but it is
+not read-only either.
 
 ### 4. Subcommand reference, in context
 
@@ -113,7 +120,7 @@ all of them by default.
 | `/config-drift show <id>` | needs to decide what to do with a specific candidate | Always run before `ignore` or `patch`. Values are redacted — only hashes and a kind summary appear. |
 | `/config-drift ignore <id>` | the live value is intentionally runtime-owned and noisy | Per-`(path, valueHash)` only — if the live value changes, a fresh candidate appears and is *not* covered by the prior ignore. |
 | `/config-drift unignore <id>` | reversing a prior ignore | Candidate becomes active again on the next scan if drift still exists. |
-| `/config-drift patch <id…>` | promoting a live value into repo | v1 stub: produces a placeholder JSON patch only. The operator still runs `set-config.yml` themselves. Refuses on redacted/secret-like paths — those go through `set_secret`. |
+| `/config-drift patch <id…>` | promoting a live value into repo | v1 stub: produces a **placeholder** JSON patch only — values are scaffolds, not live values. The operator must manually substitute the intended live values into the patch before running `set-config.yml`; the generated patch is **not** directly applyable. Refuses on redacted/secret-like paths — those go through `set_secret`. |
 | `/config-drift notify-test` | just wired up a notification transport and wants to confirm delivery | Currently `log-only` on Merlin; transport-specific env vars come in Step 3 follow-ups. |
 
 ### 5. States and reason codes — what they mean
@@ -174,7 +181,10 @@ ran openclaw configure / exploratory /set-config
    │              then /config-drift scan → expect resolved
    │
    └─► /config-drift list → show <id> → patch <id…>
-       → run set-config.yml workflow with the resulting patch
+       → edit the generated patch: replace placeholder values
+         with the intended live values (the patch is a scaffold,
+         not directly applyable)
+       → run set-config.yml workflow with the completed patch
        → after deploy: /config-drift scan → expect resolved
        (caveat: until the chart's config-reconciler ships,
         live PVC openclaw.json is NOT auto-rewritten for
