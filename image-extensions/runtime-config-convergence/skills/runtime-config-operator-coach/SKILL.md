@@ -31,7 +31,9 @@ Trigger when the user:
 - Asks "what does `/config-drift …` do" or "how do I check drift".
 - Reports a drift notification and asks what to do.
 - Says they ran a runtime test (`openclaw configure`, an exploratory
-  `/set-config`) and wants to clean up.
+  `/set-config`) and wants help deciding what to do with the residual
+  drift (keep / discard / ignore / leave). If they already know they
+  want to revert and just need the command, route to `manage-config`.
 - Asks about candidate states (`active`, `ignored`, `superseded`,
   `resolved`) or reason codes (`repo-owned-drift`,
   `unknown-runtime-drift`, `secret-shape-violation`,
@@ -114,14 +116,14 @@ all of them by default.
 
 | Subcommand | Suggest when the user… | Notes |
 |---|---|---|
-| `/config-drift status` | wants a health check, isn't sure what's wired up | Read top to bottom. `(unset) (missing)` for `desired source` / `policy source` is normal pre-Step-3; not an emergency. |
+| `/config-drift status` | wants a health check, isn't sure what's wired up | Read top to bottom. `(unset) (missing)` for `desired source` / `policy source` is normal on personas where `desiredConfigPath` / `ownershipPolicyPath` aren't yet mounted; not an emergency. Cross-check the per-persona table in the operator guide. |
 | `/config-drift scan` | just made a runtime change and wants the queue refreshed | Use after any live edit, and again after a deploy that should resolve a candidate. |
 | `/config-drift list` | wants to see active candidates | Add `--all` only if they ask about ignored / superseded / resolved. |
 | `/config-drift show <id>` | needs to decide what to do with a specific candidate | Always run before `ignore` or `patch`. Values are redacted — only hashes and a kind summary appear. |
 | `/config-drift ignore <id>` | the live value is intentionally runtime-owned and noisy | Per-`(path, valueHash)` only — if the live value changes, a fresh candidate appears and is *not* covered by the prior ignore. |
 | `/config-drift unignore <id>` | reversing a prior ignore | Candidate becomes active again on the next scan if drift still exists. |
 | `/config-drift patch <id…>` | promoting a live value into repo | v1 stub: produces a **placeholder** JSON patch only — values are scaffolds, not live values. The operator must manually substitute the intended live values into the patch before running `set-config.yml`; the generated patch is **not** directly applyable. Refuses on redacted/secret-like paths — those go through `set_secret`. |
-| `/config-drift notify-test` | just wired up a notification transport and wants to confirm delivery | Currently `log-only` on Merlin; transport-specific env vars come in Step 3 follow-ups. |
+| `/config-drift notify-test` | just wired up a notification transport and wants to confirm delivery | When no transport env vars are configured for the persona, this falls back to `log-only` (delivery logged, nothing sent externally). Per-persona transport state lives in the operator guide. |
 
 ### 5. States and reason codes — what they mean
 
@@ -135,8 +137,7 @@ States:
 - **resolved** — drift went away; record kept for audit.
 
 Re-seeing the same `(path, valueHash)` does **not** create a new
-candidate or re-notify — it bumps `seenCount` only. Use this fact to
-reassure operators worried about being spammed.
+candidate or re-notify — it bumps `seenCount` only.
 
 Reason codes — what each implies for what to suggest:
 
@@ -177,7 +178,10 @@ ran openclaw configure / exploratory /set-config
    │          │                    runtime-owned, not
    │          │                    unknown-runtime-drift)
    │          │
-   │          └─► openclaw config set <path> <repo-desired-value>
+   │          └─► preferred (chat-only): re-run a known-good value via
+   │              `set_config` (the manage-config sibling skill)
+   │              fallback (pod-exec): openclaw config set <path>
+   │              <repo-desired-value>
    │              then /config-drift scan → expect resolved
    │
    └─► /config-drift list → show <id> → patch <id…>
@@ -213,24 +217,28 @@ Don't ask the user to repeat back what you said. Don't enumerate
 - Don't list every subcommand when the user asked one question. The
   full reference lives in the operator guide; in chat, give the next
   one or two steps.
-- If the user is on a persona where the plugin isn't enabled (see the
-  per-persona table in the operator guide), say so honestly:
-  `manage-secrets` still serves `set_config` / `set_secret` there,
-  but `/config-drift` does not exist until Step 3 ships for that
-  persona.
+- If the user is on a persona where the plugin isn't enabled (the
+  per-persona table in the operator guide is canonical), say so
+  honestly: `manage-secrets` still serves `set_config` / `set_secret`
+  there, but `/config-drift` is not available until the plugin is
+  enabled for that persona.
 
 ## Pointers for deeper reading
 
 When a chat answer is not enough, point at the docs in this order, and
-cite the section, not just the file:
+cite the section, not just the file. **All three live in the
+`moltbot-env` repo under `docs/`** (not in `moltbot-app` and not
+in the runtime image — the operator must consult that checkout):
 
-1. `docs/runtime-config-convergence-operator-guide.md` — full day-2
-   reference. Authoritative on subcommands, states, reason codes, and
-   the cleanup paths.
-2. `docs/runtime-config-convergence.md` — v2 design. Read for the
-   ownership model and why the v1 detector does not auto-promote.
-3. `docs/runtime-config-step-2-plan.md` — rollout plan and Step 3
-   per-persona sequence. Read for "is my persona enabled yet."
+1. `moltbot-env/docs/runtime-config-convergence-operator-guide.md` —
+   full day-2 reference. Authoritative on subcommands, states, reason
+   codes, and the cleanup paths.
+2. `moltbot-env/docs/runtime-config-convergence.md` — v2 design. Read
+   for the ownership model and why the v1 detector does not
+   auto-promote.
+3. `moltbot-env/docs/runtime-config-step-2-plan.md` — rollout plan and
+   the per-persona enablement sequence. Read for "is my persona
+   enabled yet."
 
 ## What this skill does NOT do
 
