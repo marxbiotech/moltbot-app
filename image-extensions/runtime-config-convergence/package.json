@@ -1,6 +1,6 @@
 {
   "name": "@moltbot/runtime-config-convergence",
-  "version": "2026.5.0",
+  "version": "2026.5.1",
   "private": true,
   "type": "module",
   "dependencies": {
