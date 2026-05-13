@@ -230,14 +230,13 @@ cite the section, not just the file. **All three live in the
 `moltbot-env` repo under `docs/`** (not in `moltbot-app` and not
 in the runtime image — the operator must consult that checkout):
 
-1. `moltbot-env/docs/runtime-config-convergence-operator-guide.md` —
-   full day-2 reference. Authoritative on subcommands, states, reason
-   codes, and the cleanup paths.
-2. `moltbot-env/docs/runtime-config-convergence.md` — v2 design. Read
-   for the ownership model and why the v1 detector does not
-   auto-promote.
-3. `moltbot-env/docs/runtime-config-step-2-plan.md` — rollout plan and
-   the per-persona enablement sequence. Read for "is my persona
+1. `runtime-config-convergence-operator-guide.md` — full day-2
+   reference. Authoritative on subcommands, states, reason codes,
+   and the cleanup paths.
+2. `runtime-config-convergence.md` — v2 design. Read for the
+   ownership model and why the v1 detector does not auto-promote.
+3. `runtime-config-step-2-plan.md` — rollout plan and the
+   per-persona enablement sequence. Read for "is my persona
    enabled yet."
 
 ## What this skill does NOT do
