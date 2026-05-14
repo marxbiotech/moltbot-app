@@ -218,8 +218,8 @@ export class RemoteAcpxRuntime implements AcpRuntime {
     const spawnPromise = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         unregisterSpawnResolver(acpSessionId);
-        reject(new Error("acp.spawn timed out (10s)"));
-      }, 10_000);
+        reject(new Error("acp.spawn timed out (30s)"));
+      }, 30_000);
       registerSpawnResolver(acpSessionId, {
         resolve: () => { clearTimeout(timeout); resolve(); },
         reject: (err) => { clearTimeout(timeout); reject(err); },
