@@ -2,6 +2,7 @@
   "id": "node-tools",
   "name": "Node Tools",
   "description": "Node pairing management. /node pair|list",
+  "activation": { "onStartup": true },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
