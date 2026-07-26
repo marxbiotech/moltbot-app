@@ -3,6 +3,7 @@
   "name": "Runtime Config Convergence",
   "description": "Runtime config management for moltbot personas. Provides set_secret (env secrets) and set_config (runtime config) tools — formerly the manage-secrets plugin — plus drift detection between live runtime OpenClaw config and repo-rendered desired config. Maintains a PVC-local candidate queue, sends one direct chat notification per new non-ignored candidate, and surfaces a /config-drift command for review. Drift v1: detector + queue + notifications only — no auto-promotion.",
   "activation": { "onStartup": true },
+  "contracts": { "tools": ["set_secret", "set_config"] },
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",

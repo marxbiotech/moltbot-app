@@ -3,6 +3,7 @@
   "name": "Remote ACPX",
   "description": "ACP runtime backend dispatching to a paired node via WebSocket, with LLM-invocable run_coder tool.",
   "activation": { "onStartup": true },
+  "contracts": { "tools": ["run_coder", "coding_agents_list", "coding_agent_add", "coding_agent_remove", "coding_agent_sync"] },
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
