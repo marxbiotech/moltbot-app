@@ -56,6 +56,16 @@ export type CodingToolDeps = {
   getConfig: () => CodingToolConfig;
 };
 
+// Session keys with a run_coder turn currently executing. Shared via Symbol.for
+// because jiti can load this module more than once (plugin loader + gateway
+// subsystem); a module-local Set would let each copy see an empty guard.
+const IN_FLIGHT_KEY = Symbol.for("remote-acpx.inFlightSessions");
+const globalRef = globalThis as unknown as Record<symbol, Set<string>>;
+if (!globalRef[IN_FLIGHT_KEY]) {
+  globalRef[IN_FLIGHT_KEY] = new Set<string>();
+}
+const inFlightSessions = globalRef[IN_FLIGHT_KEY];
+
 export function registerCodingTool(
   api: OpenClawPluginApi,
   deps: CodingToolDeps,
@@ -101,6 +111,20 @@ export function registerCodingTool(
             "ACP agent variant (e.g. 'claude', 'codex', 'gemini'). " +
             "Overrides the variant resolved from agentId. " +
             "If omitted, uses the variant from the agentId roster entry (if set), otherwise the plugin default.",
+        }),
+      ),
+      // Read by the codex agent runtime's per-tool-call watchdog
+      // (resolveDynamicToolCallTimeoutMs), which otherwise kills the call at its
+      // 90s default while the remote turn keeps running to completion — the
+      // caller then sees a timeout and the finished result is discarded.
+      // Runtime caps the effective budget at 600s.
+      timeoutSeconds: Type.Optional(
+        Type.Integer({
+          description:
+            "Seconds to wait for the remote agent before this call times out. " +
+            "The default (90) is only enough for trivial single-file edits. " +
+            "Set 300 for ordinary multi-step work and 600 (the maximum) for codebase " +
+            "investigation, research, test runs, or builds.",
         }),
       ),
     }),
@@ -155,6 +179,27 @@ export function registerCodingTool(
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
       const sessionKey = ctx.sessionKey || "default";
 
+      // A second call on a session whose turn is still running would reach the
+      // node-host's handleTurn, which kills the in-flight acpx process before
+      // starting the new one. Both calls then fail: the first loses its work,
+      // the second inherits the kill's acp.exited and returns ops=0. Refuse
+      // instead — the common trigger is a caller retrying after the outer
+      // watchdog fired while the remote turn was still progressing.
+      if (inFlightSessions.has(sessionKey)) {
+        log.warn(`execute: rejected — turn already in flight for sessionKey=${sessionKey}`);
+        return {
+          content: [{
+            type: "text",
+            text:
+              "Error: TURN_IN_FLIGHT — a previous run_coder call on this session is still " +
+              "executing on the remote agent. Wait for it to return rather than retrying; " +
+              "a retry would kill the in-flight run and discard its work. If the earlier call " +
+              "timed out, raise timeoutSeconds (max 600) on the next attempt.",
+          }],
+        };
+      }
+      inFlightSessions.add(sessionKey);
+
       try {
         log.info(`execute: sessionKey=${sessionKey} agentId=${agentId || "(none)"} agent=${resolvedAgent} cwd=${resolvedCwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
 
@@ -202,6 +247,8 @@ export function registerCodingTool(
         return {
           content: [{ type: "text", text: `Error: ${message}${hint}` }],
         };
+      } finally {
+        inFlightSessions.delete(sessionKey);
       }
     },
   }));

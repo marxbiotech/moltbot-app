@@ -29,6 +29,7 @@ vi.mock("typebox", () => ({
   Type: {
     Object: () => ({}),
     String: () => ({}),
+    Integer: () => ({}),
     Optional: () => ({}),
   },
 }));
