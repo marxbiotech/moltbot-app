@@ -98,6 +98,16 @@ export function createProgressReporter(params: {
     }
     lastEmitAt = now;
 
+    // The diagnostic bus does not log run.progress, and the channel sink is
+    // invisible from a CLI-originated dispatch — so without this line there is
+    // no way to confirm from a running gateway that progress is actually being
+    // reported, only that nothing complained. One line per interval is noise-
+    // free next to the ~1e3 routeNodeEvent entries a turn already writes here.
+    log.info(
+      `progress: sessionKey=${params.sessionKey} ops=${snapshot.operationCount} ` +
+        `latest=${snapshot.latest?.tool ?? "-"} msgChars=${snapshot.messageChars}`,
+    );
+
     emitTrustedDiagnosticEvent({
       type: "run.progress",
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
