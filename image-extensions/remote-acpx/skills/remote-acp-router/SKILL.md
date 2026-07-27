@@ -136,7 +136,9 @@ Once an async call returns, the task is running and **you must not call `run_cod
 
 If the user asks how it is going before the wake arrives, `action: "status"` is also the right call — it returns live progress (operation count and the current operation).
 
-A job whose gateway restarted mid-run comes back as `lost`. That is not a transient state to retry into: the remote agent was left unattended and its work is unrecoverable. Say so and re-dispatch from the top.
+**Check before you refuse.** "Do not call again" applies to a job that is actually running. If you believe one is outstanding — because you remember starting it, or the user is asking about it — call `action: "status"` first and let the answer decide. Refusing from memory alone is how a conversation gets stuck: a wake can be missed, and the gateway can restart, and in both cases you would otherwise wait forever for a notice that is never coming.
+
+Job records do not survive a gateway restart. `action: "status"` then answers `no job <id>`, which is the signal that the dispatch is gone — the remote agent was left unattended and its work is unrecoverable. That is not a transient state to poll: say so and re-dispatch from the top.
 
 ### Prompt framing for the remote agent
 
@@ -205,7 +207,7 @@ When an invocation fails, classify the error and present a clear user-facing mes
 | `AGENT_UNREACHABLE` | Remote node is offline or `coding_agents_list` returns empty | 「遠端節點目前無法連線。請確認節點狀態後再試。」 |
 | `INVOCATION_ERROR` | Tool call returned an error (timeout, crash, permission denied) | 「執行過程中發生錯誤：{error_summary}。建議開啟新的 run_coder session 重試。」 |
 | `TURN_IN_FLIGHT` | A dispatch is already running on this `sessionKey`. Do **not** retry — a retry kills the live run and discards its work. Wait for it, or read it with `action: "status"` if it is an async job. If the previous call died to the 90s default, the fix is `timeoutSeconds`, or `mode: "async"` if it needs more than 600s. | 「上一個任務還在執行中，稍候再看結果。」 |
-| `JOB_LOST` | An async job's gateway restarted mid-run. The remote agent was left unattended and its work is unrecoverable — this is not a transient state to retry into. Re-dispatch from the top. | 「先前的背景任務因為服務重啟而中斷，需要重新執行。」 |
+| `JOB_GONE` | `action: "status"` answered `no job <id>`. Job records do not survive a gateway restart, so the dispatch is unrecoverable rather than pending — do not keep polling. Re-dispatch from the top. | 「先前的背景任務因為服務重啟而中斷，需要重新執行。」 |
 | `AGENTID_UNRESOLVED` | `agentId` was passed without an explicit `cwd` and does not match any roster entry. The tool rejects the call rather than silently routing to the default workspace. `cwd` is the workspace-safety anchor: an unknown `agentId` is only a recoverable miss when the caller pins the workspace explicitly. Behavior matrix when `agentId` is unknown: bare `agentId` → fail loud; `agentId` + `agent` only (no `cwd`) → fail loud; `agentId` + `cwd` (with or without `agent`) → degrade to that `cwd` + the resolved agent variant. | 「找不到 agentId="{id}"。請呼叫 `coding_agents_list` 查看可用代號，或直接提供 cwd（可搭配 agent）以略過 roster 查詢。」 |
 
 ### Anti-patterns
