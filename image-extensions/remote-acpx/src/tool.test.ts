@@ -42,6 +42,7 @@ vi.mock("typebox", () => ({
 
 import { registerCodingTool, createProgressReporter, type CodingToolConfig } from "./tool.js";
 import { inFlightSessions } from "./in-flight.js";
+import { resetJobStoreForTest } from "./job-store.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -53,20 +54,11 @@ function captureRegisteredTool(): {
   api: OpenClawPluginApi;
 } {
   let captured: ToolFactory | null = null;
-  const jobEntries = new Map<string, unknown>();
   const api = {
     registerTool: vi.fn((factory: ToolFactory) => {
       captured = factory;
     }),
     runtime: {
-      state: {
-        openKeyedStore: () => ({
-          register: async (k: string, v: unknown) => void jobEntries.set(k, v),
-          lookup: async (k: string) => jobEntries.get(k),
-          entries: async () =>
-            [...jobEntries].map(([key, value]) => ({ key, value, createdAt: 0 })),
-        }),
-      },
       system: {
         enqueueSystemEvent: vi.fn(() => true),
         requestHeartbeat: vi.fn(),
@@ -305,6 +297,7 @@ describe("run_coder — async dispatch", () => {
   beforeEach(() => {
     mockResolveAgentById.mockReset();
     inFlightSessions.clear();
+    resetJobStoreForTest();
   });
 
   afterEach(() => {

@@ -12,12 +12,12 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { RemoteAcpxRuntime } from "./runtime.js";
 import type { SessionManager } from "./session-manager.js";
 import { collectTurnOutput, type ProgressSnapshot } from "./output-collector.js";
-import { type DispatchJob, type JobStore, INSTANCE_ID } from "./job-store.js";
+import type { DispatchJob, JobStore } from "./job-store.js";
 import { inFlightSessions } from "./in-flight.js";
 import { log } from "./log.js";
 
-// Matches the synchronous reporter's cadence. Each tick is a state-store write,
-// so it is deliberately coarser than the ~1e3 events a turn produces.
+// Matches the synchronous reporter's cadence — coarse enough that the ~1e3
+// events a turn produces do not each rewrite the job record.
 const JOB_PROGRESS_INTERVAL_MS = 5_000;
 
 export type StartDispatchParams = {
@@ -66,9 +66,8 @@ export async function startDispatch(params: StartDispatchParams): Promise<Dispat
     cwd: params.cwd,
     status: "running",
     startedAt: Date.now(),
-    ownerInstanceId: INSTANCE_ID,
   };
-  await params.jobStore.put(job);
+  params.jobStore.put(job);
 
   // Held for the whole background turn, not just the tool call. Without it the
   // session-manager idle sweeper would reclaim a session that is dispatching —
@@ -108,11 +107,7 @@ async function runInBackground(params: StartDispatchParams, job: DispatchJob): P
       `dispatch ${job.jobId}: progress ops=${snapshot.operationCount} ` +
         `latest=${snapshot.latest?.tool ?? "-"}`,
     );
-    void params.jobStore.put(current).catch((err) => {
-      log.warn(
-        `dispatch ${job.jobId}: progress write failed — ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
+    params.jobStore.put(current);
   };
 
   try {
@@ -168,16 +163,16 @@ async function runInBackground(params: StartDispatchParams, job: DispatchJob): P
     inFlightSessions.delete(params.sessionKey);
   }
 
-  await params.jobStore.put(current);
+  params.jobStore.put(current);
   notifyRequester(params, current);
 }
 
 /**
  * Session-queued delivery: the event lands in the requester's session and the
  * heartbeat wake makes it surface immediately rather than on the next tick.
- * Delivery failures are logged, never thrown — the result is already durable in
- * the job store, so a missed wake degrades to "the model has to ask" rather
- * than losing the work.
+ * Delivery failures are logged, never thrown — the result is already in the job
+ * store by this point, so a missed wake degrades to "the model has to be asked"
+ * rather than losing the work outright.
  */
 function notifyRequester(params: StartDispatchParams, job: DispatchJob): void {
   try {

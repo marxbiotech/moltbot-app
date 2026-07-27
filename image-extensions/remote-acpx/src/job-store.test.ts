@@ -1,123 +1,101 @@
-// Tests for the async dispatch job store, focused on restart reconciliation:
-// a record that says "running" is only trustworthy if this process is the one
-// draining its event stream.
+// Tests for the async dispatch job store: lookup, the per-session active-job
+// query that backs the concurrent guardrail, and TTL pruning.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-vi.mock("./log.js", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+const { createJobStore, resetJobStoreForTest } = await import("./job-store.js");
+type Store = ReturnType<typeof createJobStore>;
+type Job = Parameters<Store["put"]>[0];
 
-const { createJobStore, INSTANCE_ID } = await import("./job-store.js");
-type DispatchJob = Awaited<ReturnType<ReturnType<typeof createJobStore>["get"]>>;
+const JOB_TTL_MS = 6 * 60 * 60 * 1000;
 
-function fakeApi(): { api: OpenClawPluginApi; openCount: () => number } {
-  const entries = new Map<string, unknown>();
-  let opens = 0;
-  const api = {
-    runtime: {
-      state: {
-        openKeyedStore: () => {
-          opens += 1;
-          return {
-            register: async (k: string, v: unknown) => void entries.set(k, v),
-            lookup: async (k: string) => entries.get(k),
-            entries: async () =>
-              [...entries].map(([key, value]) => ({ key, value, createdAt: 0 })),
-          };
-        },
-      },
-    },
-  } as unknown as OpenClawPluginApi;
-  return { api, openCount: () => opens };
-}
-
-const runningJob = (over: Record<string, unknown> = {}) => ({
+const job = (over: Partial<Job> = {}): Job => ({
   jobId: "rc-abc",
   sessionKey: "s1",
   agent: "claude",
   cwd: "/app",
   status: "running",
-  startedAt: Date.now() - 1000,
-  ownerInstanceId: INSTANCE_ID,
+  startedAt: Date.now(),
   ...over,
-}) as NonNullable<DispatchJob>;
+});
 
 describe("job store", () => {
-  let store: ReturnType<typeof createJobStore>;
-  let openCount: () => number;
+  let store: Store;
 
   beforeEach(() => {
-    const f = fakeApi();
-    store = createJobStore(f.api);
-    openCount = f.openCount;
+    resetJobStoreForTest();
+    store = createJobStore();
   });
 
-  it("does not touch the state runtime until a job is actually used", () => {
-    // Registration happens on every agent turn; most never dispatch.
-    expect(openCount()).toBe(0);
+  afterEach(() => {
+    vi.useRealTimers();
+    resetJobStoreForTest();
   });
 
-  it("round-trips a job owned by this process", async () => {
-    await store.put(runningJob());
-    const got = await store.get("rc-abc");
-    expect(got?.status).toBe("running");
+  it("round-trips a job", () => {
+    store.put(job());
+    expect(store.get("rc-abc")?.status).toBe("running");
   });
 
-  it("finalises a job left running by a previous gateway instance as lost", async () => {
-    await store.put(runningJob({ ownerInstanceId: "1-999999" }));
-
-    const got = await store.get("rc-abc");
-
-    expect(got?.status).toBe("lost");
-    expect(got?.result?.error).toContain("gateway restarted");
-    expect(got?.endedAt).toBeDefined();
+  it("returns undefined for an id it never saw", () => {
+    expect(store.get("rc-nope")).toBeUndefined();
   });
 
-  it("persists the lost verdict so it is not re-derived on every read", async () => {
-    await store.put(runningJob({ ownerInstanceId: "1-999999" }));
-    await store.get("rc-abc");
-
-    // Second read sees a record that is already terminal, not a running one.
-    const again = await store.get("rc-abc");
-    expect(again?.status).toBe("lost");
+  it("shares state across separate createJobStore calls", () => {
+    // jiti can load the module more than once; the Symbol.for map is what keeps
+    // a status lookup from missing a job started by another copy.
+    store.put(job());
+    expect(createJobStore().get("rc-abc")?.jobId).toBe("rc-abc");
   });
 
-  it("leaves an already-terminal job alone regardless of owner", async () => {
-    await store.put(runningJob({
-      ownerInstanceId: "1-999999",
-      status: "succeeded",
-      endedAt: Date.now(),
-      result: { status: "success", message: "done", operationCount: 3 },
-    }));
+  it("finds the active job for a session", () => {
+    store.put(job({ jobId: "rc-1", sessionKey: "s1" }));
+    store.put(job({ jobId: "rc-2", sessionKey: "s2" }));
 
-    const got = await store.get("rc-abc");
-    expect(got?.status).toBe("succeeded");
-    expect(got?.result?.message).toBe("done");
+    expect(store.findActiveForSession("s2")?.jobId).toBe("rc-2");
+    expect(store.findActiveForSession("s3")).toBeUndefined();
   });
 
-  it("finds the active job for a session", async () => {
-    await store.put(runningJob({ jobId: "rc-1", sessionKey: "s1" }));
-    await store.put(runningJob({ jobId: "rc-2", sessionKey: "s2" }));
-
-    expect((await store.findActiveForSession("s2"))?.jobId).toBe("rc-2");
-    expect(await store.findActiveForSession("s3")).toBeUndefined();
+  it("ignores finished jobs when looking for an active one", () => {
+    // Otherwise a completed dispatch would block its session's guardrail and
+    // every later async call would be answered with a stale record.
+    store.put(job({ status: "succeeded", endedAt: Date.now() }));
+    expect(store.findActiveForSession("s1")).toBeUndefined();
   });
 
-  it("does not report an orphaned job as active — it would block the session forever", async () => {
-    await store.put(runningJob({ sessionKey: "s1", ownerInstanceId: "1-999999" }));
+  it("prunes a terminal job once it is past the TTL", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    store.put(job({ status: "succeeded", endedAt: Date.now() }));
 
-    expect(await store.findActiveForSession("s1")).toBeUndefined();
+    vi.advanceTimersByTime(JOB_TTL_MS + 1);
+    store.put(job({ jobId: "rc-new" }));
+
+    expect(store.get("rc-abc")).toBeUndefined();
+    expect(store.get("rc-new")).toBeDefined();
   });
 
-  it("ignores finished jobs when looking for an active one", async () => {
-    await store.put(runningJob({
-      sessionKey: "s1",
-      status: "succeeded",
-      endedAt: Date.now(),
-    }));
+  it("never prunes a running job, however long it has run", () => {
+    // The background turn still holds a reference and will finalise it; dropping
+    // the record would strand the dispatch with nowhere to report.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    store.put(job());
 
-    expect(await store.findActiveForSession("s1")).toBeUndefined();
+    vi.advanceTimersByTime(JOB_TTL_MS * 3);
+    store.put(job({ jobId: "rc-new" }));
+
+    expect(store.get("rc-abc")?.status).toBe("running");
+  });
+
+  it("keeps a terminal job readable inside the TTL", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    store.put(job({ status: "succeeded", endedAt: Date.now() }));
+
+    vi.advanceTimersByTime(JOB_TTL_MS - 60_000);
+    store.put(job({ jobId: "rc-new" }));
+
+    expect(store.get("rc-abc")?.status).toBe("succeeded");
   });
 });

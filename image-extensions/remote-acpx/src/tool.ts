@@ -164,7 +164,7 @@ export function registerCodingTool(
   deps: CodingToolDeps,
 ): void {
   const sessionMgr = new SessionManager();
-  const jobStore = createJobStore(api);
+  const jobStore = createJobStore();
 
   log.info(`registerCodingTool: registering run_coder tool`);
 
@@ -269,7 +269,7 @@ export function registerCodingTool(
             content: [{ type: "text", text: "Error: action=\"status\" requires jobId." }],
           };
         }
-        const job = await jobStore.get(jobId);
+        const job = jobStore.get(jobId);
         if (!job) {
           return {
             content: [{
@@ -323,7 +323,7 @@ export function registerCodingTool(
       if (mode === "async") {
         // Concurrent guardrail rather than a hard refusal: a caller that repeats
         // the request gets the running job back, which is what it needed to know.
-        const active = await jobStore.findActiveForSession(sessionKey);
+        const active = jobStore.findActiveForSession(sessionKey);
         if (active) {
           log.info(`execute: async repeat on ${sessionKey} — returning job ${active.jobId}`);
           return formatJobStatus(active);
@@ -365,7 +365,7 @@ export function registerCodingTool(
       if (inFlightSessions.has(sessionKey)) {
         // An async dispatch holds the same marker for its whole background run,
         // so point the caller at that job rather than at timeoutSeconds.
-        const active = await jobStore.findActiveForSession(sessionKey);
+        const active = jobStore.findActiveForSession(sessionKey);
         if (active) {
           log.warn(`execute: sync call rejected — async job ${active.jobId} still running`);
           return formatJobStatus(active);
