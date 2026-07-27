@@ -28,13 +28,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract OpenClaw version from Dockerfile
+      - name: Resolve image tags
         id: version
         run: |
+          set -euo pipefail
+          repo=ghcr.io/marxbiotech/moltbot-app
           tag=$(grep '^FROM ghcr.io/' Dockerfile | head -1 | cut -d: -f2)
-          echo "openclaw_tag=$tag" >> "$GITHUB_OUTPUT"
           sha_short=$(git rev-parse --short HEAD)
-          echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
+
+          # The fully-qualified tag is immutable and always published — it is
+          # what deployments pin (alongside a digest).
+          tags="$repo:$tag-$sha_short"
+
+          # Floating tags only ever move from main. workflow_dispatch is how a
+          # feature branch gets a testable image, and such a build must not
+          # repoint :latest or the bare version tag for everyone else.
+          if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
+            tags="$tags"$'\n'"$repo:latest"$'\n'"$repo:$tag"
+          else
+            echo "::notice::Branch build — publishing only $repo:$tag-$sha_short"
+          fi
+
+          {
+            echo "tags<<TAGS_EOF"
+            echo "$tags"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -42,9 +61,6 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/marxbiotech/moltbot-app:latest
-            ghcr.io/marxbiotech/moltbot-app:${{ steps.version.outputs.openclaw_tag }}
-            ghcr.io/marxbiotech/moltbot-app:${{ steps.version.outputs.openclaw_tag }}-${{ steps.version.outputs.sha_short }}
+          tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
