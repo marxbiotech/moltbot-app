@@ -3,7 +3,7 @@
 // (bare or with agent-only overrides), and graceful degradation when
 // the caller supplies an explicit cwd alongside an unknown agentId.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
@@ -22,6 +22,12 @@ vi.mock("openclaw/plugin-sdk/remote-acpx", () => ({
   isAcpNodeConnected: () => false,
 }));
 
+const mockEmitTrustedDiagnosticEvent = vi.fn();
+vi.mock("openclaw/plugin-sdk/diagnostic-runtime", () => ({
+  emitTrustedDiagnosticEvent: (...args: unknown[]) =>
+    mockEmitTrustedDiagnosticEvent(...args),
+}));
+
 // vitest's resolver cannot load typebox the way jiti does at runtime;
 // stub the methods registerCodingTool calls during registration. The
 // resolution paths under test never exercise these schemas.
@@ -34,7 +40,7 @@ vi.mock("typebox", () => ({
   },
 }));
 
-import { registerCodingTool, type CodingToolConfig } from "./tool.js";
+import { registerCodingTool, createProgressReporter, type CodingToolConfig } from "./tool.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -189,5 +195,92 @@ describe("run_coder — agentId resolution", () => {
       cwd: "/explicit/path",
       agent: "codex",
     }));
+  });
+});
+
+describe("createProgressReporter", () => {
+  beforeEach(() => {
+    mockEmitTrustedDiagnosticEvent.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const snapshot = (operationCount: number) => ({
+    operationCount,
+    latest: { tool: "Edit", summary: "foo.ts", status: "in_progress" },
+    messageChars: 0,
+  });
+
+  it("emits on the first snapshot and then coalesces until the interval elapses", () => {
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    const onUpdate = vi.fn();
+    const report = createProgressReporter({ sessionKey: "s1", agent: "claude", onUpdate });
+
+    report(snapshot(1));
+    // A dispatch streams ~1e3 events; everything inside the window is dropped.
+    for (let i = 0; i < 200; i++) {
+      report(snapshot(i + 2));
+    }
+
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(mockEmitTrustedDiagnosticEvent).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(5_000);
+    report(snapshot(500));
+
+    expect(onUpdate).toHaveBeenCalledTimes(2);
+    expect(mockEmitTrustedDiagnosticEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("emits run.progress carrying the session refs the activity tracker keys on", () => {
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    const report = createProgressReporter({
+      sessionKey: "agent:main:slack:channel:c1",
+      sessionId: "sess-42",
+      agent: "codex",
+    });
+
+    report(snapshot(3));
+
+    expect(mockEmitTrustedDiagnosticEvent).toHaveBeenCalledWith({
+      type: "run.progress",
+      sessionId: "sess-42",
+      sessionKey: "agent:main:slack:channel:c1",
+      reason: "remote_acpx:turn_progress",
+    });
+  });
+
+  it("omits sessionId when the tool context did not supply one", () => {
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    const report = createProgressReporter({ sessionKey: "s1", agent: "codex" });
+
+    report(snapshot(1));
+
+    expect(mockEmitTrustedDiagnosticEvent).toHaveBeenCalledWith(
+      expect.not.objectContaining({ sessionId: expect.anything() }),
+    );
+  });
+
+  it("still reports progress when no channel sink is attached", () => {
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    const report = createProgressReporter({ sessionKey: "s1", agent: "claude" });
+
+    expect(() => report(snapshot(1))).not.toThrow();
+    expect(mockEmitTrustedDiagnosticEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("summarises the agent and latest operation for the channel", () => {
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+    const onUpdate = vi.fn();
+    const report = createProgressReporter({ sessionKey: "s1", agent: "claude", onUpdate });
+
+    report(snapshot(7));
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      content: [{ type: "text", text: "claude: 7 operation(s) · Edit [in_progress]" }],
+    });
   });
 });

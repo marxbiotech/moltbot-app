@@ -38,6 +38,19 @@ export type CollectedResult = {
   operationCount: number;
 };
 
+/**
+ * Running state handed to `onProgress` after each folded event. Emitted on
+ * every event — the caller owns throttling, since a single turn produces on
+ * the order of a thousand of them.
+ */
+export type ProgressSnapshot = {
+  operationCount: number;
+  /** Most recently created or updated operation, when one exists. */
+  latest?: Readonly<OperationEntry>;
+  /** Characters of final-message text collected so far (pre-truncation). */
+  messageChars: number;
+};
+
 const MAX_OPERATIONS = 30;
 const OPERATION_SUMMARY_LENGTH = 200;
 // Sentinel used when an OperationEntry was created from a `tool_call_update`
@@ -60,10 +73,18 @@ function truncateText(text: string, maxChars: number): string {
 
 export async function collectTurnOutput(
   events: AsyncIterable<AcpRuntimeEvent>,
-  opts: { maxOutputChars: number; signal?: AbortSignal },
+  opts: {
+    maxOutputChars: number;
+    signal?: AbortSignal;
+    onProgress?: (snapshot: ProgressSnapshot) => void;
+  },
 ): Promise<CollectedResult> {
   const messageChunks: string[] = [];
   const operations: OperationEntry[] = [];
+  let latestOperation: OperationEntry | undefined;
+  // Running total rather than reducing messageChunks per event: onProgress is
+  // called once per event and a turn produces ~1e3 of them.
+  let messageChars = 0;
   // Lookup for in-place merging of tool_call_update into the entry created by
   // the originating tool_call. Entries also live in `operations` so insertion
   // order is preserved. A `null` value is a tombstone: the toolCallId was seen
@@ -90,6 +111,7 @@ export async function collectTurnOutput(
             break;
           }
           messageChunks.push(event.text);
+          messageChars += event.text.length;
           break;
 
         case "tool_call": {
@@ -148,6 +170,7 @@ export async function collectTurnOutput(
                   `had empty content and existing summary is empty — operation will render with empty summary`,
               );
             }
+            latestOperation = existing;
             break;
           }
 
@@ -171,6 +194,7 @@ export async function collectTurnOutput(
               ...(event.status ? { status: event.status } : {}),
             };
             operations.push(entry);
+            latestOperation = entry;
             if (id) {
               operationsById.set(id, entry);
             }
@@ -194,6 +218,21 @@ export async function collectTurnOutput(
         case "status":
           // Ignored — does not affect final result.
           break;
+      }
+
+      if (opts.onProgress) {
+        // Never let a reporting failure abort a turn that is otherwise fine.
+        try {
+          opts.onProgress({
+            operationCount,
+            ...(latestOperation ? { latest: latestOperation } : {}),
+            messageChars,
+          });
+        } catch (err) {
+          log.warn(
+            `output-collector: onProgress threw — ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
   } catch (err) {

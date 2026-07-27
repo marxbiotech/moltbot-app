@@ -7,11 +7,18 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { isAcpRuntimeError } from "openclaw/plugin-sdk/remote-acpx";
 import type { RemoteAcpxRuntime } from "./runtime.js";
 import { SessionManager } from "./session-manager.js";
-import { collectTurnOutput, type CollectedResult, type OperationEntry } from "./output-collector.js";
+import {
+  collectTurnOutput,
+  type CollectedResult,
+  type OperationEntry,
+  type ProgressSnapshot,
+} from "./output-collector.js";
 import { resolveAgentById } from "./agent-roster.js";
+import { inFlightSessions } from "./in-flight.js";
 import { log } from "./log.js";
 
 export type CodingToolConfig = {
@@ -56,15 +63,72 @@ export type CodingToolDeps = {
   getConfig: () => CodingToolConfig;
 };
 
-// Session keys with a run_coder turn currently executing. Shared via Symbol.for
-// because jiti can load this module more than once (plugin loader + gateway
-// subsystem); a module-local Set would let each copy see an empty guard.
-const IN_FLIGHT_KEY = Symbol.for("remote-acpx.inFlightSessions");
-const globalRef = globalThis as unknown as Record<symbol, Set<string>>;
-if (!globalRef[IN_FLIGHT_KEY]) {
-  globalRef[IN_FLIGHT_KEY] = new Set<string>();
+
+// A dispatch streams on the order of a thousand ACP events. Both progress sinks
+// are coalesced to this cadence: the channel renderer would otherwise redraw
+// continuously, and the diagnostic bus only needs enough traffic to keep the
+// no-progress timer from advancing.
+const PROGRESS_INTERVAL_MS = 5_000;
+
+/**
+ * Builds the throttled `onProgress` sink for one dispatch. Reports to two
+ * independent places:
+ *
+ * - `onUpdate` — the framework's partial-result callback, which becomes a
+ *   `tool_execution_update` and renders as channel progress. Without it the
+ *   channel is silent for the whole dispatch, which is what drives operators to
+ *   retry and kill in-flight work.
+ * - `run.progress` on the diagnostic bus — what `diagnostic-run-activity`
+ *   consumes to reset `lastProgressAge`. remote-acpx cannot otherwise report
+ *   that the session is alive, so a long dispatch looks stalled to
+ *   `diagnostics.stuckSessionAbortMs` recovery.
+ */
+export function createProgressReporter(params: {
+  sessionKey: string;
+  sessionId?: string;
+  agent: string;
+  onUpdate?: (partial: { content: Array<{ type: "text"; text: string }> }) => void;
+}): (snapshot: ProgressSnapshot) => void {
+  let lastEmitAt = 0;
+
+  return (snapshot) => {
+    const now = Date.now();
+    if (now - lastEmitAt < PROGRESS_INTERVAL_MS) {
+      return;
+    }
+    lastEmitAt = now;
+
+    // The diagnostic bus does not log run.progress, and the channel sink is
+    // invisible from a CLI-originated dispatch — so without this line there is
+    // no way to confirm from a running gateway that progress is actually being
+    // reported, only that nothing complained. One line per interval is noise-
+    // free next to the ~1e3 routeNodeEvent entries a turn already writes here.
+    log.info(
+      `progress: sessionKey=${params.sessionKey} ops=${snapshot.operationCount} ` +
+        `latest=${snapshot.latest?.tool ?? "-"} msgChars=${snapshot.messageChars}`,
+    );
+
+    emitTrustedDiagnosticEvent({
+      type: "run.progress",
+      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+      sessionKey: params.sessionKey,
+      reason: "remote_acpx:turn_progress",
+    });
+
+    if (!params.onUpdate) {
+      return;
+    }
+    const latest = snapshot.latest
+      ? `${snapshot.latest.tool}${snapshot.latest.status ? ` [${snapshot.latest.status}]` : ""}`
+      : "starting";
+    params.onUpdate({
+      content: [{
+        type: "text",
+        text: `${params.agent}: ${snapshot.operationCount} operation(s) · ${latest}`,
+      }],
+    });
+  };
 }
-const inFlightSessions = globalRef[IN_FLIGHT_KEY];
 
 export function registerCodingTool(
   api: OpenClawPluginApi,
@@ -128,7 +192,11 @@ export function registerCodingTool(
         }),
       ),
     }),
-    async execute(_toolCallId, params) {
+    // signal and onUpdate are supplied by the agent-core tool loop
+    // (executePreparedToolCall). Both were previously dropped: runTurn and
+    // collectTurnOutput already honour an AbortSignal, so cancellation was
+    // implemented on both ends but never wired through the middle.
+    async execute(_toolCallId, params, signal, onUpdate) {
       const runtime = deps.getRuntime();
       const config = deps.getConfig();
 
@@ -213,9 +281,17 @@ export function registerCodingTool(
           text: prompt,
           mode: "prompt",
           requestId: randomUUID(),
+          ...(signal ? { signal } : {}),
         });
         const result = await collectTurnOutput(events, {
           maxOutputChars: config.maxOutputChars,
+          ...(signal ? { signal } : {}),
+          onProgress: createProgressReporter({
+            sessionKey,
+            ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+            agent: resolvedAgent,
+            ...(onUpdate ? { onUpdate } : {}),
+          }),
         });
 
         if (result.status === "error") {
