@@ -41,6 +41,7 @@ vi.mock("typebox", () => ({
 }));
 
 import { registerCodingTool, createProgressReporter, type CodingToolConfig } from "./tool.js";
+import { inFlightSessions } from "./in-flight.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -52,10 +53,25 @@ function captureRegisteredTool(): {
   api: OpenClawPluginApi;
 } {
   let captured: ToolFactory | null = null;
+  const jobEntries = new Map<string, unknown>();
   const api = {
     registerTool: vi.fn((factory: ToolFactory) => {
       captured = factory;
     }),
+    runtime: {
+      state: {
+        openKeyedStore: () => ({
+          register: async (k: string, v: unknown) => void jobEntries.set(k, v),
+          lookup: async (k: string) => jobEntries.get(k),
+          entries: async () =>
+            [...jobEntries].map(([key, value]) => ({ key, value, createdAt: 0 })),
+        }),
+      },
+      system: {
+        enqueueSystemEvent: vi.fn(() => true),
+        requestHeartbeat: vi.fn(),
+      },
+    },
   } as unknown as OpenClawPluginApi;
 
   const getTool = (): ToolDef => {
@@ -282,5 +298,116 @@ describe("createProgressReporter", () => {
     expect(onUpdate).toHaveBeenCalledWith({
       content: [{ type: "text", text: "claude: 7 operation(s) · Edit [in_progress]" }],
     });
+  });
+});
+
+describe("run_coder — async dispatch", () => {
+  beforeEach(() => {
+    mockResolveAgentById.mockReset();
+    inFlightSessions.clear();
+  });
+
+  afterEach(() => {
+    inFlightSessions.clear();
+  });
+
+  /** A turn that never yields, so any accidental await would hang the test. */
+  async function* neverEnding(): AsyncIterable<never> {
+    await new Promise(() => {});
+    yield undefined as never;
+  }
+
+  function asyncRuntime() {
+    return {
+      ensureSession: vi.fn().mockResolvedValue({ runtimeSessionName: "h" }),
+      runTurn: vi.fn(() => neverEnding()),
+      close: vi.fn(),
+      cancel: vi.fn(),
+    } as never;
+  }
+
+  it("returns immediately with an async-started result instead of awaiting the turn", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
+
+    const result = await getTool().execute("call-async-1", {
+      prompt: "long job",
+      cwd: "/app",
+      agent: "claude",
+      mode: "async",
+    });
+
+    // The load-bearing assertion: the turn never completes, so reaching here at
+    // all proves the tool did not wait on it.
+    expect(result.details).toMatchObject({ async: true, status: "started" });
+    expect((result.details as { jobId: string }).jobId).toMatch(/^rc-/);
+    expect(getText(result)).toContain("Do not call run_coder again");
+  });
+
+  it("holds the in-flight marker for the background turn, not just the call", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
+
+    await getTool().execute("call-async-2", {
+      prompt: "long job", cwd: "/app", agent: "claude", mode: "async",
+    });
+
+    // Still marked after the tool returned — this is what keeps the idle
+    // sweeper from reclaiming a session that is mid-dispatch.
+    expect(inFlightSessions.has("test-session")).toBe(true);
+  });
+
+  it("returns the running job instead of starting a second one", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    const runtime = asyncRuntime();
+    registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
+
+    const first = await getTool().execute("call-async-3", {
+      prompt: "long job", cwd: "/app", agent: "claude", mode: "async",
+    });
+    const jobId = (first.details as { jobId: string }).jobId;
+
+    const second = await getTool().execute("call-async-4", {
+      prompt: "long job", cwd: "/app", agent: "claude", mode: "async",
+    });
+
+    expect(getText(second)).toContain(jobId);
+    expect(getText(second)).toContain("Still running");
+    expect(second.details).toBeUndefined();
+    // One dispatch, not two — a repeat must not spawn a competing turn.
+    expect(vi.mocked(runtime.runTurn)).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a job back through action=status", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
+
+    const started = await getTool().execute("call-async-5", {
+      prompt: "long job", cwd: "/app", agent: "claude", mode: "async",
+    });
+    const jobId = (started.details as { jobId: string }).jobId;
+
+    const status = await getTool().execute("call-async-6", { prompt: "", action: "status", jobId });
+
+    expect(getText(status)).toContain(jobId);
+    expect(getText(status)).toContain("running");
+  });
+
+  it("rejects a status lookup with no jobId", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
+
+    const result = await getTool().execute("call-async-7", { prompt: "", action: "status" });
+    expect(getText(result)).toContain("requires jobId");
+  });
+
+  it("explains an unknown jobId rather than looking like the job is pending", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
+
+    const result = await getTool().execute("call-async-8", {
+      prompt: "", action: "status", jobId: "rc-nope",
+    });
+    expect(getText(result)).toContain("no job rc-nope");
   });
 });

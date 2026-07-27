@@ -19,6 +19,8 @@ import {
 } from "./output-collector.js";
 import { resolveAgentById } from "./agent-roster.js";
 import { inFlightSessions } from "./in-flight.js";
+import { createJobStore, type DispatchJob } from "./job-store.js";
+import { startDispatch } from "./dispatcher.js";
 import { log } from "./log.js";
 
 export type CodingToolConfig = {
@@ -56,6 +58,33 @@ function formatToolResult(result: CollectedResult): { content: Array<{ type: "te
   return {
     content: [{ type: "text", text: sections.join("\n\n") || "(no output)" }],
   };
+}
+
+function formatJobStatus(job: DispatchJob): { content: Array<{ type: "text"; text: string }> } {
+  const elapsed = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
+  const head = `Job ${job.jobId} — ${job.status} after ${elapsed}s (${job.agentId ?? job.agent}).`;
+
+  if (job.status === "running") {
+    const p = job.progress;
+    return {
+      content: [{
+        type: "text",
+        text:
+          `${head}\n` +
+          (p
+            ? `Progress: ${p.operationCount} operation(s), latest ${p.latest ?? "-"}.`
+            : "No operations reported yet.") +
+          `\nStill running — do not start the task again. You will be woken when it finishes.`,
+      }],
+    };
+  }
+
+  const sections = [head];
+  if (job.result?.error) sections.push(`Error: ${job.result.error}`);
+  if (job.result?.operationCount) sections.push(`Operations: ${job.result.operationCount}`);
+  if (job.result?.message) sections.push(`Message:\n${job.result.message}`);
+  if (job.result?.stopReason) sections.push(`Stop reason: ${job.result.stopReason}`);
+  return { content: [{ type: "text", text: sections.join("\n\n") }] };
 }
 
 export type CodingToolDeps = {
@@ -135,6 +164,7 @@ export function registerCodingTool(
   deps: CodingToolDeps,
 ): void {
   const sessionMgr = new SessionManager();
+  const jobStore = createJobStore(api);
 
   log.info(`registerCodingTool: registering run_coder tool`);
 
@@ -188,8 +218,30 @@ export function registerCodingTool(
             "Seconds to wait for the remote agent before this call times out. " +
             "The default (90) is only enough for trivial single-file edits. " +
             "Set 300 for ordinary multi-step work and 600 (the maximum) for codebase " +
-            "investigation, research, test runs, or builds.",
+            "investigation, research, test runs, or builds. Ignored when mode is 'async'.",
         }),
+      ),
+      mode: Type.Optional(
+        Type.String({
+          description:
+            "'sync' (default) waits for the remote agent and returns the result. It cannot " +
+            "run longer than 600s — that is a hard runtime limit, not a setting. " +
+            "'async' starts the work and returns a jobId immediately, with no time limit; " +
+            "use it whenever the task plausibly exceeds ten minutes. In async mode you MUST " +
+            "NOT call run_coder again for the same task: you will be woken when it finishes, " +
+            "and a repeat call returns the running job's status instead of starting anything.",
+        }),
+      ),
+      action: Type.Optional(
+        Type.String({
+          description:
+            "'start' (default) dispatches work. 'status' reads a previously started async " +
+            "job — pass jobId. Use it when you were woken about a job, or when the user asks " +
+            "how one is going.",
+        }),
+      ),
+      jobId: Type.Optional(
+        Type.String({ description: "Job id to read. Required when action is 'status'." }),
       ),
     }),
     // signal and onUpdate are supplied by the agent-core tool loop
@@ -206,9 +258,30 @@ export function registerCodingTool(
         };
       }
 
-      const { prompt, agentId, cwd, agent } = params as {
+      const { prompt, agentId, cwd, agent, mode, action, jobId } = params as {
         prompt: string; agentId?: string; cwd?: string; agent?: string;
+        mode?: string; action?: string; jobId?: string;
       };
+
+      if (action === "status") {
+        if (!jobId) {
+          return {
+            content: [{ type: "text", text: "Error: action=\"status\" requires jobId." }],
+          };
+        }
+        const job = await jobStore.get(jobId);
+        if (!job) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Error: no job ${jobId}. Async job records expire after 6 hours; if the ` +
+                `dispatch was that long ago, re-run the task rather than waiting for it.`,
+            }],
+          };
+        }
+        return formatJobStatus(job);
+      }
 
       // Resolve cwd and variant: explicit params > agentId lookup > defaults.
       // When an unknown agentId is given without an explicit cwd, fail loud
@@ -247,6 +320,42 @@ export function registerCodingTool(
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
       const sessionKey = ctx.sessionKey || "default";
 
+      if (mode === "async") {
+        // Concurrent guardrail rather than a hard refusal: a caller that repeats
+        // the request gets the running job back, which is what it needed to know.
+        const active = await jobStore.findActiveForSession(sessionKey);
+        if (active) {
+          log.info(`execute: async repeat on ${sessionKey} — returning job ${active.jobId}`);
+          return formatJobStatus(active);
+        }
+        const job = await startDispatch({
+          api,
+          runtime,
+          sessionMgr,
+          jobStore,
+          sessionKey,
+          ...(ctx.deliveryContext ? { deliveryContext: ctx.deliveryContext } : {}),
+          ...(agentId ? { agentId } : {}),
+          agent: resolvedAgent,
+          cwd: resolvedCwd,
+          prompt,
+          maxOutputChars: config.maxOutputChars,
+        });
+        return {
+          content: [{
+            type: "text",
+            text:
+              `Started job ${job.jobId} on ${agentId ?? resolvedAgent}. Do not call run_coder ` +
+              `again for this task — you will be woken when it finishes, and a repeat call ` +
+              `only returns this job's status. Report to the user that the work is under way.`,
+          }],
+          // Recognised by the codex bridge (isAsyncStartedToolResult) as work
+          // continuing out of band, so the turn is released instead of waiting
+          // on the item/tool/call RPC.
+          details: { async: true, status: "started", jobId: job.jobId },
+        };
+      }
+
       // A second call on a session whose turn is still running would reach the
       // node-host's handleTurn, which kills the in-flight acpx process before
       // starting the new one. Both calls then fail: the first loses its work,
@@ -254,6 +363,13 @@ export function registerCodingTool(
       // instead — the common trigger is a caller retrying after the outer
       // watchdog fired while the remote turn was still progressing.
       if (inFlightSessions.has(sessionKey)) {
+        // An async dispatch holds the same marker for its whole background run,
+        // so point the caller at that job rather than at timeoutSeconds.
+        const active = await jobStore.findActiveForSession(sessionKey);
+        if (active) {
+          log.warn(`execute: sync call rejected — async job ${active.jobId} still running`);
+          return formatJobStatus(active);
+        }
         log.warn(`execute: rejected — turn already in flight for sessionKey=${sessionKey}`);
         return {
           content: [{
@@ -262,7 +378,8 @@ export function registerCodingTool(
               "Error: TURN_IN_FLIGHT — a previous run_coder call on this session is still " +
               "executing on the remote agent. Wait for it to return rather than retrying; " +
               "a retry would kill the in-flight run and discard its work. If the earlier call " +
-              "timed out, raise timeoutSeconds (max 600) on the next attempt.",
+              "timed out, raise timeoutSeconds (max 600) on the next attempt, or use " +
+              "mode=\"async\" which has no time limit.",
           }],
         };
       }
