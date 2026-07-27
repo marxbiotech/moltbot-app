@@ -404,3 +404,54 @@ describe("run_coder — async dispatch", () => {
     expect(getText(result)).toContain("no job rc-nope");
   });
 });
+
+describe("async dispatch — completion notify", () => {
+  beforeEach(() => {
+    mockResolveAgentById.mockReset();
+    inFlightSessions.clear();
+    resetJobStoreForTest();
+  });
+
+  afterEach(() => {
+    inFlightSessions.clear();
+  });
+
+  it("wakes the requester with an explicit target so the queued event is delivered", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    // A turn that ends immediately, so the background runner reaches notify.
+    async function* immediate() {
+      yield { type: "done", stopReason: "end_turn" } as never;
+    }
+    const runtime = {
+      ensureSession: vi.fn().mockResolvedValue({ runtimeSessionName: "h" }),
+      runTurn: vi.fn(() => immediate()),
+      close: vi.fn(),
+      cancel: vi.fn(),
+    } as never;
+    registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
+
+    await getTool().execute("call-notify", {
+      prompt: "quick", cwd: "/app", agent: "claude", mode: "async",
+    });
+    // Let the background runner settle.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const system = (api as unknown as {
+      runtime: { system: { enqueueSystemEvent: ReturnType<typeof vi.fn>; requestHeartbeat: ReturnType<typeof vi.fn> } };
+    }).runtime.system;
+
+    expect(system.enqueueSystemEvent).toHaveBeenCalledWith(
+      expect.stringContaining("finished successfully"),
+      expect.objectContaining({ sessionKey: "test-session" }),
+    );
+    // target:"last" is load-bearing — the heartbeat default is "none", which
+    // schedules the wake but suppresses delivery, leaving the event queued.
+    expect(system.requestHeartbeat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: "immediate",
+        sessionKey: "test-session",
+        heartbeat: { target: "last" },
+      }),
+    );
+  });
+});

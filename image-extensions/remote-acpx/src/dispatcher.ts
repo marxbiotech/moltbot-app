@@ -185,9 +185,15 @@ function notifyRequester(params: StartDispatchParams, job: DispatchJob): void {
     }
     params.api.runtime.system.requestHeartbeat({
       source: "background-task",
-      intent: "event",
+      intent: "immediate",
       reason: `remote-acpx dispatch ${job.jobId} ${job.status}`,
       sessionKey: params.sessionKey,
+      // Without an explicit target the heartbeat defaults to "none" and the
+      // wake is scheduled but delivers nothing — the queued event then sits
+      // until something else happens to run a cycle. "last" routes it to the
+      // conversation that asked, which is what the cron service does for the
+      // same reason.
+      heartbeat: { target: "last" },
     });
     log.info(`dispatch ${job.jobId}: requester notified (${params.sessionKey})`);
   } catch (err) {
