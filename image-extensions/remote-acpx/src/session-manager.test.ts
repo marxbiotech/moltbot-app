@@ -3,7 +3,7 @@
 // Mocks the openclaw/plugin-sdk/remote-acpx imports so tests run without
 // the full openclaw runtime.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,7 @@ vi.mock("./log.js", () => ({
 }));
 
 import { SessionManager } from "./session-manager.js";
+import { inFlightSessions } from "./in-flight.js";
 import type { RemoteAcpxRuntime } from "./runtime.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -162,5 +163,82 @@ describe("SessionManager", () => {
     // Should still succeed despite close failure
     expect(h2).toBeDefined();
     expect(vi.mocked(failRuntime.ensureSession)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("SessionManager.pruneStale", () => {
+  let mgr: SessionManager;
+  let runtime: RemoteAcpxRuntime;
+
+  beforeEach(() => {
+    clearGlobalSessionState();
+    inFlightSessions.clear();
+    mockIsAcpNodeConnected.mockReturnValue(true);
+    mgr = new SessionManager();
+    runtime = makeFakeRuntime();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    inFlightSessions.clear();
+  });
+
+  const TTL_MS = 30 * 60 * 1000;
+
+  it("closes a session left idle beyond the TTL", async () => {
+    await mgr.getOrCreate("s1", runtime, { agent: "claude", cwd: "/app" });
+
+    vi.advanceTimersByTime(TTL_MS + 1);
+    mgr.pruneStale(runtime);
+
+    expect(vi.mocked(runtime.close)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runtime.close)).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "ttl" }),
+    );
+  });
+
+  it("leaves a session whose turn is still running, however long it has run", async () => {
+    await mgr.getOrCreate("s1", runtime, { agent: "claude", cwd: "/app" });
+    // run_coder marks the key for the duration of the dispatch. lastUsedAt is
+    // not refreshed while the turn runs, so without the in-flight guard this
+    // session ages exactly like an abandoned one and gets killed mid-dispatch.
+    inFlightSessions.add("s1");
+
+    vi.advanceTimersByTime(TTL_MS * 3);
+    mgr.pruneStale(runtime);
+
+    expect(vi.mocked(runtime.close)).not.toHaveBeenCalled();
+  });
+
+  it("reclaims the session once its turn finishes and it goes idle", async () => {
+    await mgr.getOrCreate("s1", runtime, { agent: "claude", cwd: "/app" });
+    inFlightSessions.add("s1");
+
+    vi.advanceTimersByTime(TTL_MS + 1);
+    mgr.pruneStale(runtime);
+    expect(vi.mocked(runtime.close)).not.toHaveBeenCalled();
+
+    // Dispatch ends; the sweeper is now free to reclaim it.
+    inFlightSessions.delete("s1");
+    mgr.pruneStale(runtime);
+
+    expect(vi.mocked(runtime.close)).toHaveBeenCalledTimes(1);
+  });
+
+  it("prunes only the idle session when another is mid-dispatch", async () => {
+    await mgr.getOrCreate("busy", runtime, { agent: "claude", cwd: "/app" });
+    await mgr.getOrCreate("idle", runtime, { agent: "claude", cwd: "/other" });
+    inFlightSessions.add("busy");
+
+    vi.advanceTimersByTime(TTL_MS + 1);
+    mgr.pruneStale(runtime);
+
+    expect(vi.mocked(runtime.close)).toHaveBeenCalledTimes(1);
+    const closedHandle = vi.mocked(runtime.close).mock.calls[0]![0] as {
+      handle: { sessionKey: string };
+    };
+    expect(closedHandle.handle.sessionKey).toBe("idle");
   });
 });

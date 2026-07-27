@@ -5,6 +5,7 @@
 import type { AcpRuntimeHandle } from "openclaw/plugin-sdk/remote-acpx";
 import { isAcpNodeConnected } from "openclaw/plugin-sdk/remote-acpx";
 import { type RemoteAcpxRuntime, getNodeIdFromHandle } from "./runtime.js";
+import { inFlightSessions } from "./in-flight.js";
 import { log } from "./log.js";
 
 export type CachedSession = {
@@ -99,6 +100,14 @@ export class SessionManager {
   pruneStale(runtime: RemoteAcpxRuntime): void {
     const now = Date.now();
     for (const [key, cached] of sessions) {
+      // lastUsedAt is stamped when a turn is handed out and never refreshed
+      // while that turn runs, so a session dispatching right now ages exactly
+      // like an abandoned one. Skipping in-flight keys keeps this an idle
+      // sweeper: without it, a dispatch outliving TTL_MS is acp.kill'd
+      // mid-flight by the very timer meant to reclaim dead sessions.
+      if (inFlightSessions.has(key)) {
+        continue;
+      }
       if (now - cached.lastUsedAt > TTL_MS) {
         log.info(`session pruned (TTL): key=${key}`);
         sessions.delete(key);

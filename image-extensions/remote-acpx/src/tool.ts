@@ -18,6 +18,7 @@ import {
   type ProgressSnapshot,
 } from "./output-collector.js";
 import { resolveAgentById } from "./agent-roster.js";
+import { inFlightSessions } from "./in-flight.js";
 import { log } from "./log.js";
 
 export type CodingToolConfig = {
@@ -62,15 +63,6 @@ export type CodingToolDeps = {
   getConfig: () => CodingToolConfig;
 };
 
-// Session keys with a run_coder turn currently executing. Shared via Symbol.for
-// because jiti can load this module more than once (plugin loader + gateway
-// subsystem); a module-local Set would let each copy see an empty guard.
-const IN_FLIGHT_KEY = Symbol.for("remote-acpx.inFlightSessions");
-const globalRef = globalThis as unknown as Record<symbol, Set<string>>;
-if (!globalRef[IN_FLIGHT_KEY]) {
-  globalRef[IN_FLIGHT_KEY] = new Set<string>();
-}
-const inFlightSessions = globalRef[IN_FLIGHT_KEY];
 
 // A dispatch streams on the order of a thousand ACP events. Both progress sinks
 // are coalesced to this cadence: the channel renderer would otherwise redraw
