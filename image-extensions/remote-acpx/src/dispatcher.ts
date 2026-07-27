@@ -184,15 +184,21 @@ function notifyRequester(params: StartDispatchParams, job: DispatchJob): void {
       log.warn(`dispatch ${job.jobId}: system event not enqueued for ${params.sessionKey}`);
     }
     params.api.runtime.system.requestHeartbeat({
-      source: "background-task",
+      // "acp-spawn" is both accurate — the work was an ACP spawn on a remote
+      // node — and load-bearing. resolveHeartbeatWakePayloadFlags maps it to
+      // isWakePayload, which is one of the flags that bypasses the heartbeat
+      // preflight's file gates. A persona whose HEARTBEAT.md is deliberately
+      // comments-only (the template that exists to suppress periodic API
+      // calls) otherwise skips the woken run with `empty-heartbeat-file`
+      // before it ever drains the queued event. The bypass applies only to
+      // this wake, so scheduled heartbeats stay suppressed as intended.
+      source: "acp-spawn",
       intent: "immediate",
       reason: `remote-acpx dispatch ${job.jobId} ${job.status}`,
       sessionKey: params.sessionKey,
       // Without an explicit target the heartbeat defaults to "none" and the
-      // wake is scheduled but delivers nothing — the queued event then sits
-      // until something else happens to run a cycle. "last" routes it to the
-      // conversation that asked, which is what the cron service does for the
-      // same reason.
+      // wake delivers nothing. "last" routes it to the conversation that
+      // asked, which is what the cron service does for the same reason.
       heartbeat: { target: "last" },
     });
     log.info(`dispatch ${job.jobId}: requester notified (${params.sessionKey})`);

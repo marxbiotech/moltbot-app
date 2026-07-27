@@ -448,6 +448,11 @@ describe("async dispatch — completion notify", () => {
     // schedules the wake but suppresses delivery, leaving the event queued.
     expect(system.requestHeartbeat).toHaveBeenCalledWith(
       expect.objectContaining({
+        // Both fields are load-bearing, for different gates: "acp-spawn" maps
+        // to isWakePayload so the woken heartbeat bypasses the empty-
+        // HEARTBEAT.md skip, and target "last" defeats the default
+        // target:"none" that would schedule the wake but deliver nothing.
+        source: "acp-spawn",
         intent: "immediate",
         sessionKey: "test-session",
         heartbeat: { target: "last" },
