@@ -337,6 +337,39 @@ describe("run_coder — async dispatch", () => {
     expect(getText(result)).toContain("Do not call run_coder again");
   });
 
+  it("dispatches async when no mode is given", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
+
+    // Same never-ending turn as above: if the default were sync this would hang.
+    const result = await getTool().execute("call-default-mode", {
+      prompt: "long job",
+      cwd: "/app",
+      agent: "claude",
+    });
+
+    expect(result.details).toMatchObject({ async: true, status: "started" });
+  });
+
+  it("takes the synchronous path only when sync is asked for by name", async () => {
+    const { getTool, api } = captureRegisteredTool();
+    const runtime = asyncRuntime() as unknown as { runTurn: ReturnType<typeof vi.fn> };
+    runtime.runTurn = vi.fn(async function* () {
+      yield { type: "message", text: "done" };
+    });
+    registerCodingTool(api, { getRuntime: () => runtime as never, getConfig: () => config });
+
+    const result = await getTool().execute("call-explicit-sync", {
+      prompt: "quick job",
+      cwd: "/app",
+      agent: "claude",
+      mode: "sync",
+    });
+
+    expect(result.details).toBeUndefined();
+    expect(getText(result)).not.toContain("Do not call run_coder again");
+  });
+
   it("holds the in-flight marker for the background turn, not just the call", async () => {
     const { getTool, api } = captureRegisteredTool();
     registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });

@@ -110,21 +110,23 @@ The user speaks high-level requirements (often in Chinese); you translate into p
 
 ### Choosing sync or async
 
-`run_coder` runs synchronously by default and **a synchronous call cannot exceed 600 seconds**. That is a hard runtime limit, not a tunable: the tool call is a JSON-RPC request the Codex app-server is waiting on, and OpenClaw is obliged to answer it. Real dispatches land close to it — 544s has been observed — so treat ten minutes as the point where the sync path stops being viable.
+`run_coder` runs **asynchronously by default**: it starts the work, returns a `jobId` in milliseconds, and wakes you when the job finishes. That is the right shape for almost everything, because it is the only shape that survives long work.
 
-Two parameters follow from that, and both are yours to set:
+`mode: "sync"` waits for the result inline and **cannot exceed 600 seconds**. That is a hard runtime limit, not a tunable: the tool call is a JSON-RPC request the Codex app-server is waiting on, and OpenClaw is obliged to answer it. Real dispatches land close to it — 544s has been observed — so a sync call is only safe when you are confident the task finishes well inside ten minutes and you need the answer in this same turn.
 
-- **`timeoutSeconds`** (sync only). The default is **90 seconds**, which only covers trivial single-file edits. Pass `300` for ordinary multi-step work and `600` — the maximum — for codebase investigation, research, test runs, or builds. Omitting it on a real task is the most common way to lose finished work: the call is cut at 90s while the remote agent runs on to completion, and its answer is discarded.
-- **`mode: "async"`**. Starts the work and returns a `jobId` immediately, with **no time limit**. Use it whenever the task plausibly exceeds ten minutes — exhaustive audits, full-repo reads, long builds, multi-package test runs.
+`timeoutSeconds` applies to sync calls only and is ignored in async mode. Its default is **90 seconds**, which only covers trivial single-file edits, so any sync call beyond that must pass one: `300` for ordinary multi-step work, `600` — the maximum — for anything larger. Omitting it is the most common way to lose finished work: the call is cut at 90s while the remote agent runs on to completion, and its answer is discarded.
 
 Decide before invoking, not after a timeout:
 
 | Task shape | Call |
 |---|---|
-| Single-file edit, quick lookup | default (90s) |
-| Ordinary multi-step change | `timeoutSeconds: 300` |
-| Investigation, tests, build | `timeoutSeconds: 600` |
-| Plausibly over ten minutes | `mode: "async"` |
+| Quick lookup you need answered in this turn | `mode: "sync"` (90s default) |
+| Single-file edit, small and certain | `mode: "sync", timeoutSeconds: 300` |
+| Anything else — investigation, tests, builds, audits, multi-file change | default (async) |
+
+When in doubt, use the default. A task that turns out to be short costs one extra wake; a task that turns out to be long and was sent sync is cut mid-flight and its work is thrown away.
+
+An async dispatch is not unbounded either — the remote turn is cut by the plugin's `turnTimeoutMs` (currently 30 minutes), which surfaces as `Turn timed out after <n>ms` in the job result. That is the real ceiling on a single dispatch. Work that cannot fit inside it has to be split into stages, not retried whole.
 
 #### Async contract
 
@@ -206,7 +208,7 @@ When an invocation fails, classify the error and present a clear user-facing mes
 | `RESOLUTION_FAILED` | No skill or agent matches the intent | 「找不到合適的工具來處理這個請求。請確認相關的 skill 或 agent 是否已安裝。」 |
 | `AGENT_UNREACHABLE` | Remote node is offline or `coding_agents_list` returns empty | 「遠端節點目前無法連線。請確認節點狀態後再試。」 |
 | `INVOCATION_ERROR` | Tool call returned an error (timeout, crash, permission denied) | 「執行過程中發生錯誤：{error_summary}。建議開啟新的 run_coder session 重試。」 |
-| `TURN_IN_FLIGHT` | A dispatch is already running on this `sessionKey`. Do **not** retry — a retry kills the live run and discards its work. Wait for it, or read it with `action: "status"` if it is an async job. If the previous call died to the 90s default, the fix is `timeoutSeconds`, or `mode: "async"` if it needs more than 600s. | 「上一個任務還在執行中，稍候再看結果。」 |
+| `TURN_IN_FLIGHT` | A sync dispatch is already running on this `sessionKey`. Do **not** retry — a retry kills the live run and discards its work. Wait for it. If the previous call died to a timeout, drop the explicit `mode: "sync"` and let it run async instead. | 「上一個任務還在執行中，稍候再看結果。」 |
 | `JOB_GONE` | `action: "status"` answered `no job <id>`. Job records do not survive a gateway restart, so the dispatch is unrecoverable rather than pending — do not keep polling. Re-dispatch from the top. | 「先前的背景任務因為服務重啟而中斷，需要重新執行。」 |
 | `AGENTID_UNRESOLVED` | `agentId` was passed without an explicit `cwd` and does not match any roster entry. The tool rejects the call rather than silently routing to the default workspace. `cwd` is the workspace-safety anchor: an unknown `agentId` is only a recoverable miss when the caller pins the workspace explicitly. Behavior matrix when `agentId` is unknown: bare `agentId` → fail loud; `agentId` + `agent` only (no `cwd`) → fail loud; `agentId` + `cwd` (with or without `agent`) → degrade to that `cwd` + the resolved agent variant. | 「找不到 agentId="{id}"。請呼叫 `coding_agents_list` 查看可用代號，或直接提供 cwd（可搭配 agent）以略過 roster 查詢。」 |
 

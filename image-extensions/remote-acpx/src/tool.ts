@@ -211,7 +211,8 @@ export function registerCodingTool(
       // (resolveDynamicToolCallTimeoutMs), which otherwise kills the call at its
       // 90s default while the remote turn keeps running to completion — the
       // caller then sees a timeout and the finished result is discarded.
-      // Runtime caps the effective budget at 600s.
+      // Runtime caps the effective budget at 600s. Only applies to mode="sync";
+      // an async dispatch is bounded by the plugin's turnTimeoutMs instead.
       timeoutSeconds: Type.Optional(
         Type.Integer({
           description:
@@ -224,12 +225,12 @@ export function registerCodingTool(
       mode: Type.Optional(
         Type.String({
           description:
-            "'sync' (default) waits for the remote agent and returns the result. It cannot " +
-            "run longer than 600s — that is a hard runtime limit, not a setting. " +
-            "'async' starts the work and returns a jobId immediately, with no time limit; " +
-            "use it whenever the task plausibly exceeds ten minutes. In async mode you MUST " +
-            "NOT call run_coder again for the same task: you will be woken when it finishes, " +
-            "and a repeat call returns the running job's status instead of starting anything.",
+            "'async' (default) starts the work and returns a jobId immediately, then wakes " +
+            "you when it finishes. In async mode you MUST NOT call run_coder again for the " +
+            "same task: a repeat call returns the running job's status instead of starting " +
+            "anything. 'sync' waits for the result inline and cannot run longer than 600s — " +
+            "that is a hard runtime limit, not a setting — so ask for it only when the task " +
+            "is small enough to finish well inside that and you need the answer in this turn.",
         }),
       ),
       action: Type.Optional(
@@ -320,7 +321,12 @@ export function registerCodingTool(
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
       const sessionKey = ctx.sessionKey || "default";
 
-      if (mode === "async") {
+      // Async is the default. It was introduced behind an opt-in because the wake
+      // path was unverified; magata-shiki has since run 43 dispatches through it
+      // with the completion wake firing on every one, so the condition the
+      // opt-in was waiting for is met. Callers must ask for "sync" explicitly,
+      // and only short work should.
+      if (mode !== "sync") {
         // Concurrent guardrail rather than a hard refusal: a caller that repeats
         // the request gets the running job back, which is what it needed to know.
         const active = jobStore.findActiveForSession(sessionKey);
@@ -378,8 +384,8 @@ export function registerCodingTool(
               "Error: TURN_IN_FLIGHT — a previous run_coder call on this session is still " +
               "executing on the remote agent. Wait for it to return rather than retrying; " +
               "a retry would kill the in-flight run and discard its work. If the earlier call " +
-              "timed out, raise timeoutSeconds (max 600) on the next attempt, or use " +
-              "mode=\"async\" which has no time limit.",
+              "timed out, drop the explicit mode=\"sync\" so the call runs async instead — " +
+              "that is what long work needs.",
           }],
         };
       }
