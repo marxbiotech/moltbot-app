@@ -4,21 +4,13 @@
 // tool appears in the agent's tool catalog. Runtime and config are resolved
 // lazily via getters since the service hasn't started yet at registration time.
 
-import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
-import { isAcpRuntimeError } from "openclaw/plugin-sdk/remote-acpx";
 import type { RemoteAcpxRuntime } from "./runtime.js";
 import { SessionManager } from "./session-manager.js";
-import {
-  collectTurnOutput,
-  type CollectedResult,
-  type OperationEntry,
-  type ProgressSnapshot,
-} from "./output-collector.js";
+import type { ProgressSnapshot } from "./output-collector.js";
 import { resolveAgentById } from "./agent-roster.js";
-import { inFlightSessions } from "./in-flight.js";
 import { createJobStore, type DispatchJob } from "./job-store.js";
 import { startDispatch } from "./dispatcher.js";
 import { log } from "./log.js";
@@ -27,38 +19,6 @@ export type CodingToolConfig = {
   defaultAgent: string;
   maxOutputChars: number;
 };
-
-function formatOperationLine(op: OperationEntry): string {
-  const statusTag = op.status ? ` [${op.status}]` : "";
-  return `- ${op.tool}${statusTag}: ${op.summary}`;
-}
-
-function formatToolResult(result: CollectedResult): { content: Array<{ type: "text"; text: string }> } {
-  const sections: string[] = [];
-
-  if (result.status === "error" && result.error) {
-    sections.push(`Error: ${result.error}`);
-  }
-
-  if (result.operations.length > 0) {
-    const countNote = result.operationCount > result.operations.length
-      ? ` (showing ${result.operations.length} of ${result.operationCount})`
-      : "";
-    sections.push(`Operations${countNote}:\n${result.operations.map(formatOperationLine).join("\n")}`);
-  }
-
-  if (result.message) {
-    sections.push(`Message:\n${result.message}`);
-  }
-
-  if (result.stopReason) {
-    sections.push(`Stop reason: ${result.stopReason}`);
-  }
-
-  return {
-    content: [{ type: "text", text: sections.join("\n\n") || "(no output)" }],
-  };
-}
 
 function formatJobStatus(job: DispatchJob): { content: Array<{ type: "text"; text: string }> } {
   const elapsed = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
@@ -207,32 +167,14 @@ export function registerCodingTool(
             "If omitted, uses the variant from the agentId roster entry (if set), otherwise the plugin default.",
         }),
       ),
-      // Read by the codex agent runtime's per-tool-call watchdog
-      // (resolveDynamicToolCallTimeoutMs), which otherwise kills the call at its
-      // 90s default while the remote turn keeps running to completion — the
-      // caller then sees a timeout and the finished result is discarded.
-      // Runtime caps the effective budget at 600s. Only applies to mode="sync";
-      // an async dispatch is bounded by the plugin's turnTimeoutMs instead.
-      timeoutSeconds: Type.Optional(
-        Type.Integer({
-          description:
-            "Seconds to wait for the remote agent before this call times out. " +
-            "The default (90) is only enough for trivial single-file edits. " +
-            "Set 300 for ordinary multi-step work and 600 (the maximum) for codebase " +
-            "investigation, research, test runs, or builds. Ignored when mode is 'async'.",
-        }),
-      ),
-      mode: Type.Optional(
-        Type.String({
-          description:
-            "'async' (default) starts the work and returns a jobId immediately, then wakes " +
-            "you when it finishes. In async mode you MUST NOT call run_coder again for the " +
-            "same task: a repeat call returns the running job's status instead of starting " +
-            "anything. 'sync' waits for the result inline and cannot run longer than 600s — " +
-            "that is a hard runtime limit, not a setting — so ask for it only when the task " +
-            "is small enough to finish well inside that and you need the answer in this turn.",
-        }),
-      ),
+      // No mode or timeoutSeconds parameter by design. Every dispatch runs in
+      // the background and wakes the caller. `timeoutSeconds` existed only to
+      // buy headroom against the codex 90s per-tool-call watchdog (4d3fe88,
+      // before async dispatch existed) and asked the model to predict a
+      // duration it has no way to know — the observed spread is 23s to 1800s
+      // with a 373s median, so a guess is wrong far more often than right, and
+      // being wrong discarded the whole turn's work. A synchronous mode has the
+      // same defect in weaker form, so there is no way to ask for one.
       action: Type.Optional(
         Type.String({
           description:
@@ -245,11 +187,7 @@ export function registerCodingTool(
         Type.String({ description: "Job id to read. Required when action is 'status'." }),
       ),
     }),
-    // signal and onUpdate are supplied by the agent-core tool loop
-    // (executePreparedToolCall). Both were previously dropped: runTurn and
-    // collectTurnOutput already honour an AbortSignal, so cancellation was
-    // implemented on both ends but never wired through the middle.
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(_toolCallId, params) {
       const runtime = deps.getRuntime();
       const config = deps.getConfig();
 
@@ -259,9 +197,9 @@ export function registerCodingTool(
         };
       }
 
-      const { prompt, agentId, cwd, agent, mode, action, jobId } = params as {
+      const { prompt, agentId, cwd, agent, action, jobId } = params as {
         prompt: string; agentId?: string; cwd?: string; agent?: string;
-        mode?: string; action?: string; jobId?: string;
+        action?: string; jobId?: string;
       };
 
       if (action === "status") {
@@ -321,134 +259,61 @@ export function registerCodingTool(
       if (!resolvedAgent) resolvedAgent = config.defaultAgent;
       const sessionKey = ctx.sessionKey || "default";
 
-      // Async is the default. It was introduced behind an opt-in because the wake
-      // path was unverified; magata-shiki has since run 43 dispatches through it
-      // with the completion wake firing on every one, so the condition the
-      // opt-in was waiting for is met. Callers must ask for "sync" explicitly,
-      // and only short work should.
-      if (mode !== "sync") {
-        // Concurrent guardrail rather than a hard refusal: a caller that repeats
-        // the request gets the running job back, which is what it needed to know.
-        const active = jobStore.findActiveForSession(sessionKey);
-        if (active) {
-          log.info(`execute: async repeat on ${sessionKey} — returning job ${active.jobId}`);
-          return formatJobStatus(active);
-        }
-        const job = await startDispatch({
-          api,
-          runtime,
-          sessionMgr,
-          jobStore,
-          sessionKey,
-          ...(ctx.deliveryContext ? { deliveryContext: ctx.deliveryContext } : {}),
-          ...(agentId ? { agentId } : {}),
-          agent: resolvedAgent,
-          cwd: resolvedCwd,
-          prompt,
-          maxOutputChars: config.maxOutputChars,
-        });
+      // Every dispatch runs in the background. The synchronous path was
+      // removed with the mode/timeoutSeconds parameters: it required the caller
+      // to predict a duration, and losing that bet threw away a turn's work.
+      // Node availability is still checked here so an offline node fails in
+      // this turn with an actionable message, rather than costing a job record
+      // and a wake to say the same thing.
+      if (!runtime.isHealthy()) {
+        log.warn(`execute: no usable node for sessionKey=${sessionKey}`);
         return {
           content: [{
             type: "text",
             text:
-              `Started job ${job.jobId} on ${agentId ?? resolvedAgent}. Do not call run_coder ` +
-              `again for this task — you will be woken when it finishes, and a repeat call ` +
-              `only returns this job's status. Report to the user that the work is under way.`,
-          }],
-          // Recognised by the codex bridge (isAsyncStartedToolResult) as work
-          // continuing out of band, so the turn is released instead of waiting
-          // on the item/tool/call RPC.
-          details: { async: true, status: "started", jobId: job.jobId },
-        };
-      }
-
-      // A second call on a session whose turn is still running would reach the
-      // node-host's handleTurn, which kills the in-flight acpx process before
-      // starting the new one. Both calls then fail: the first loses its work,
-      // the second inherits the kill's acp.exited and returns ops=0. Refuse
-      // instead — the common trigger is a caller retrying after the outer
-      // watchdog fired while the remote turn was still progressing.
-      if (inFlightSessions.has(sessionKey)) {
-        // An async dispatch holds the same marker for its whole background run,
-        // so point the caller at that job rather than at timeoutSeconds.
-        const active = jobStore.findActiveForSession(sessionKey);
-        if (active) {
-          log.warn(`execute: sync call rejected — async job ${active.jobId} still running`);
-          return formatJobStatus(active);
-        }
-        log.warn(`execute: rejected — turn already in flight for sessionKey=${sessionKey}`);
-        return {
-          content: [{
-            type: "text",
-            text:
-              "Error: TURN_IN_FLIGHT — a previous run_coder call on this session is still " +
-              "executing on the remote agent. Wait for it to return rather than retrying; " +
-              "a retry would kill the in-flight run and discard its work. If the earlier call " +
-              "timed out, drop the explicit mode=\"sync\" so the call runs async instead — " +
-              "that is what long work needs.",
+              "Error: ACP_BACKEND_UNAVAILABLE — no coding node is connected, so the task " +
+              "was not started. Start one with `make node` in the overlay directory, then " +
+              "retry. Tell the user the node is offline rather than reporting work as under way.",
           }],
         };
       }
-      inFlightSessions.add(sessionKey);
 
-      try {
-        log.info(`execute: sessionKey=${sessionKey} agentId=${agentId || "(none)"} agent=${resolvedAgent} cwd=${resolvedCwd || "(none)"} prompt=${prompt.slice(0, 100)}`);
-
-        const handle = await sessionMgr.getOrCreate(sessionKey, runtime, {
-          agent: resolvedAgent,
-          cwd: resolvedCwd,
-        });
-
-        const events = runtime.runTurn({
-          handle,
-          text: prompt,
-          mode: "prompt",
-          requestId: randomUUID(),
-          ...(signal ? { signal } : {}),
-        });
-        const result = await collectTurnOutput(events, {
-          maxOutputChars: config.maxOutputChars,
-          ...(signal ? { signal } : {}),
-          onProgress: createProgressReporter({
-            sessionKey,
-            ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
-            agent: resolvedAgent,
-            ...(onUpdate ? { onUpdate } : {}),
-          }),
-        });
-
-        if (result.status === "error") {
-          sessionMgr.invalidate(sessionKey);
-        }
-
-        log.info(`execute done: sessionKey=${sessionKey} status=${result.status} ops=${result.operationCount} msgLen=${result.message.length}`);
-        return formatToolResult(result);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log.error(`execute error: sessionKey=${sessionKey} err=${message}`);
-        sessionMgr.invalidate(sessionKey);
-
-        let hint = "";
-        if (isAcpRuntimeError(err)) {
-          switch (err.code) {
-            case "ACP_BACKEND_UNAVAILABLE":
-              hint = "\n\nNo node is connected. Start one with `make node` in the overlay directory.";
-              break;
-            case "ACP_SESSION_INIT_FAILED":
-              hint = "\n\nFailed to start a coding agent session. Check that the node is running and try again.";
-              break;
-            case "ACP_TURN_FAILED":
-              hint = "\n\nFailed to send the request to the coding agent. The node may have disconnected — try again.";
-              break;
-          }
-        }
-
-        return {
-          content: [{ type: "text", text: `Error: ${message}${hint}` }],
-        };
-      } finally {
-        inFlightSessions.delete(sessionKey);
+      // Concurrent guardrail rather than a hard refusal: a caller that repeats
+      // the request gets the running job back, which is what it needed to know.
+      // This also replaces the old TURN_IN_FLIGHT rejection — with no sync path
+      // there is no longer a second way to collide with a live turn.
+      const active = jobStore.findActiveForSession(sessionKey);
+      if (active) {
+        log.info(`execute: repeat dispatch on ${sessionKey} — returning job ${active.jobId}`);
+        return formatJobStatus(active);
       }
+
+      const job = await startDispatch({
+        api,
+        runtime,
+        sessionMgr,
+        jobStore,
+        sessionKey,
+        ...(ctx.deliveryContext ? { deliveryContext: ctx.deliveryContext } : {}),
+        ...(agentId ? { agentId } : {}),
+        agent: resolvedAgent,
+        cwd: resolvedCwd,
+        prompt,
+        maxOutputChars: config.maxOutputChars,
+      });
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Started job ${job.jobId} on ${agentId ?? resolvedAgent}. Do not call run_coder ` +
+            `again for this task — you will be woken when it finishes, and a repeat call ` +
+            `only returns this job's status. Report to the user that the work is under way.`,
+        }],
+        // Recognised by the codex bridge (isAsyncStartedToolResult) as work
+        // continuing out of band, so the turn is released instead of waiting
+        // on the item/tool/call RPC.
+        details: { async: true, status: "started", jobId: job.jobId },
+      };
     },
   }));
 

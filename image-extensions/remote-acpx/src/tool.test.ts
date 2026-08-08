@@ -95,7 +95,7 @@ describe("run_coder — agentId resolution", () => {
     const { getTool, api } = captureRegisteredTool();
     const runTurn = vi.fn();
     const ensureSession = vi.fn();
-    const runtime = { runTurn, ensureSession } as never;
+    const runtime = { runTurn, ensureSession, isHealthy: () => true } as never;
     registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
     const result = await getTool().execute("call-1", {
@@ -123,7 +123,7 @@ describe("run_coder — agentId resolution", () => {
     const { getTool, api } = captureRegisteredTool();
     const runTurn = vi.fn();
     const ensureSession = vi.fn();
-    const runtime = { runTurn, ensureSession } as never;
+    const runtime = { runTurn, ensureSession, isHealthy: () => true } as never;
     registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
     const result = await getTool().execute("call-2", {
@@ -157,7 +157,7 @@ describe("run_coder — agentId resolution", () => {
     const runTurn = vi.fn().mockImplementation(() => {
       throw new Error("stop");
     });
-    const runtime = { runTurn, ensureSession, close: vi.fn() } as never;
+    const runtime = { runTurn, ensureSession, close: vi.fn(), isHealthy: () => true } as never;
     registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
     const result = await getTool().execute("call-3", {
@@ -185,7 +185,7 @@ describe("run_coder — agentId resolution", () => {
     const runTurn = vi.fn().mockImplementation(() => {
       throw new Error("stop");
     });
-    const runtime = { runTurn, ensureSession, close: vi.fn() } as never;
+    const runtime = { runTurn, ensureSession, close: vi.fn(), isHealthy: () => true } as never;
     registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
     const result = await getTool().execute("call-4", {
@@ -316,6 +316,7 @@ describe("run_coder — async dispatch", () => {
       runTurn: vi.fn(() => neverEnding()),
       close: vi.fn(),
       cancel: vi.fn(),
+      isHealthy: () => true,
     } as never;
   }
 
@@ -337,7 +338,7 @@ describe("run_coder — async dispatch", () => {
     expect(getText(result)).toContain("Do not call run_coder again");
   });
 
-  it("dispatches async when no mode is given", async () => {
+  it("dispatches in the background — there is no synchronous mode to ask for", async () => {
     const { getTool, api } = captureRegisteredTool();
     registerCodingTool(api, { getRuntime: () => asyncRuntime(), getConfig: () => config });
 
@@ -351,23 +352,23 @@ describe("run_coder — async dispatch", () => {
     expect(result.details).toMatchObject({ async: true, status: "started" });
   });
 
-  it("takes the synchronous path only when sync is asked for by name", async () => {
+  it("refuses in-turn when no node is connected, instead of booking a job that will fail", async () => {
     const { getTool, api } = captureRegisteredTool();
-    const runtime = asyncRuntime() as unknown as { runTurn: ReturnType<typeof vi.fn> };
-    runtime.runTurn = vi.fn(async function* () {
-      yield { type: "message", text: "done" };
-    });
+    const runtime = asyncRuntime() as unknown as { isHealthy: () => boolean; ensureSession: ReturnType<typeof vi.fn> };
+    runtime.isHealthy = () => false;
     registerCodingTool(api, { getRuntime: () => runtime as never, getConfig: () => config });
 
-    const result = await getTool().execute("call-explicit-sync", {
-      prompt: "quick job",
+    const result = await getTool().execute("call-no-node", {
+      prompt: "anything",
       cwd: "/app",
       agent: "claude",
-      mode: "sync",
     });
 
+    expect(getText(result)).toContain("ACP_BACKEND_UNAVAILABLE");
+    // No job record, no wake, and the session was never touched: the failure
+    // costs this turn only.
     expect(result.details).toBeUndefined();
-    expect(getText(result)).not.toContain("Do not call run_coder again");
+    expect(runtime.ensureSession).not.toHaveBeenCalled();
   });
 
   it("holds the in-flight marker for the background turn, not just the call", async () => {
@@ -460,6 +461,7 @@ describe("async dispatch — completion notify", () => {
       runTurn: vi.fn(() => immediate()),
       close: vi.fn(),
       cancel: vi.fn(),
+      isHealthy: () => true,
     } as never;
     registerCodingTool(api, { getRuntime: () => runtime, getConfig: () => config });
 
