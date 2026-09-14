@@ -47,8 +47,9 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
       "Add or replace a coding agent in the roster. " +
       "For remote ACP agents, provide nodeName to route via the paired node. " +
       "Use the agent parameter to specify the ACP agent variant. " +
-      "Recognized variants: 'claude' (default), 'codex', 'gemini'. " +
-      "Selecting 'gemini' requires the paired node to have completed `gemini auth login`.",
+      "Recognized variants: 'claude' (default), 'codex', 'grok-build'. " +
+      "Selecting 'grok-build' requires the paired node to have completed `grok login`. " +
+      "Grok's acpx harness id is 'grok-build', not 'grok'.",
     parameters: Type.Object({
       name: Type.String({ description: "Agent identifier (used as id)" }),
       path: Type.String({ description: "Workspace path (local) or remote cwd (when nodeName is set)" }),
@@ -56,14 +57,13 @@ export function registerAgentTools(api: OpenClawPluginApi): void {
       model: Type.Optional(
         Type.String({
           description:
-            "Model override for this agent. For Gemini, the short aliases 'pro' / 'flash' / 'flash-lite' " +
-            "are normalized to full Gemini model ids; full ids pass through unchanged.",
+            "Model override for this agent. Passed through to the variant's CLI unchanged.",
         }),
       ),
       agent: Type.Optional(
         Type.String({
           description:
-            "ACP agent variant. Recognized: 'claude' (default), 'codex', 'gemini'. " +
+            "ACP agent variant. Recognized: 'claude' (default), 'codex', 'grok-build'. " +
             "Other strings are accepted and forwarded to acpx unchanged for advanced setups.",
         }),
       ),

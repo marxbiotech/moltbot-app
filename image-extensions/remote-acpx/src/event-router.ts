@@ -134,7 +134,7 @@ function parseNdjsonLine(line: string): AcpRuntimeEvent | null {
 }
 
 // ACP `session/update` content[] arrives in three known shapes; flatten them
-// uniformly so claude/codex/gemini downstream see the same string:
+// uniformly so claude/codex/grok-build downstream see the same string:
 //   "..."                                                         — bare string
 //   [{ type: "content", content: { type: "text", text: "..." } }] — openclaw ACP server emit (event-mapper.ts:344)
 //   [{ type: "text", text: "..." }]                               — simpler agents
@@ -234,7 +234,7 @@ function parseJsonRpcLine(obj: Record<string, unknown>): AcpRuntimeEvent | null 
     }
 
     // Codex turns are tool-driven and may not emit agent_message_chunk at all;
-    // gemini uses the same parser path but has not been live-verified. Forward
+    // grok-build uses the same parser path but has not been live-verified. Forward
     // tool_call (creation) and tool_call_update (state transitions) so they
     // populate output-collector's operations[]. The `tag` carries the original
     // sessionUpdate for downstream code that wants to distinguish them.

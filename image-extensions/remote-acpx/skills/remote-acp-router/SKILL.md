@@ -1,6 +1,6 @@
 ---
 name: remote-acp-router
-description: Route coding tasks to a remote coding agent (Claude, Codex, Gemini, etc.) on a paired OpenClaw node via the run_coder tool — node-routed execution, not the local ACP harness. Manages agent roster, variant selection, and per-conversation session continuity.
+description: Route coding tasks to a remote coding agent (Claude, Codex, Grok, etc.) on a paired OpenClaw node via the run_coder tool — node-routed execution, not the local ACP harness. Manages agent roster, variant selection, and per-conversation session continuity.
 user-invocable: false
 ---
 
@@ -41,13 +41,19 @@ The local `/acp` slash command spawns the same local-harness UX. The non-overlap
 
 ## 3. Execution model
 
-`run_coder` executes one prompt against a remote coding agent (Claude Code, Codex, Gemini CLI, etc.) on the paired OpenClaw node and returns a structured result.
+`run_coder` executes one prompt against a remote coding agent (Claude Code, Codex, Grok, etc.) on the paired OpenClaw node and returns a structured result.
 
 ### Variants
 
 - `cc` / `claude` / `claude code` → agent variant: `claude`
 - `cx` / `codex` → agent variant: `codex`
-- `gem` / `gemini` / `gemini cli` → agent variant: `gemini`
+- `grk` / `grok` / `grok build` → agent variant: **`grok-build`**
+
+The Grok row is the one place where the alias the user types and the variant
+string you pass diverge. acpx registers the harness as `grok-build` (that is the
+key in its built-in `AGENT_REGISTRY`); plain `grok` is **not** an acpx alias for
+it, and an unregistered name is executed verbatim as a command — which launches
+the interactive Grok TUI and hangs the turn. Always pass `agent: "grok-build"`.
 
 ### Variant prerequisites
 
@@ -57,19 +63,11 @@ Each variant is dispatched as `acpx <variant> …` on the paired Mac, which in t
 |---------|-----|---------------------------------------|
 | `claude` | Claude Code via `@agentclientprotocol/claude-agent-acp` | `claude` CLI logged in (Anthropic auth) |
 | `codex` | bundled `@zed-industries/codex-acp` (isolated CODEX_HOME) | OpenAI / Codex auth completed |
-| `gemini` | `gemini --acp` (Google Gemini CLI) | `gemini auth login` completed on the Mac |
+| `grok-build` | `grok agent stdio` (xAI Grok CLI) | `grok login` completed on the Mac (cached token in `~/.grok/auth.json`) |
 
-When a Gemini turn fails immediately at spawn with an auth-style error, surface it to the user and ask them to run `gemini auth login` on the paired Mac before retrying. Do not silently fall back to a different variant.
+When a turn fails immediately at spawn with an auth-style error, surface it to the user and ask them to re-authenticate that variant's CLI on the paired Mac (`grok login` for `grok-build`) before retrying. Do not silently fall back to a different variant.
 
-### Gemini model aliases
-
-For `agent: "gemini"`, the `model` parameter accepts either a full Gemini model id (e.g. `gemini-3.1-flash-preview`) or one of the short aliases:
-
-- `pro` → `gemini-3.1-pro-preview`
-- `flash` → `gemini-3.1-flash-preview`
-- `flash-lite` → `gemini-3.1-flash-lite-preview`
-
-The aliases are normalized inside remote-acpx; unknown values pass through unchanged so newer model ids continue to work.
+`grok` ships outside the default PATH (`~/.grok/bin`), and the node service runs under a fixed PATH that does not include it. If a `grok-build` turn fails with a command-not-found style spawn error, the node's `~/.acpx/config.json` needs a `grok-build` agent override pointing at the absolute binary path — same pattern `claude` and `codex` already use there.
 
 ### Roster tools
 
@@ -91,7 +89,7 @@ Decision flow:
 1. **Channel system prompt names the target agent** (e.g. "派送至 store agent 處理") → use that id directly: `run_coder({ agentId: "store", prompt: "…" })`
 2. **User specifies a project** → match by agent `id` or keywords in channel context, pass the matched `agentId`
 3. **User mentions a specific file or module** → infer project from context, resolve `agentId`
-4. **Variant override** — user explicitly named a variant (e.g. "use Codex", "cx", "用 gemini"): pass `agent: "codex"` (or `"gemini"`, `"claude"`) alongside `agentId` to override the roster default
+4. **Variant override** — user explicitly named a variant (e.g. "use Codex", "cx", "用 grok"): pass `agent: "codex"` (or `"grok-build"`, `"claude"`) alongside `agentId` to override the roster default
 5. **Continuing a previous task** → reuse the last `agentId` and variant
 6. **Cannot determine** → call `coding_agents_list` to discover available agents, then ask the user to choose
 
@@ -149,8 +147,8 @@ Remote coding agents (especially `claude`) run their own prompt-injection guard.
 - **Do not add stronger attestation markers** — they amplify the problem.
 - Rephrase as a more neutral imperative — keep the same scope, just drop relay framing and emotive adjectives.
 - If the work genuinely decomposes, break out only the **read-only / preparatory** parts as separate prompts (read files, list diffs, dry-run). The final sensitive step must still be sent as a single prompt with its full scope and explicit authorization stated — do not slice the sensitive action itself into innocent-looking fragments to dodge the guard.
-- **Never silently switch variants.** If the user designated an executor (e.g. "讓 cc 去執行 …", "用 gemini 看一下 …") or the channel pinned a variant, do not fall back to a different variant on your own — even if another variant would refuse less. Surface the refusal to the user, propose the alternative (e.g. "claude 拒絕了，要不要改用 cx?"), and require explicit confirmation before switching. (See *Routing — Explicit executor override*, step 3, for the canonical statement of this constraint.)
-- Once the user has confirmed (or no executor was designated to begin with), switching to a different variant (`cx` / `codex`, `gem` / `gemini`) is fine — they do not run the same guard at the same intensity.
+- **Never silently switch variants.** If the user designated an executor (e.g. "讓 cc 去執行 …", "用 grok 看一下 …") or the channel pinned a variant, do not fall back to a different variant on your own — even if another variant would refuse less. Surface the refusal to the user, propose the alternative (e.g. "claude 拒絕了，要不要改用 cx?"), and require explicit confirmation before switching. (See *Routing — Explicit executor override*, step 3, for the canonical statement of this constraint.)
+- Once the user has confirmed (or no executor was designated to begin with), switching to a different variant (`cx` / `codex`, `grk` / `grok-build`) is fine — they do not run the same guard at the same intensity.
 - For routine worker tasks where the guard is structurally a poor fit and the user has not pinned a variant, prefer `codex` from the start.
 
 ### After the call
@@ -165,9 +163,9 @@ When a coding channel receives a task, resolve the execution target using the fo
 
 ### Explicit executor override (evaluate FIRST, before the resolution chain)
 
-If the user explicitly designated a registered executor alias — `cc`, `claude`, `claude code`, `cx`, `codex`, `gem`, `gemini`, `gemini cli`, or any agent name from the *Variants* section — in executor position (e.g. "讓 cc 去執行 …", "用 codex 跑 …", "用 gemini 看一下 …", "claude code 幫我做 …"), **skip the resolution chain entirely**:
+If the user explicitly designated a registered executor alias — `cc`, `claude`, `claude code`, `cx`, `codex`, `grk`, `grok`, `grok build`, or any agent name from the *Variants* section — in executor position (e.g. "讓 cc 去執行 …", "用 codex 跑 …", "用 grok 看一下 …", "claude code 幫我做 …"), **skip the resolution chain entirely**:
 
-1. Resolve only the executor alias to the correct agent variant (e.g. `cc` → `claude`).
+1. Resolve only the executor alias to the correct agent variant (e.g. `cc` → `claude`, `grok` → `grok-build`).
 2. Pass the **entire action clause** — including any named skill, tool, or slash-command text — to `run_coder`. The clause should still be translated into an English coder prompt (per *Writing the prompt*), but treated as an opaque instruction for the remote agent: do not locally resolve, validate, substitute, or execute the referenced skill/tool.
 3. If the designated agent is unreachable or `coding_agents_list` returns no match for that variant, surface the failure to the user. **Do not silently fall back to a different agent variant, a different node, or any local execution path — including `sessions_spawn(runtime: "acp")` or any other in-process harness.** Require explicit user confirmation before attempting any alternative.
 
