@@ -5,10 +5,17 @@
   "activation": {
     "onStartup": true
   },
+  "skills": ["./skills"],
   "configSchema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
+      "executionApproval": {
+        "type": "string",
+        "enum": ["always", "node-policy"],
+        "default": "always",
+        "description": "Use node-policy only for operator-authorized targets whose node-local exec policy permits full execution without prompting. Otherwise request approval for each operation."
+      },
       "target": {
         "type": "object",
         "properties": {

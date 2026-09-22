@@ -4,6 +4,7 @@ import { z } from "zod";
 const absolutePath = z.string().min(1).refine(path.isAbsolute, "Use an absolute node-local path");
 const targetSchema = z.strictObject({ nodeId: z.string().min(1), cwd: absolutePath.optional() });
 export const configSchema = z.strictObject({
+  executionApproval: z.enum(["always", "node-policy"]).optional(),
   target: targetSchema.optional(),
   targets: z.record(z.string().min(1), targetSchema).default({}),
   node: z

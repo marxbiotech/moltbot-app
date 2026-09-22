@@ -128,9 +128,14 @@ export function createRemoteAcpxNodeCommand(
             value: { cancelled: running?.request.op === "turn" },
           });
         }
-        if (!context.prepareExecAuthorization)
-          throw new Error("Remote ACP requires node-local exec authorization support.");
-        const assertAuthorized = context.prepareExecAuthorization("human-approved");
+        const assertAuthorized =
+          envelope.authorization === "node-policy"
+            ? context.prepareConfiguredExecAuthorization?.()
+            : context.prepareExecAuthorization?.("human-approved");
+        if (!assertAuthorized)
+          throw new Error(
+            "Remote ACP requires matching node-local exec authorization support; upgrade the node host for node-policy execution.",
+          );
         const previous = writers.get(key);
         if (previous && (request.op === "fresh" || request.op === "close")) {
           if (

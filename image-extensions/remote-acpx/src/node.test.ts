@@ -32,6 +32,7 @@ function harness(
   command: OpenClawPluginNodeHostCommand,
   request: Request,
   contextOverride: Partial<Context> = {},
+  authorization: "human-approved" | "node-policy" = "human-approved",
 ) {
   fixtureCommands.add(command);
   let listener: ((bytes: Uint8Array) => void | Promise<void>) | undefined;
@@ -71,7 +72,7 @@ function harness(
   const result = command.handle(
     JSON.stringify({
       request,
-      authorization: request.op === "cancel" ? "cancel-only" : "human-approved",
+      authorization: request.op === "cancel" ? "cancel-only" : authorization,
     }),
     io,
     context,
@@ -120,6 +121,39 @@ test("node rejects session mismatch and revoked spawn authority", { timeout: 15_
   });
   await assert.rejects(revoked.result, /authority closed/);
   assert.equal(revoked.frames.length, 0);
+});
+
+test("node policy fails closed on old hosts and never falls back to human approval", async () => {
+  const command = createRemoteAcpxNodeCommand(config, { workerUrl });
+  const run = harness(command, ensure, {}, "node-policy");
+  await assert.rejects(run.result, /upgrade the node host/);
+  assert.equal(run.checks(), 0);
+  assert.equal(run.frames.length, 0);
+});
+
+test("configured authorization is renewed before reusing a setup worker", async () => {
+  const command = createRemoteAcpxNodeCommand(config, { workerUrl });
+  let prepared = 0;
+  let guarded = 0;
+  let permitted = true;
+  const context = {
+    prepareConfiguredExecAuthorization: () => {
+      prepared++;
+      return () => {
+        guarded++;
+        if (!permitted) throw new Error("node policy revoked");
+      };
+    },
+  };
+  const setup = harness(command, ensure, context, "node-policy");
+  assert.equal(JSON.parse(await setup.result).type, "value");
+  assert.equal(setup.checks(), 0);
+  permitted = false;
+  const turnAfterRevocation = harness(command, turn("next"), context, "node-policy");
+  await assert.rejects(turnAfterRevocation.result, /node policy revoked/);
+  assert.equal(prepared, 2);
+  assert.equal(guarded, 2);
+  assert.equal(turnAfterRevocation.frames.length, 0);
 });
 
 test(

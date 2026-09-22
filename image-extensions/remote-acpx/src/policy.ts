@@ -1,5 +1,6 @@
 import type { OpenClawPluginNodeInvokePolicy } from "openclaw/plugin-sdk/plugin-entry";
-import { COMMAND, parseRequest } from "./protocol.js";
+import { parseConfig } from "./config.js";
+import { BACKEND, COMMAND, parseRequest } from "./protocol.js";
 
 /** The Gateway owns approval; callers cannot supply their own authorization marker. */
 export function createRemoteAcpxNodeInvokePolicy(): OpenClawPluginNodeInvokePolicy {
@@ -23,6 +24,37 @@ export function createRemoteAcpxNodeInvokePolicy(): OpenClawPluginNodeInvokePoli
       }
       if (request.op === "cancel") {
         return context.invokeNode({ params: { request, authorization: "cancel-only" } });
+      }
+      // The request's authorization comes from current operator configuration,
+      // never a model argument or the plugin's registration-time config snapshot.
+      const entry = context.config.plugins?.entries?.[BACKEND];
+      let config: ReturnType<typeof parseConfig>;
+      try {
+        config = parseConfig(entry?.config);
+      } catch {
+        return {
+          ok: false,
+          code: "REMOTE_ACP_CONFIG_INVALID",
+          message: "Invalid remote ACP execution configuration.",
+        };
+      }
+      if (config.executionApproval === "node-policy") {
+        const target = config.targets[request.owner.agentId] ?? config.target;
+        if (
+          context.config.plugins?.enabled === false ||
+          entry?.enabled === false ||
+          target?.nodeId !== context.nodeId
+        ) {
+          return {
+            ok: false,
+            code: "REMOTE_ACP_TARGET_NOT_AUTHORIZED",
+            message:
+              "The current remote ACP configuration does not authorize this node for the session owner.",
+          };
+        }
+        // This is configured node authority, not a human approval or Session Full.
+        // The node's host capability independently enforces its live exec floor.
+        return context.invokeNode({ params: { request, authorization: "node-policy" } });
       }
       if (!context.approvals) {
         return {

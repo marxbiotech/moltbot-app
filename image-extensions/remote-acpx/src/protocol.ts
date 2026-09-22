@@ -99,7 +99,7 @@ export function retainsWorker(request: Request): boolean {
 }
 export const envelopeSchema = z.strictObject({
   request: requestSchema,
-  authorization: z.enum(["human-approved", "cancel-only"]),
+  authorization: z.enum(["human-approved", "node-policy", "cancel-only"]),
 });
 export type ElicitationHandler = NonNullable<AcpRuntimeTurnInput["onElicitation"]>;
 export type ElicitationRequest = Parameters<ElicitationHandler>[0];

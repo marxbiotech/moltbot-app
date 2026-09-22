@@ -6,6 +6,8 @@ task, cancellation, and reply delivery owners. Workspaces, harness processes,
 credentials, and acpx records remain on the node.
 
 Use the v2026.9.5 fork containing `openclaw/plugin-sdk/acp-backend` on both hosts.
+Autonomous execution also requires the node host's
+`prepareConfiguredExecAuthorization()` capability, included in image beta.2.
 The unmodified upstream package has the node transport but keeps ACP backend
 registration behind a private SDK facade. This plugin requires the fork's small
 public contract addition; it does not contain a private SDK fallback.
@@ -26,6 +28,19 @@ Gateway configuration (merge these fields into your configuration):
 
 ```json
 {
+  "agents": {
+    "ownership": "explicit",
+    "defaults": { "systemAgent": { "agentId": "main" } },
+    "entries": {
+      "main": {},
+      "claude": {
+        "runtime": {
+          "type": "acp",
+          "acp": { "agent": "claude", "backend": "remote-acpx" }
+        }
+      }
+    }
+  },
   "acp": {
     "enabled": true,
     "dispatch": { "enabled": true },
@@ -60,6 +75,11 @@ name or the `node run --node-id` instance label. Optional
 `targets: { "OPENCLAW_AGENT_ID": { "nodeId": "...", "cwd": "..." } }` selects a
 node per session owner; `target` is the default. Explicit ACP `cwd` overrides the
 configured default and must be an absolute path on the node.
+Merge the example agent entries into the existing roster; keep the deployment's
+chosen system agent. The ACP executor must exist in `agents.entries` as well as
+`acp.allowedAgents`; the allowlist alone does not register an agent. The
+coordinator's tool policy must expose `read`, `sessions_spawn`, and the session
+and task tools needed for follow-up.
 
 Node plugin configuration:
 
@@ -94,20 +114,60 @@ than interpreted as executable commands. Gateway-supplied environment overrides
 are rejected. Node-local acpx state uses the upstream acpx file-store contract.
 
 Pair the node and explicitly approve its `remote-acpx.execute` command surface.
-Node-local execution policy must permit the command. Every operation except cancellation requests a real OpenClaw **Allow once** approval, including session
-creation, turns, status, and controls. Cancellation of an admitted worker needs
-no new approval. `permissionMode` separately controls the harness's own ACP
-permission requests (`approve-reads`, `approve-all`, or `deny-all`); it does not
-bypass OpenClaw node execution approval. This version does not synthesize Full
-or standing approval authority.
+Node-local execution policy must permit the command. The default
+`executionApproval: "always"` requests a real OpenClaw **Allow once** decision
+for each operation except cancellation, including creation, turns, and status.
+
+For an operator-authorized autonomous Gateway agent, set
+`plugins.entries.remote-acpx.config.executionApproval: "node-policy"` on the
+Gateway. The policy checks the current `target` / owner-specific `targets`
+selection before dispatch. On the node, configure the applicable agent's exec
+policy and canonical exec approvals document to permit `security: "full"` and
+`ask: "off"`. Either a more restrictive node config or approvals floor prevents
+autonomous execution. Use the node's normal `openclaw approvals` interface to
+inspect and update that document, preserving unrelated agent policies.
+
+This mode permits execution as the node account; `cwd` selects a workspace, not
+a filesystem sandbox. Use agent-specific node policies where appropriate.
+The node host must provide `prepareConfiguredExecAuthorization()`; an older host
+fails closed instead of treating this as a human approval. Each operation,
+including setup-worker reuse, obtains a new live guard immediately before
+execution. Config reload, policy tightening, disconnect, and invocation closure
+invalidate the relevant authority. No plugin approval cache or fabricated
+Session Full grant is used.
+
+`node.permissionMode` independently controls the harness's file/tool requests
+(`approve-reads`, `approve-all`, or `deny-all`). For coding work that should edit
+and run commands autonomously, the operator must also choose an appropriate
+harness permission mode. It never overrides node execution policy. Cancellation
+of an admitted worker needs no new approval.
 
 ## Use and lifecycle
 
-Use the standard `sessions_spawn` tool with `runtime: "acp"`, an allowed agent,
-and a node-local `cwd`, or the standard `/acp` commands. No additional model tool
-or parallel job manager is registered.
+The packaged `remote-acp-router` skill teaches the Gateway agent to call
+`sessions_spawn` itself with `runtime: "acp"`, an allowed harness, a node-local
+`cwd`, `mode: "run"`, and `streamTo: "parent"`. The user supplies the task in
+ordinary language. The core owns background completion delivery; the Gateway
+agent summarizes the result. Standard session tools carry follow-up instructions,
+and `subagents` lists, waits for, or cancels owned tasks. The user does not need
+to enter `/acp` commands, and ordinary delegation does not bind their conversation
+directly to the harness. No extra model tool or parallel job manager is registered.
 
-The persistent handle retains node affinity and the node's exact acpx session
+Channel skill filters may continue to name `remote-acp-router`, but replace old
+prompts requiring `run_coder` or roster tools and remove any legacy skill copy
+that shadows the packaged skill. Provide the selected harness and
+absolute node-local project workspace in the channel's routing context. Project
+aliases must be configured ACP agents; old roster ids are not automatically
+available. A per-owner node target is keyed by the resulting ACP session owner,
+not by the coordinating Gateway parent session.
+
+`mode: "run"` is one-shot: completion closes the native harness session. Supply
+the previous findings and decisions in full for subsequent work. `sessions_send`
+can queue a follow-up but does not make a one-shot child retain harness memory;
+its native-agent `steer` and `resume` modes do not apply to ACP. Persistent native
+context requires a supported child thread with `mode: "session", thread: true`.
+
+For persistent sessions, the handle retains node affinity and the node's exact acpx session
 locator. A disconnected node never redirects work to the Gateway or another
 node. A restarted Gateway can resume the same conversation from its persisted
 handle and node-local record. Owners with the same bare session key are isolated.
@@ -124,7 +184,7 @@ turn: some ACP harnesses, including Claude, do not persist a new session until
 its first prompt. Every invocation rechecks execution authority before either
 launching or reusing a worker. Turns join acpx cleanup and worker exit before
 returning their terminal result; close, reset, and node disconnect also release
-setup workers. Later turns resume the durable harness session in a new worker.
+setup workers. Later persistent turns resume the durable harness session in a new worker.
 An empty session lost with its node connection may require an explicit reset;
 no prompt is automatically replayed. A session has at most one writer, while
 status reads can run during a turn. Messages are
@@ -147,19 +207,22 @@ starts its own Gateway and node, performs real pairing and approval, verifies a
 35-second silent turn and the canonical ACP manager through `chat.send`, then
 stops its processes and removes its temporary state. Real provider credentials
 and networking between different machines remain deployment checks.
+`node test/live-gateway.mjs --agent-spawn` additionally uses a deterministic
+model peer to exercise skill discovery/read, the real agent tool call,
+configured node authorization without a reviewer, and parent completion delivery.
 
 ## Images
 
 The application Dockerfile pins
-`ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.1`, which contains the public ACP
-backend contract. The host package version remains `2026.9.5`; the `mb` prefix
+`ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.2`, which contains the public ACP
+backend contract and configured node execution guard. The host package version remains `2026.9.5`; the `mb` prefix
 and beta suffix identify the fork's image release.
 
 Application image tags derive from that base version and the application commit:
-`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-beta.1-<short-commit>`.
+`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-beta.2-<short-commit>`.
 Feature-branch builds publish only that versioned tag. The image build runs
 `test/image-smoke.mjs` as the non-root runtime user to check actual plugin
-registration and the production worker imports on each target architecture.
+registration, agent skill discovery, and production worker imports on each target architecture.
 
 Publishing an image does not update an existing Gateway or paired node. Both
 hosts still require the matching fork runtime and this plugin configuration.

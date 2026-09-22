@@ -58,6 +58,8 @@ test("denied, absent and expired approval cannot dispatch a worker", async () =>
 test("injected authorization and mismatched session owners are rejected before approval", async () => {
   for (const input of [
     { ...ensure, authorization: "human-approved" },
+    { ...ensure, authorization: "node-policy" },
+    { request: ensure, authorization: "node-policy" },
     { request: ensure, authorization: "human-approved" },
     { ...ensure, owner: { ...owner, agentId: "other" } },
   ]) {
@@ -66,6 +68,56 @@ test("injected authorization and mismatched session owners are rejected before a
     assert.equal(ctx.calls.length, 0);
     assert.equal(ctx.approvals(), 0);
   }
+});
+
+function configure(ctx: ReturnType<typeof context>, config: Record<string, unknown>) {
+  ctx.value.config = { plugins: { entries: { "remote-acpx": { enabled: true, config } } } };
+}
+
+test("configured node policy dispatches without a reviewer and does not claim human approval", async () => {
+  const ctx = context(ensure);
+  ctx.value.approvals = undefined;
+  configure(ctx, {
+    executionApproval: "node-policy",
+    targets: { main: { nodeId: "paired-node" } },
+  });
+  assert.equal((await createRemoteAcpxNodeInvokePolicy().handle(ctx.value)).ok, true);
+  assert.equal(ctx.approvals(), 0);
+  assert.deepEqual(ctx.calls, [{ params: { request: ensure, authorization: "node-policy" } }]);
+});
+
+test("autonomous dispatch requires the current target for this owner", async () => {
+  for (const config of [
+    { executionApproval: "node-policy" },
+    { executionApproval: "node-policy", target: { nodeId: "other-node" } },
+    { executionApproval: "node-policy", targets: { other: { nodeId: "paired-node" } } },
+    {
+      executionApproval: "node-policy",
+      target: { nodeId: "paired-node" },
+      targets: { main: { nodeId: "other-node" } },
+    },
+  ]) {
+    const ctx = context(ensure);
+    configure(ctx, config);
+    assert.equal((await createRemoteAcpxNodeInvokePolicy().handle(ctx.value)).ok, false);
+    assert.equal(ctx.calls.length, 0);
+    assert.equal(ctx.approvals(), 0);
+  }
+});
+
+test("changed configuration revokes autonomous authority despite a stale registration snapshot", async () => {
+  const ctx = context(ensure);
+  ctx.value.pluginConfig = { executionApproval: "node-policy", target: { nodeId: "paired-node" } };
+  configure(ctx, { executionApproval: "always", target: { nodeId: "paired-node" } });
+  const policy = createRemoteAcpxNodeInvokePolicy();
+  assert.equal((await policy.handle(ctx.value)).ok, true);
+  assert.equal(ctx.approvals(), 1);
+  assert.deepEqual(ctx.calls, [{ params: { request: ensure, authorization: "human-approved" } }]);
+  ctx.calls.length = 0;
+  configure(ctx, ctx.value.pluginConfig);
+  ctx.value.config.plugins!.entries!["remote-acpx"].enabled = false;
+  assert.equal((await policy.handle(ctx.value)).ok, false);
+  assert.equal(ctx.calls.length, 0);
 });
 
 test("cancellation only dispatches the non-spawning cancel envelope", async () => {

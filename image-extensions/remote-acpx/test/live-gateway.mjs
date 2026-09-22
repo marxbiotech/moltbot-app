@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { startGatewayModel } from "./fixtures/gateway-model.mjs";
 
 const pluginRoot = fileURLToPath(new URL("../", import.meta.url));
 const cli = path.join(pluginRoot, "node_modules/openclaw/openclaw.mjs");
@@ -20,6 +21,8 @@ const logs = new Map();
 let client;
 let approvalTimer;
 let approvalRun = Promise.resolve();
+const agentSpawn = process.argv.includes("--agent-spawn");
+let model;
 const token = randomBytes(24).toString("hex");
 const port = await new Promise((resolve, reject) => {
   const reservation = net.createServer();
@@ -139,6 +142,11 @@ try {
   const cwd = path.join(root, "node-workspace");
   const fixtureState = path.join(root, "fixture-state");
   await Promise.all([mkdir(cwd), mkdir(fixtureState)]);
+  if (agentSpawn)
+    model = await startGatewayModel({
+      cwd,
+      skillPath: path.join(pluginRoot, "skills/remote-acp-router/SKILL.md"),
+    });
   const nodeConfig = {
     cwd,
     stateDir: path.join(root, "acpx-state"),
@@ -164,6 +172,7 @@ try {
     logging: { file: path.join(root, "gateway.log") },
     browser: { enabled: false },
     cron: { enabled: false },
+    ...(agentSpawn ? { tools: { profile: "full", exec: { security: "full", ask: "off" } } } : {}),
     acp: {
       enabled: true,
       backend: "remote-acpx",
@@ -172,7 +181,19 @@ try {
       dispatch: { enabled: true },
     },
     agents: {
+      ...(agentSpawn
+        ? {
+            ownership: "explicit",
+            entries: {
+              main: {},
+              fixture: {
+                runtime: { type: "acp", acp: { agent: "fixture", backend: "remote-acpx", cwd } },
+              },
+            },
+          }
+        : {}),
       defaults: {
+        ...(agentSpawn ? { systemAgent: { agentId: "main" } } : {}),
         workspace: path.join(root, "gateway-workspace"),
         model: { primary: "fixture/noop" },
       },
@@ -180,7 +201,7 @@ try {
     models: {
       providers: {
         fixture: {
-          baseUrl: "http://127.0.0.1:9/v1",
+          baseUrl: model?.baseUrl ?? "http://127.0.0.1:9/v1",
           api: "openai-completions",
           apiKey: "unused-synthetic-key",
           models: [{ id: "noop", name: "Unused synthetic default" }],
@@ -193,7 +214,12 @@ try {
       entries: {
         "remote-acpx": {
           enabled: true,
-          config: { target: { nodeId, cwd }, targets: {}, node: nodeConfig },
+          config: {
+            target: { nodeId, cwd },
+            targets: {},
+            node: nodeConfig,
+            ...(agentSpawn ? { executionApproval: "node-policy" } : {}),
+          },
         },
         "remote-acpx-probe": { enabled: true },
       },
@@ -203,6 +229,13 @@ try {
     writeFile(gatewayEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(baseConfig)),
     writeFile(nodeEnv.OPENCLAW_CONFIG_PATH, JSON.stringify(baseConfig)),
   ]);
+  if (agentSpawn) {
+    await mkdir(nodeEnv.OPENCLAW_STATE_DIR, { recursive: true });
+    await writeFile(
+      path.join(nodeEnv.OPENCLAW_STATE_DIR, "exec-approvals.json"),
+      JSON.stringify({ version: 1, defaults: { security: "full", ask: "off" } }),
+    );
+  }
   const gateway = launch(
     ["gateway", "run", "--port", String(port), "--bind", "loopback"],
     gatewayEnv,
@@ -300,22 +333,23 @@ try {
 
   let approvals = 0;
   let approvalError;
-  approvalTimer = setInterval(() => {
-    approvalRun = approvalRun
-      .then(async () => {
-        const pending = await request("plugin.approval.list");
-        for (const entry of pending.requests ?? pending.pending ?? pending) {
-          if (entry.request?.pluginId !== "remote-acpx") continue;
-          await request("plugin.approval.resolve", { id: entry.id, decision: "allow-once" });
-          approvals++;
-        }
-      })
-      .catch((error) => {
-        approvalError = error;
-      });
-  }, 250);
+  if (!agentSpawn)
+    approvalTimer = setInterval(() => {
+      approvalRun = approvalRun
+        .then(async () => {
+          const pending = await request("plugin.approval.list");
+          for (const entry of pending.requests ?? pending.pending ?? pending) {
+            if (entry.request?.pluginId !== "remote-acpx") continue;
+            await request("plugin.approval.resolve", { id: entry.id, decision: "allow-once" });
+            approvals++;
+          }
+        })
+        .catch((error) => {
+          approvalError = error;
+        });
+    }, 250);
   const invoke = (params) => request("remote-acpx-probe.invoke", params, 90_000);
-  if (!process.argv.includes("--manager-only")) {
+  if (!process.argv.includes("--manager-only") && !agentSpawn) {
     const { handle } = await invoke({ op: "ensure" });
     const first = await invoke({ op: "turn", handle, text: "live first prompt" });
     assert.equal(first.result.status, "completed");
@@ -358,42 +392,95 @@ try {
     );
   }
 
-  const managed = await invoke({ op: "managerInitialize" });
-  const admitted = await request("chat.send", {
-    sessionKey: managed.sessionKey,
-    message: "manager-owned prompt",
-    idempotencyKey: randomUUID(),
-    timeoutMs: 60_000,
-  });
-  assert.equal(typeof admitted.runId, "string");
-  const waited = await request("agent.wait", { runId: admitted.runId, timeoutMs: 60_000 }, 65_000);
-  assert.equal(
-    waited.status,
-    "ok",
-    `Standard ACP chat turn did not complete: ${JSON.stringify(waited)}`,
-  );
-  const managedSession = await invoke({ op: "managerStatus" });
-  assert.equal(managedSession.kind, "ready");
-  assert.equal(managedSession.meta.backend, "remote-acpx");
-  assert.equal(managedSession.meta.state, "idle");
-  const savedAgents = await Promise.all(
-    (await readdir(fixtureState))
-      .filter((file) => file.endsWith(".json"))
-      .map(async (file) => JSON.parse(await readFile(path.join(fixtureState, file), "utf8"))),
-  );
-  const managerAgent = savedAgents.filter((agent) =>
-    agent.history.some((text) => text.includes("manager-owned prompt")),
-  );
-  assert.equal(managerAgent.length, 1);
-  assert.equal(managerAgent[0].cwd, cwd);
-  console.log(
-    JSON.stringify({
-      ok: true,
-      manager: "canonical ACP manager",
-      ingress: "chat.send → admitted run → remote paired node",
-      state: managedSession.meta.state,
-    }),
-  );
+  if (agentSpawn) {
+    const parentKey = "agent:main:main";
+    const admitted = await request("chat.send", {
+      sessionKey: parentKey,
+      message:
+        "Delegate repository investigation to the configured remote ACP coding agent and report the result.",
+      idempotencyKey: randomUUID(),
+      timeoutMs: 90_000,
+    });
+    const waited = await request(
+      "agent.wait",
+      { runId: admitted.runId, timeoutMs: 90_000 },
+      95_000,
+    );
+    assert.equal(waited.status, "ok", JSON.stringify(waited));
+    await until(
+      "agent-owned remote completion",
+      async () => {
+        if (model.state.errors.length)
+          throw Object.assign(new Error(model.state.errors.join("\n")), { fatal: true });
+        const history = await request("chat.history", { sessionKey: parentKey, limit: 30 });
+        return history.messages.some(
+          (message) =>
+            message.role === "assistant" &&
+            JSON.stringify(message.content).includes("REMOTE-ACP-PARENT-RESULT"),
+        );
+      },
+      90_000,
+    );
+    assert.equal(model.state.skillRead, true);
+    assert.equal(model.state.spawned, true);
+    assert.equal(model.state.completed, true);
+    const pending = await request("plugin.approval.list");
+    assert.equal(
+      (pending.requests ?? pending.pending ?? pending).length,
+      0,
+      "no per-operation approval was requested",
+    );
+    console.log(
+      JSON.stringify({
+        ok: true,
+        ingress: "Gateway agent → sessions_spawn → remote ACP node → parent completion",
+        skill: "remote-acp-router",
+        approvals: 0,
+        model: "deterministic test peer",
+      }),
+    );
+  } else {
+    const managed = await invoke({ op: "managerInitialize" });
+    const admitted = await request("chat.send", {
+      sessionKey: managed.sessionKey,
+      message: "manager-owned prompt",
+      idempotencyKey: randomUUID(),
+      timeoutMs: 60_000,
+    });
+    assert.equal(typeof admitted.runId, "string");
+    const waited = await request(
+      "agent.wait",
+      { runId: admitted.runId, timeoutMs: 60_000 },
+      65_000,
+    );
+    assert.equal(
+      waited.status,
+      "ok",
+      `Standard ACP chat turn did not complete: ${JSON.stringify(waited)}`,
+    );
+    const managedSession = await invoke({ op: "managerStatus" });
+    assert.equal(managedSession.kind, "ready");
+    assert.equal(managedSession.meta.backend, "remote-acpx");
+    assert.equal(managedSession.meta.state, "idle");
+    const savedAgents = await Promise.all(
+      (await readdir(fixtureState))
+        .filter((file) => file.endsWith(".json"))
+        .map(async (file) => JSON.parse(await readFile(path.join(fixtureState, file), "utf8"))),
+    );
+    const managerAgent = savedAgents.filter((agent) =>
+      agent.history.some((text) => text.includes("manager-owned prompt")),
+    );
+    assert.equal(managerAgent.length, 1);
+    assert.equal(managerAgent[0].cwd, cwd);
+    console.log(
+      JSON.stringify({
+        ok: true,
+        manager: "canonical ACP manager",
+        ingress: "chat.send → admitted run → remote paired node",
+        state: managedSession.meta.state,
+      }),
+    );
+  }
 } catch (error) {
   for (const [child, output] of logs)
     if (child.label === "Gateway" || child.label === "Node")
@@ -404,6 +491,7 @@ try {
   await approvalRun.catch(() => {});
   await client?.stopAndWait().catch(() => client.stop());
   await Promise.all([...children].map(stop));
+  await model?.close();
   if (process.env.REMOTE_ACPX_KEEP_LIVE_TEST_STATE === "1")
     console.log(`Retained isolated test state: ${root}`);
   else await rm(root, { recursive: true, force: true });
