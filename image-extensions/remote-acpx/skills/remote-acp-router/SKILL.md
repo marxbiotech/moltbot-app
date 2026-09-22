@@ -18,9 +18,11 @@ Invoke tools yourself; the user does not need to enter slash commands.
   With `remote-acpx`, acpx runs on the paired node, not on the Gateway. The
   plugin's `target` / `targets` configuration selects the node; do not pass a
   `nodeName` argument to the tool.
-- `agentId` selects an allowed ACP harness, such as `claude`, or a configured
-  ACP agent alias. It is not automatically the old project's roster id. Pass
-  the known absolute node-local `cwd` explicitly to preserve project selection.
+- `agentId` selects a configured ACP executor, such as a `claude` entry or a
+  project alias mapped to that harness. It must be registered in `agents.entries`
+  and permitted by ACP policy; the allowlist alone does not register an agent.
+  It is not automatically the old project's roster id. Pass the known absolute
+  node-local `cwd` explicitly to preserve project selection.
 - Keep an explicitly requested executor. If its node or login is unavailable,
   report the problem instead of switching executor, node, or local execution.
 
