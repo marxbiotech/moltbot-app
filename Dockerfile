@@ -1,4 +1,4 @@
-FROM ghcr.io/marxbiotech/openclaw:mb2026.7.1-beta.9
+FROM ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.1
 
 USER root
 
@@ -16,9 +16,14 @@ COPY image-extensions/ /opt/moltbot/extensions/
 # Each image-baked plugin lives outside /app so Node module resolution does not
 # walk into /app/node_modules; per-plugin installs make their deps resolvable
 # from the plugin directory itself.
-RUN for ext in github-apps remote-acpx manage-secrets runtime-config-convergence; do \
-      cd "/opt/moltbot/extensions/$ext" && \
+RUN set -eu; \
+    for ext in github-apps remote-acpx manage-secrets runtime-config-convergence; do \
+      cd "/opt/moltbot/extensions/$ext"; \
       npm install --production --ignore-scripts; \
     done
 
 USER node
+
+# Exercise the installed host loader and production worker dependencies on each
+# target architecture before publishing an application image.
+RUN node /opt/moltbot/extensions/remote-acpx/test/image-smoke.mjs

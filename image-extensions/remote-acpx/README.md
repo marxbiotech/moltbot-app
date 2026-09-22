@@ -143,11 +143,18 @@ starts its own Gateway and node, performs real pairing and approval, verifies a
 stops its processes and removes its temporary state. Real provider credentials
 and networking between different machines remain deployment checks.
 
-The image's OpenClaw base must contain the public ACP backend contract. Building
-or publishing a new base image and updating live Gateway/node deployments are
-separate from this implementation.
+## Images
 
-The application Dockerfile still pins the legacy release image. Keep this PR in
-draft until a reviewed base image containing the matching core commit is built
-and pinned there; building or deploying that legacy image with this new plugin
-is unsupported.
+The application Dockerfile pins
+`ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.1`, which contains the public ACP
+backend contract. The host package version remains `2026.9.5`; the `mb` prefix
+and beta suffix identify the fork's image release.
+
+Application image tags derive from that base version and the application commit:
+`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-beta.1-<short-commit>`.
+Feature-branch builds publish only that versioned tag. The image build runs
+`test/image-smoke.mjs` as the non-root runtime user to check actual plugin
+registration and the production worker imports on each target architecture.
+
+Publishing an image does not update an existing Gateway or paired node. Both
+hosts still require the matching fork runtime and this plugin configuration.
