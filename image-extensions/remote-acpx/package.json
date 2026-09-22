@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "acpx": "0.16.0",
+    "acpx": "0.19.1",
     "tsx": "4.23.13",
     "zod": "4.6.2"
   },

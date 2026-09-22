@@ -19,6 +19,7 @@ import {
   encodeMessage,
   handleSchema,
   parseRequest,
+  permissionResponse,
   serverMessageSchema,
   type ClientMessage,
   type Owner,
@@ -365,12 +366,15 @@ export function createRemoteAcpxRuntime(
     const started = deferred<void>();
     const local = new AbortController();
     const signal = AbortSignal.any([local.signal, lifetime.signal]);
+    const interactions = new AbortController();
+    const interactionSignal = AbortSignal.any([signal, interactions.signal]);
     let dispatchAttempted = false;
     let cancelRequested = false;
     let channel: Channel | undefined;
     let finished = false;
     let cancellation: Promise<void> | undefined;
     const elicitationIds = new Set<string>();
+    const permissionIds = new Set<string>();
     const onCallerAbort = () => {
       void cancel({ reason: "Caller cancelled the remote ACP turn" });
     };
@@ -391,6 +395,7 @@ export function createRemoteAcpxRuntime(
               mode: input.mode,
               requestId: input.requestId,
               elicitation: !!input.onElicitation,
+              permissions: !!input.onPermissionRequest,
             },
           });
           channel = await open(nodeId, request, signal, () => {
@@ -415,15 +420,53 @@ export function createRemoteAcpxRuntime(
               // Do not await UI input in the delivery callback: cancellation and later frames must flow.
               void (async () => {
                 const response = input.onElicitation
-                  ? await input.onElicitation(message.request, { requestId: message.id, signal })
+                  ? await input.onElicitation(message.request, {
+                      requestId: message.id,
+                      signal: interactionSignal,
+                    })
                   : { action: "cancel" as const };
-                if (!finished && !signal.aborted)
+                if (!finished && !interactionSignal.aborted)
                   await channel?.send(
                     encodeMessage({ type: "elicitation_response", id: message.id, response }),
                   );
               })()
                 .catch((error) => local.abort(error))
                 .finally(() => elicitationIds.delete(message.id));
+              return;
+            }
+            if (message.type === "permission") {
+              if (permissionIds.has(message.id))
+                throw new Error("Duplicate remote ACP permission request");
+              if (permissionIds.size >= 32)
+                throw new Error("Too many pending remote ACP permission requests");
+              if (
+                message.request.sessionId !== handle.backendSessionId ||
+                message.request.raw.sessionId !== message.request.sessionId
+              )
+                throw new Error("Remote ACP permission belongs to another session");
+              permissionIds.add(message.id);
+              // Human response must not block cancellation or event delivery.
+              void (async () => {
+                let response: unknown;
+                try {
+                  if (!interactionSignal.aborted)
+                    response = await input.onPermissionRequest?.(message.request, {
+                      signal: interactionSignal,
+                    });
+                } catch {
+                  /* A failed approval request is a cancellation, never a fallback grant. */
+                }
+                if (!finished && !interactionSignal.aborted)
+                  await channel?.send(
+                    encodeMessage({
+                      type: "permission_response",
+                      id: message.id,
+                      response: permissionResponse(message.request, response),
+                    }),
+                  );
+              })()
+                .catch((error) => local.abort(error))
+                .finally(() => permissionIds.delete(message.id));
               return;
             }
             throw new Error("Unexpected remote ACP turn frame");
@@ -461,6 +504,7 @@ export function createRemoteAcpxRuntime(
     async function cancel(args?: { reason?: string }) {
       if (finished) return;
       cancelRequested = true;
+      interactions.abort(new Error(args?.reason ?? "Remote ACP permission owner cancelled"));
       cancellation ??= (async () => {
         try {
           if (channel)

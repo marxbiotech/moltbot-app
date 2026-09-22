@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 
-export async function startGatewayModel({ skillPath, cwd }) {
+export async function startGatewayModel({ skillPath, cwd, task = "remote-agent-owned-prompt" }) {
   const state = { requests: 0, skillRead: false, spawned: false, completed: false, errors: [] };
   const server = http.createServer(async (request, response) => {
     try {
@@ -18,7 +18,10 @@ export async function startGatewayModel({ skillPath, cwd }) {
       const toolResults = messages.filter((message) => message.role === "tool");
       let tool;
       let content;
-      if (text.includes("remote-agent-owned-prompt") && text.includes('\\"history\\"')) {
+      if (
+        text.includes(task) &&
+        text.includes(task.startsWith("permission-write") ? '\\"answer\\"' : '\\"history\\"')
+      ) {
         state.completed = true;
         content = "REMOTE-ACP-PARENT-RESULT: remote agent completed the requested work.";
       } else if (!state.skillRead) {
@@ -45,7 +48,7 @@ export async function startGatewayModel({ skillPath, cwd }) {
             cwd,
             mode: "run",
             streamTo: "parent",
-            task: "remote-agent-owned-prompt",
+            task,
           },
         };
         state.spawned = true;

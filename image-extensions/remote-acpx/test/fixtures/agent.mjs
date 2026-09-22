@@ -8,6 +8,7 @@ const directory = process.argv[2];
 const sessions = new Map();
 const pending = new Map();
 const clientRequests = new Map();
+let loadNumber = 0;
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const file = (id) => path.join(directory, `${id}.json`);
 const save = (id) => {
@@ -33,6 +34,17 @@ const describe = (state) => ({
     ],
   },
   configOptions: [
+    {
+      id: "mode",
+      name: "Mode",
+      type: "select",
+      category: "mode",
+      currentValue: state.mode,
+      options: [
+        { value: "normal", name: "Normal" },
+        { value: "review", name: "Review" },
+      ],
+    },
     {
       id: "tone",
       name: "Tone",
@@ -85,6 +97,10 @@ async function dispatch(method, params = {}) {
   }
   if (method === "session/load") {
     const state = JSON.parse(await fs.readFile(file(params.sessionId), "utf8"));
+    if (process.argv.includes("--reset-mode-on-load")) state.mode = "normal";
+    const counter = path.join(directory, "loads-count");
+    loadNumber = Number(await fs.readFile(counter, "utf8").catch(() => "0")) + 1;
+    await fs.writeFile(counter, String(loadNumber));
     sessions.set(params.sessionId, state);
     return describe(state);
   }
@@ -110,10 +126,23 @@ async function dispatch(method, params = {}) {
     return {};
   }
   if (method === "session/set_config_option") {
-    if (params.configId !== "tone") throw new Error("unknown option");
-    state.tone = params.value;
+    if (params.configId === "mode") {
+      if (!["normal", "review"].includes(params.value)) throw new Error("unsupported mode");
+      state.mode = params.value;
+      if (loadNumber >= 2 && process.argv.includes("--replay-mode-clamp")) state.mode = "normal";
+    } else if (params.configId === "tone") state.tone = params.value;
+    else throw new Error("unknown option");
     await save(params.sessionId);
-    return { configOptions: describe(state).configOptions };
+    return {
+      configOptions: describe(state).configOptions.filter(
+        (option) =>
+          !(
+            loadNumber >= 2 &&
+            process.argv.includes("--replay-mode-remove") &&
+            option.id === "mode"
+          ),
+      ),
+    };
   }
   if (method === "session/prompt") {
     const text = params.prompt
@@ -142,6 +171,29 @@ async function dispatch(method, params = {}) {
           required: ["answer"],
         },
       });
+      chunk(params.sessionId, JSON.stringify({ answer }));
+      return { stopReason: "end_turn" };
+    }
+    if (text.startsWith("permission-write")) {
+      const options =
+        text === "permission-write-permanent-only"
+          ? [{ optionId: "forever", kind: "allow_always", name: "Allow permanently" }]
+          : [
+              { optionId: "once", kind: "allow_once", name: "Allow once" },
+              { optionId: "no", kind: "reject_once", name: "Deny" },
+            ];
+      const answer = await askClient("session/request_permission", {
+        sessionId: params.sessionId,
+        toolCall: {
+          toolCallId: randomUUID(),
+          title: "Write the isolated fixture file",
+          kind: "edit",
+          rawInput: { path: path.join(state.cwd, "approved.txt"), content: "approved\n" },
+        },
+        options,
+      });
+      if (answer.outcome?.outcome === "selected" && answer.outcome.optionId === "once")
+        await fs.writeFile(path.join(state.cwd, "approved.txt"), "approved\n");
       chunk(params.sessionId, JSON.stringify({ answer }));
       return { stopReason: "end_turn" };
     }

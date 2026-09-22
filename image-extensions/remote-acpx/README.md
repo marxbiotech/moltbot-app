@@ -1,6 +1,6 @@
 # Remote ACPX for v2026.9.5
 
-This plugin lets a Gateway agent run ACP coding sessions through `acpx@0.16.0`
+This plugin lets a Gateway agent run ACP coding sessions through `acpx@0.19.1`
 on one explicitly selected paired node. The Gateway uses OpenClaw's ACP session,
 task, cancellation, and reply delivery owners. Workspaces, harness processes,
 credentials, and acpx records remain on the node.
@@ -8,6 +8,8 @@ credentials, and acpx records remain on the node.
 Use the v2026.9.5 fork containing `openclaw/plugin-sdk/acp-backend` on both hosts.
 Autonomous execution also requires the node host's
 `prepareConfiguredExecAuthorization()` capability, included in image beta.2.
+Native permission relay additionally requires this revision's optional
+`AcpRuntimeTurnInput.onPermissionRequest` host callback on the Gateway.
 The unmodified upstream package has the node transport but keeps ACP backend
 registration behind a private SDK facade. This plugin requires the fork's small
 public contract addition; it does not contain a private SDK fallback.
@@ -98,7 +100,8 @@ Node plugin configuration:
             "agents": {
               "claude": ["/absolute/path/to/claude-agent-acp"]
             },
-            "permissionMode": "approve-reads"
+            "permissionMode": "deny-all",
+            "nativeModes": { "claude": "auto" }
           }
         }
       }
@@ -136,11 +139,55 @@ execution. Config reload, policy tightening, disconnect, and invocation closure
 invalidate the relevant authority. No plugin approval cache or fabricated
 Session Full grant is used.
 
-`node.permissionMode` independently controls the harness's file/tool requests
-(`approve-reads`, `approve-all`, or `deny-all`). For coding work that should edit
-and run commands autonomously, the operator must also choose an appropriate
-harness permission mode. It never overrides node execution policy. Cancellation
-of an admitted worker needs no new approval.
+For normal coding with human escalation, keep `node.permissionMode: "deny-all"`
+and configure the harness's native permission mode. Claude ACP 0.31.4 supports
+`nativeModes: { "claude": "auto" }` when its model advertises auto support;
+Codex ACP 1.1.2 supports `{ "codex": "agent" }` (workspace-write sandbox and
+on-request approvals). Keys are **OpenClaw owner agent IDs**, matching
+`agents.entries`, not the parent coordinator. These are native harness policies:
+ordinary permitted writes and tests need no human click. An unsupported mode
+fails before prompting; it does not silently enable bypass.
+
+The node applies and verifies the advertised `mode` config option before
+initialization completes and checks the actual reconnected client's checkpoint
+at the synchronous prompt admission boundary. A silently changed or removed
+mode blocks the prompt. Agent-requested mode changes
+cannot override a pin; while pinned, only advertised model/reasoning config
+controls remain changeable. The node's process-launch authority does not grant
+the harness permission to bypass its own policy. `cwd` is a sandbox boundary
+only when the chosen native harness enforces one; Claude auto is a native
+permission classifier, not a filesystem sandbox.
+
+Unresolved native `session/request_permission` requests return over the owning
+turn's duplex channel to core's existing approval owner. Core routes spawned
+children through their canonical parent conversation. Configure native
+Discord/Telegram/Slack approval handlers and their approvers as usual. The
+request offers **Allow once** and **Deny**; permanent native grants are not
+forwarded. Cancellation, disconnect, timeout, missing reviewer, or callback
+failure cancels the permission. Late answers cannot release a stopped worker.
+No approval manager, grant cache, or model-powered reviewer is added by the plugin.
+
+`deny-all` is the acpx fallback, not the native harness mode. The plugin disables
+acpx's client-hosted filesystem and terminal capabilities through its public
+runtime options, so supported adapters use their native tools and native policy.
+This requires acpx 0.19.1, which also restores modern mode settings on reconnect.
+Changing fallback to `approve-all` is not a substitute for native authorization.
+Cancellation of an admitted worker needs no new approval.
+
+For Codex, preserve human escalation even if the node account's normal Codex
+config uses Guardian: an operator-owned argv can be
+`["/usr/bin/env", "CODEX_CONFIG={\"approvals_reviewer\":\"user\"}", "CODEX_PATH=/absolute/path/to/codex", "/absolute/path/to/codex-acp"]`.
+This overlay applies to new and resumed threads; it leaves the native `agent`
+sandbox in place. Treat the JSON assignment as one argv, with no shell quoting.
+Pin a CLI version that supports the configured model; an adapter's bundled CLI
+may lag behind the CLI already installed on the node.
+
+Grok 1.0.30 selects native auto at process start:
+`["/absolute/path/to/grok", "--permission-mode", "auto", "agent", "--no-leader", "stdio"]`.
+Do not add a Grok `nativeModes` entry: its ACP mode setter is a no-op and its
+config does not advertise a mode option. The operator-controlled CLI flag owns
+that selection. Grok falls back to native execution when the client terminal
+capability is disabled; its permission requests still use the same callback.
 
 ## Use and lifecycle
 
@@ -210,16 +257,20 @@ and networking between different machines remain deployment checks.
 `node test/live-gateway.mjs --agent-spawn` additionally uses a deterministic
 model peer to exercise skill discovery/read, the real agent tool call,
 configured node authorization without a reviewer, and parent completion delivery.
+`--permission-allow` and `--permission-deny` exercise the same agent-owned spawn
+through the real Gateway approval owner with a synthetic native write request;
+only the single native operation requests approval, and only Allow once writes
+the temporary file. They never connect to a real messaging account.
 
 ## Images
 
 The application Dockerfile pins
-`ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.2`, which contains the public ACP
-backend contract and configured node execution guard. The host package version remains `2026.9.5`; the `mb` prefix
+`ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.3`, which contains the public ACP
+backend contract, configured node execution guard, and admitted-run native permission relay. The host package version remains `2026.9.5`; the `mb` prefix
 and beta suffix identify the fork's image release.
 
 Application image tags derive from that base version and the application commit:
-`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-beta.2-<short-commit>`.
+`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-beta.3-<short-commit>`.
 Feature-branch builds publish only that versioned tag. The image build runs
 `test/image-smoke.mjs` as the non-root runtime user to check actual plugin
 registration, agent skill discovery, and production worker imports on each target architecture.

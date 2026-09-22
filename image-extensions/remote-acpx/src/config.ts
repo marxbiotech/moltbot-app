@@ -12,6 +12,8 @@ export const configSchema = z.strictObject({
       cwd: absolutePath,
       stateDir: absolutePath,
       agents: z.record(z.string().min(1), z.array(z.string().min(1)).min(1)).default({}),
+      /** Native permission modes pinned by OpenClaw owner agent ID, never by a prompt. */
+      nativeModes: z.record(z.string().min(1), z.string().min(1)).optional(),
       permissionMode: z.enum(["approve-all", "approve-reads", "deny-all"]).default("approve-reads"),
     })
     .optional(),

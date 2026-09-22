@@ -59,6 +59,7 @@ export const requestSchema = z.discriminatedUnion("op", [
       requestId: text,
       attachments: z.array(z.strictObject({ mediaType: text, data: z.string() })).optional(),
       elicitation: z.boolean().optional(),
+      permissions: z.boolean().optional(),
     }),
   }),
   z.strictObject({ op: z.literal("status"), owner: ownerSchema, input: handleInput }),
@@ -104,6 +105,50 @@ export const envelopeSchema = z.strictObject({
 export type ElicitationHandler = NonNullable<AcpRuntimeTurnInput["onElicitation"]>;
 export type ElicitationRequest = Parameters<ElicitationHandler>[0];
 export type ElicitationResponse = Awaited<ReturnType<ElicitationHandler>>;
+export type PermissionHandler = NonNullable<AcpRuntimeTurnInput["onPermissionRequest"]>;
+export type PermissionRequest = Parameters<PermissionHandler>[0];
+// Permanent grants are intentionally not part of the remote transport.
+export const permissionResponseSchema = z.strictObject({
+  outcome: z.enum(["allow_once", "reject_once", "cancel"]),
+});
+export type PermissionResponse = z.infer<typeof permissionResponseSchema>;
+const permissionRequestSchema = z
+  .object({
+    sessionId: text,
+    inferredKind: z.string().optional(),
+    raw: z
+      .object({
+        sessionId: text,
+        toolCall: z
+          .object({
+            toolCallId: text,
+            title: z.string().nullable().optional(),
+            kind: z.string().nullable().optional(),
+            rawInput: z.unknown().optional(),
+            locations: z
+              .array(z.object({ path: z.string(), line: z.number().nullable().optional() }))
+              .nullable()
+              .optional(),
+          })
+          .catchall(z.unknown()),
+        options: z.array(
+          z.object({ optionId: text, kind: text, name: z.string() }).catchall(z.unknown()),
+        ),
+      })
+      .catchall(z.unknown()),
+  })
+  .transform((request) => ({ ...request, inferredKind: request.inferredKind }));
+/** acpx otherwise falls back from allow_once to allow_always. Never widen a grant. */
+export function permissionResponse(request: PermissionRequest, value: unknown): PermissionResponse {
+  const parsed = permissionResponseSchema.safeParse(value);
+  if (
+    !parsed.success ||
+    (parsed.data.outcome === "allow_once" &&
+      !request.raw.options.some((option) => option.kind === "allow_once"))
+  )
+    return { outcome: "cancel" };
+  return parsed.data;
+}
 const responseSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("accept"),
@@ -125,6 +170,11 @@ const responseSchema = z.discriminatedUnion("action", [
 export const clientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("cancel"), reason: z.string().optional() }),
   z.strictObject({ type: z.literal("elicitation_response"), id: text, response: responseSchema }),
+  z.strictObject({
+    type: z.literal("permission_response"),
+    id: text,
+    response: permissionResponseSchema,
+  }),
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 export type WorkerStart = { type: "start"; request: Request; config: NodeConfig };
@@ -135,6 +185,7 @@ export type ServerMessage =
   | { type: "result"; result: AcpRuntimeTurnResult }
   | { type: "value"; value: unknown }
   | { type: "elicitation"; id: string; request: ElicitationRequest }
+  | { type: "permission"; id: string; request: PermissionRequest }
   | { type: "error"; message: string; code?: string };
 
 export function encodeMessage(value: unknown): Uint8Array {
@@ -227,4 +278,5 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     request: z.object({ mode: z.string(), message: z.string() }).catchall(z.unknown()),
   }),
   z.strictObject({ type: z.literal("error"), message: z.string(), code: z.string().optional() }),
+  z.strictObject({ type: z.literal("permission"), id: text, request: permissionRequestSchema }),
 ]);

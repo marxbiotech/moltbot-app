@@ -85,6 +85,12 @@
             "default": "approve-reads",
             "type": "string",
             "enum": ["approve-all", "approve-reads", "deny-all"]
+          },
+          "nativeModes": {
+            "type": "object",
+            "propertyNames": { "type": "string", "minLength": 1 },
+            "additionalProperties": { "type": "string", "minLength": 1 },
+            "description": "Pin each OpenClaw owner agent to an advertised native mode (for example claude: auto, codex: agent). Verified via ACP mode config; unsupported modes fail closed. Use deny-all fallback with native permission callbacks."
           }
         },
         "required": ["cwd", "stateDir"],

@@ -79,9 +79,23 @@ supported thread.
 ## Failure and recovery
 
 Execution authorization comes from the Gateway/node policy, independently of
-the coding harness's own file/tool permissions. Never self-approve requests or
-change policy to get past a denial. If approval is required, surface the actual
-request; do not tell the user to replace your tool call with `/acp`.
+the coding harness's own file/tool permissions. With configured native auto or
+workspace-write modes, ordinary authorized editing and testing can proceed.
+Writing a file is not itself a reason to ask for blanket access or stop the task.
+
+When the harness needs human permission, core sends the actual request through
+the originating conversation's configured approval channel. Keep the current
+task alive while it waits; do not spawn a replacement. The user can allow the
+specific operation once or deny it. Never resolve your own approval, invent an
+approval, change the native mode, or ask for bypass/approve-all to get past a
+denial. A denied or expired request grants no permission. Explain what is
+blocked and continue only work that remains authorized. Do not tell the user to
+replace your tool call with `/acp`.
+
+If the user cancels, cancel the owned core task. Pending permission requests are
+revoked with it; a later click cannot authorize a new task. A permission request
+is different from a harness question about requirements: use each request's own
+response flow rather than treating an answer as execution authorization.
 
 For a confirmed pre-dispatch denial, say that work did not start. A dispatch or
 task-registration error can occur after work started, even when the tool returns

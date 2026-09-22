@@ -65,7 +65,12 @@ function mailbox() {
  */
 export async function createPluginHarness(
   t: TestContext,
-  options: { persistOnPrompt?: boolean } = {},
+  options: {
+    persistOnPrompt?: boolean;
+    nativeMode?: string;
+    resetModeOnLoad?: boolean;
+    replayMismatch?: "clamp" | "remove";
+  } = {},
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-acpx-integration-"));
   const cwd = path.join(root, "node-workspace");
@@ -83,9 +88,12 @@ export async function createPluginHarness(
           fileURLToPath(new URL("../fixtures/agent.mjs", import.meta.url)),
           fixtureState,
           ...(options.persistOnPrompt ? ["--persist-on-prompt"] : []),
+          ...(options.resetModeOnLoad ? ["--reset-mode-on-load"] : []),
+          ...(options.replayMismatch ? [`--replay-mode-${options.replayMismatch}`] : []),
         ],
       },
       permissionMode: "deny-all",
+      ...(options.nativeMode ? { nativeModes: { main: options.nativeMode } } : {}),
     },
   });
   const logger = { info() {}, warn() {}, error() {}, debug() {} };

@@ -21,7 +21,12 @@ const logs = new Map();
 let client;
 let approvalTimer;
 let approvalRun = Promise.resolve();
-const agentSpawn = process.argv.includes("--agent-spawn");
+const permissionDecision = process.argv.includes("--permission-allow")
+  ? "allow-once"
+  : process.argv.includes("--permission-deny")
+    ? "deny"
+    : undefined;
+const agentSpawn = process.argv.includes("--agent-spawn") || !!permissionDecision;
 let model;
 const token = randomBytes(24).toString("hex");
 const port = await new Promise((resolve, reject) => {
@@ -146,6 +151,7 @@ try {
     model = await startGatewayModel({
       cwd,
       skillPath: path.join(pluginRoot, "skills/remote-acp-router/SKILL.md"),
+      ...(permissionDecision ? { task: "permission-write" } : {}),
     });
   const nodeConfig = {
     cwd,
@@ -333,14 +339,24 @@ try {
 
   let approvals = 0;
   let approvalError;
-  if (!agentSpawn)
+  const permissionRequests = [];
+  if (!agentSpawn || permissionDecision)
     approvalTimer = setInterval(() => {
       approvalRun = approvalRun
         .then(async () => {
           const pending = await request("plugin.approval.list");
           for (const entry of pending.requests ?? pending.pending ?? pending) {
             if (entry.request?.pluginId !== "remote-acpx") continue;
-            await request("plugin.approval.resolve", { id: entry.id, decision: "allow-once" });
+            if (permissionDecision) {
+              assert.equal(entry.request.toolName, "acp.edit");
+              assert.match(entry.request.sessionKey, /^agent:fixture:acp:/);
+              assert.deepEqual(entry.request.allowedDecisions, ["allow-once", "deny"]);
+              permissionRequests.push(entry.request);
+            }
+            await request("plugin.approval.resolve", {
+              id: entry.id,
+              decision: permissionDecision ?? "allow-once",
+            });
             approvals++;
           }
         })
@@ -424,6 +440,14 @@ try {
     assert.equal(model.state.skillRead, true);
     assert.equal(model.state.spawned, true);
     assert.equal(model.state.completed, true);
+    if (approvalError) throw approvalError;
+    if (permissionDecision) {
+      assert.equal(approvals, 1, "only the native write needs approval; setup and polling do not");
+      assert.equal(permissionRequests[0].sessionKey, model.state.childSessionKey);
+      if (permissionDecision === "allow-once")
+        assert.equal(await readFile(path.join(cwd, "approved.txt"), "utf8"), "approved\n");
+      else await assert.rejects(readFile(path.join(cwd, "approved.txt")), { code: "ENOENT" });
+    }
     const pending = await request("plugin.approval.list");
     assert.equal(
       (pending.requests ?? pending.pending ?? pending).length,
@@ -435,7 +459,8 @@ try {
         ok: true,
         ingress: "Gateway agent → sessions_spawn → remote ACP node → parent completion",
         skill: "remote-acp-router",
-        approvals: 0,
+        approvals,
+        ...(permissionDecision ? { nativePermissionDecision: permissionDecision } : {}),
         model: "deterministic test peer",
       }),
     );

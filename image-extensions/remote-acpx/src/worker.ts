@@ -4,12 +4,15 @@ import {
   clientMessageSchema,
   parseRequest,
   retainsWorker,
+  permissionResponse,
   type ElicitationResponse,
+  type PermissionResponse,
   type ServerMessage,
 } from "./protocol.js";
 import { createWorkerRuntime } from "./worker-runtime.js";
 
 const pending = new Map<string, (response: ElicitationResponse) => void>();
+const pendingPermissions = new Map<string, (response: PermissionResponse) => void>();
 let runtime: ReturnType<typeof createWorkerRuntime> | undefined;
 let controller: AbortController | undefined;
 let running = false;
@@ -33,6 +36,8 @@ function stop(): void {
   controller?.abort(new Error("ACP worker cancelled"));
   for (const resolve of pending.values()) resolve({ action: "cancel" });
   pending.clear();
+  for (const resolve of pendingPermissions.values()) resolve({ outcome: "cancel" });
+  pendingPermissions.clear();
   if (!running) void shutdown().catch(() => process.exit(1));
 }
 
@@ -46,6 +51,32 @@ async function start(value: Record<string, unknown>): Promise<void> {
   const terminal = await runtime.run(request, {
     signal: current.signal,
     send,
+    onPermissionRequest: async (permission, context) => {
+      if (
+        request.op !== "turn" ||
+        !request.input.permissions ||
+        current.signal.aborted ||
+        context.signal.aborted ||
+        pendingPermissions.size >= 32
+      )
+        return { outcome: "cancel" };
+      const id = randomUUID();
+      const signal = AbortSignal.any([current.signal, context.signal]);
+      let cancel: () => void = () => {};
+      const response = new Promise<PermissionResponse>((resolve) => {
+        pendingPermissions.set(id, resolve);
+        cancel = () => resolve({ outcome: "cancel" });
+        signal.addEventListener("abort", cancel, { once: true });
+      });
+      try {
+        await send({ type: "permission", id, request: permission });
+        const value = await response;
+        return signal.aborted ? { outcome: "cancel" } : permissionResponse(permission, value);
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        pendingPermissions.delete(id);
+      }
+    },
     onElicitation: async (elicitation, context) => {
       if (
         request.op !== "turn" ||
@@ -106,6 +137,8 @@ process.on("message", (value: unknown) => {
     return;
   }
   if (parsed.data.type === "cancel") stop();
+  else if (parsed.data.type === "permission_response")
+    pendingPermissions.get(parsed.data.id)?.(parsed.data.response);
   else pending.get(parsed.data.id)?.(parsed.data.response);
 });
 process.on("disconnect", stop);

@@ -241,3 +241,166 @@ test(
     assert.deepEqual(JSON.parse(output.text).history, ["new generation"]);
   },
 );
+
+for (const outcome of [
+  "allow_once",
+  "reject_once",
+  "cancel",
+  "throw",
+  "undefined",
+  "allow_always",
+] as const) {
+  test(
+    `native permission ${outcome} crosses the real acpx worker without broadening authority`,
+    { timeout: 30_000 },
+    async (t) => {
+      const host = await createPluginHarness(t);
+      const handle = await host.runtime.ensureSession(ensureInput);
+      let asked = 0;
+      const output = await collect(
+        await start(host.runtime, handle, "permission-write", {
+          onPermissionRequest: async (request, { signal }) => {
+            asked++;
+            assert.equal(signal.aborted, false);
+            assert.equal(request.sessionId, handle.backendSessionId);
+            assert.equal(request.raw.toolCall.kind, "edit");
+            if (outcome === "throw") throw new Error("approval delivery failed");
+            return outcome === "undefined" ? undefined : { outcome };
+          },
+        }),
+      );
+      assert.equal(asked, 1);
+      assert.equal(output.result.status, "completed", JSON.stringify(output.result));
+      if (outcome === "allow_once")
+        assert.equal(await readFile(path.join(host.cwd, "approved.txt"), "utf8"), "approved\n");
+      else await assert.rejects(readFile(path.join(host.cwd, "approved.txt")), { code: "ENOENT" });
+    },
+  );
+}
+
+test(
+  "single-use permission never falls back to a permanent-only option",
+  { timeout: 30_000 },
+  async (t) => {
+    const host = await createPluginHarness(t);
+    const handle = await host.runtime.ensureSession(ensureInput);
+    const output = await collect(
+      await start(host.runtime, handle, "permission-write-permanent-only", {
+        onPermissionRequest: async () => ({ outcome: "allow_once" }),
+      }),
+    );
+    assert.equal(output.result.status, "completed", JSON.stringify(output.result));
+    assert.equal(JSON.parse(output.text).answer.outcome.outcome, "cancelled");
+    await assert.rejects(readFile(path.join(host.cwd, "approved.txt")), { code: "ENOENT" });
+  },
+);
+
+for (const end of ["cancel", "disconnect"] as const) {
+  test(
+    `${end} revokes a pending human permission and ignores its late approval`,
+    { timeout: 30_000 },
+    async (t) => {
+      const host = await createPluginHarness(t);
+      const handle = await host.runtime.ensureSession(ensureInput);
+      let notify!: () => void;
+      const requested = new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+      let approve!: (value: { outcome: "allow_once" }) => void;
+      let scope!: AbortSignal;
+      const turn = await start(host.runtime, handle, "permission-write", {
+        onPermissionRequest: async (_request, { signal }) => {
+          scope = signal;
+          notify();
+          return await new Promise((resolve) => {
+            approve = resolve;
+          });
+        },
+      });
+      await requested;
+      if (end === "cancel") await turn.cancel({ reason: "user stopped" });
+      else await host.disconnect();
+      assert.equal(scope.aborted, true);
+      approve({ outcome: "allow_once" });
+      await turn.result;
+      await assert.rejects(readFile(path.join(host.cwd, "approved.txt")), { code: "ENOENT" });
+      if (end === "cancel") {
+        const next = await collect(
+          await start(host.runtime, handle, "permission-write", {
+            onPermissionRequest: async () => ({ outcome: "reject_once" }),
+          }),
+        );
+        assert.equal(next.result.status, "completed", JSON.stringify(next.result));
+        await assert.rejects(readFile(path.join(host.cwd, "approved.txt")), { code: "ENOENT" });
+      }
+    },
+  );
+}
+
+test(
+  "operator native mode is confirmed before prompts and cannot be widened by runtime controls",
+  { timeout: 30_000 },
+  async (t) => {
+    const host = await createPluginHarness(t, { nativeMode: "review" });
+    const handle = await host.runtime.ensureSession(ensureInput);
+    await assert.rejects(host.runtime.setMode!({ handle, mode: "normal" }), /pinned/);
+    await assert.rejects(
+      host.runtime.setConfigOption!({ handle, key: "mode", value: "normal" }),
+      /pinned/,
+    );
+    const output = await collect(await start(host.runtime, handle, "check mode"));
+    assert.equal(output.result.status, "completed", JSON.stringify(output.result));
+    assert.equal(JSON.parse(output.text).mode, "review");
+  },
+);
+
+test(
+  "an unavailable native mode fails initialization before any prompt",
+  { timeout: 30_000 },
+  async (t) => {
+    const host = await createPluginHarness(t, { nativeMode: "auto-unavailable" });
+    await assert.rejects(host.runtime.ensureSession(ensureInput), /unsupported mode/);
+    const calls = await readFile(path.join(host.fixtureState, "requests.log"), "utf8");
+    assert.equal(calls.includes("session/prompt"), false);
+  },
+);
+
+test(
+  "native mode is reapplied to the actual prompt client after process restart",
+  { timeout: 30_000 },
+  async (t) => {
+    const host = await createPluginHarness(t, { nativeMode: "review", resetModeOnLoad: true });
+    const handle = await host.runtime.ensureSession(ensureInput);
+    for (const text of ["first pinned turn", "reconnected pinned turn"]) {
+      const output = await collect(await start(host.runtime, handle, text));
+      assert.equal(output.result.status, "completed", JSON.stringify(output.result));
+      assert.equal(JSON.parse(output.text).mode, "review");
+    }
+  },
+);
+
+for (const replayMismatch of ["clamp", "remove"] as const) {
+  test(
+    `native replay ${replayMismatch} cannot dispatch a prompt under a different permission mode`,
+    { timeout: 30_000 },
+    async (t) => {
+      const host = await createPluginHarness(t, {
+        nativeMode: "review",
+        resetModeOnLoad: true,
+        replayMismatch,
+      });
+      const handle = await host.runtime.ensureSession(ensureInput);
+      assert.equal(
+        (await collect(await start(host.runtime, handle, "first pinned turn"))).result.status,
+        "completed",
+      );
+      const second = await collect(await start(host.runtime, handle, "must not start"));
+      assert.equal(second.result.status, "failed");
+      assert.match(JSON.stringify(second.result), /configured native mode/);
+      const calls = (await readFile(path.join(host.fixtureState, "requests.log"), "utf8"))
+        .trim()
+        .split("\n");
+      assert.equal(calls.filter((method) => method === "session/prompt").length, 1);
+    },
+  );
+}
