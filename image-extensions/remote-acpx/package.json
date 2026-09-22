@@ -1,14 +1,39 @@
 {
   "name": "@moltbot/remote-acpx",
-  "version": "2026.3.12",
+  "version": "2026.9.5",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
-    "typebox": "1.1.33"
+    "acpx": "0.16.0",
+    "tsx": "4.23.13",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "openclaw": "file:../../../openclaw",
+    "typescript": "5.9.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.9.5"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
   },
   "openclaw": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.9.5"
+    },
+    "install": {
+      "minHostVersion": ">=2026.9.5"
+    }
   }
 }

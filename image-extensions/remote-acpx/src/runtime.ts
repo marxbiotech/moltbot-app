@@ -1,479 +1,494 @@
-// Core AcpRuntime implementation for remote dispatch.
-// Sends ACP events to a paired node via WebSocket and yields
-// AcpRuntimeEvent via event-router queue (events arrive as parsed ndjson from event-router.ts).
-
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type {
   AcpRuntime,
-  AcpRuntimeCapabilities,
-  AcpRuntimeEnsureInput,
   AcpRuntimeEvent,
   AcpRuntimeHandle,
+  AcpRuntimeTurn,
   AcpRuntimeTurnInput,
-  PluginLogger,
-} from "openclaw/plugin-sdk/remote-acpx";
+} from "openclaw/plugin-sdk/acp-backend";
+import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
+import type { Config, Target } from "./config.js";
 import {
-  AcpRuntimeError,
-  sendAcpEventToNode,
-  isAcpNodeConnected,
-} from "openclaw/plugin-sdk/remote-acpx";
-import { log } from "./log.js";
-import { resolveNodeId } from "./node-resolver.js";
-import {
-  registerSessionQueue,
-  unregisterSessionQueue,
-  registerSpawnResolver,
-  unregisterSpawnResolver,
-} from "./event-router.js";
+  BACKEND,
+  COMMAND,
+  MAX_BUFFER_BYTES,
+  MAX_MESSAGE_BYTES,
+  decodeMessage,
+  encodeMessage,
+  handleSchema,
+  parseRequest,
+  serverMessageSchema,
+  type ClientMessage,
+  type Owner,
+  type Request,
+  type ServerMessage,
+} from "./protocol.js";
 
-export const REMOTE_ACPX_BACKEND_ID = "remote-acpx";
-
-const HANDLE_PREFIX = "remote-acpx:v1:";
-
-// Config option keys that map cleanly to acpx CLI flags on each turn.
-// Keys outside this list are rejected by the control-plane via configOptionKeys
-// rather than silently dropped. `thinking` is intentionally excluded: acpx CLI
-// has no per-turn flag for it and would require JSON-RPC against a long-lived
-// process, which the per-turn-fresh-spawn model here does not provide.
-const SUPPORTED_CONFIG_OPTION_KEYS = [
-  "model",
-  "timeout",
-  "max_turns",
-  "system_prompt",
-  "append_system_prompt",
-  "allowed_tools",
-  "auth_policy",
-  "approval_policy",
-] as const;
-
-// Gemini CLI model aliases. Mirrors the alias table in
-// openclaw/extensions/google/cli-backend.ts; neither the openclaw node-host
-// turn handler (invoke-acp.ts) nor `gemini --acp` resolves these short names,
-// so we normalize on the gateway side before caching the option.
-// Keep in sync with the upstream source — values are duplicated cross-repo
-// because openclaw does not currently re-export this table from its plugin
-// SDK; consolidating to a shared export is tracked as follow-up work.
-const GEMINI_MODEL_ALIASES: Record<string, string> = {
-  pro: "gemini-3.1-pro-preview",
-  flash: "gemini-3.1-flash-preview",
-  "flash-lite": "gemini-3.1-flash-lite-preview",
-};
-
-/** Resolve a Gemini short alias (`pro`/`flash`/`flash-lite`) to its full model id. Pass-through if unknown. */
-export function normalizeGeminiModel(model: string): string {
-  return GEMINI_MODEL_ALIASES[model] ?? model;
-}
-
-/** Apply per-agent model normalization. Today only `gemini` rewrites; other variants pass through. */
-export function normalizeModelForAgent(agent: string, model: string): string {
-  return agent === "gemini" ? normalizeGeminiModel(model) : model;
-}
-
-// Per-acpSessionId cached config options, applied as CLI flags on each acp.turn.
-// Stored under a global Symbol so the map survives jiti loader reloads, matching
-// the pattern in event-router.ts and session-manager.ts.
-type SessionConfigOptions = Map<string, string>;
-type ConfigCacheState = { options: Map<string, SessionConfigOptions> };
-const CONFIG_CACHE_STATE_KEY = Symbol.for("moltbot.remoteAcpxConfigOptionCache");
-function resolveConfigCacheState(): ConfigCacheState {
-  const g = globalThis as typeof globalThis & { [CONFIG_CACHE_STATE_KEY]?: ConfigCacheState };
-  if (!g[CONFIG_CACHE_STATE_KEY]) {
-    g[CONFIG_CACHE_STATE_KEY] = { options: new Map() };
-  }
-  return g[CONFIG_CACHE_STATE_KEY];
-}
-function getSessionOptions(acpSessionId: string): SessionConfigOptions | undefined {
-  return resolveConfigCacheState().options.get(acpSessionId);
-}
-function setSessionOption(acpSessionId: string, key: string, value: string): void {
-  const state = resolveConfigCacheState();
-  let session = state.options.get(acpSessionId);
-  if (!session) {
-    session = new Map();
-    state.options.set(acpSessionId, session);
-  }
-  session.set(key, value);
-}
-function clearSessionOptions(acpSessionId: string): void {
-  resolveConfigCacheState().options.delete(acpSessionId);
-}
-
-type RemoteHandleState = {
-  acpSessionId: string;
-  nodeId: string;
-  agent: string;
-  cwd: string;
-  sessionName: string;
-};
-
-function encodeHandle(state: RemoteHandleState): string {
-  if (!state.acpSessionId || !state.nodeId || !state.agent) {
-    throw new Error(`encodeHandle: missing required fields: acpSessionId=${state.acpSessionId}, nodeId=${state.nodeId}, agent=${state.agent}`);
-  }
-  return HANDLE_PREFIX + Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
-}
-
-function decodeHandle(runtimeSessionName: string): RemoteHandleState | null {
-  if (!runtimeSessionName.startsWith(HANDLE_PREFIX)) {
-    return null;
-  }
-  try {
-    const raw = Buffer.from(runtimeSessionName.slice(HANDLE_PREFIX.length), "base64url").toString("utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== "object" || parsed === null) {
-      return null;
-    }
-    const obj = parsed as Record<string, unknown>;
-    const acpSessionId = typeof obj.acpSessionId === "string" ? obj.acpSessionId : "";
-    const nodeId = typeof obj.nodeId === "string" ? obj.nodeId : "";
-    const agent = typeof obj.agent === "string" ? obj.agent : "";
-    const cwd = typeof obj.cwd === "string" ? obj.cwd : "";
-    const sessionName = typeof obj.sessionName === "string" ? obj.sessionName : "";
-    if (!acpSessionId || !nodeId || !agent) {
-      return null;
-    }
-    return { acpSessionId, nodeId, agent, cwd, sessionName };
-  } catch (e) {
-    log.warn(`decodeHandle: failed to decode: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  }
-}
-
-/** Extract nodeId from an encoded handle (for session validation). */
-export function getNodeIdFromHandle(handle: AcpRuntimeHandle): string | null {
-  const state = decodeHandle(handle.runtimeSessionName);
-  return state?.nodeId ?? null;
-}
-
-export type RemoteAcpxConfig = {
-  nodeName: string;
-  agentCommand: string;
-  defaultAgent: string;
-  cwd?: string;
-  permissionMode: string;
-  turnTimeoutMs: number;
-};
-
-export class RemoteAcpxRuntime implements AcpRuntime {
-  private readonly config: RemoteAcpxConfig;
-  private readonly logger?: PluginLogger;
-
-  constructor(config: RemoteAcpxConfig, opts?: { logger?: PluginLogger }) {
-    this.config = config;
-    this.logger = opts?.logger;
-  }
-
-  isHealthy(): boolean {
-    try {
-      const nodeId = resolveNodeId(this.config.nodeName);
-      const connected = nodeId !== null && isAcpNodeConnected(nodeId);
-      if (!connected) {
-        log.warn(`isHealthy=false mode=${this.config.nodeName ? "explicit" : "auto-resolve"} nodeId=${nodeId}`);
-      }
-      return connected;
-    } catch (e: unknown) {
-      log.error(`isHealthy exception: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
-    }
-  }
-
-  async ensureSession(input: AcpRuntimeEnsureInput): Promise<AcpRuntimeHandle> {
-    const nodeId = resolveNodeId(this.config.nodeName);
-    if (!nodeId) {
-      throw new AcpRuntimeError(
-        "ACP_BACKEND_UNAVAILABLE",
-        this.config.nodeName
-          ? `Node "${this.config.nodeName}" is not connected.`
-          : "No connected node found. Pair a node with /node pair approve.",
-      );
-    }
-    if (!isAcpNodeConnected(nodeId)) {
-      throw new AcpRuntimeError(
-        "ACP_BACKEND_UNAVAILABLE",
-        this.config.nodeName
-          ? `Node "${this.config.nodeName}" (${nodeId}) is offline.`
-          : `Auto-resolved node (${nodeId}) is offline.`,
-      );
-    }
-
-    const acpSessionId = `racp-${randomUUID()}`;
-    const agent = input.agent || this.config.defaultAgent;
-    const cwd = input.cwd || this.config.cwd || "";
-    const sessionName = input.sessionKey;
-
-    // Seed the per-session config cache from spawn-time options. ensureSession
-    // exposes model/thinking on the input — without this they'd be silently
-    // dropped, since the control-plane only re-pushes them through
-    // setConfigOption *after* ensureSession completes.
-    if (input.model) {
-      setSessionOption(acpSessionId, "model", normalizeModelForAgent(agent, input.model));
-    }
-    if (input.thinking) {
-      // Cached for future use; node-host turn handler ignores it today (no acpx
-      // CLI flag). Kept so a later per-session JSON-RPC path can pick it up.
-      setSessionOption(acpSessionId, "thinking", input.thinking);
-    }
-
-    // Send acp.spawn and wait for acp.spawned response
-    const spawnPromise = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        unregisterSpawnResolver(acpSessionId);
-        reject(new Error("acp.spawn timed out (30s)"));
-      }, 30_000);
-      registerSpawnResolver(acpSessionId, {
-        resolve: () => { clearTimeout(timeout); resolve(); },
-        reject: (err) => { clearTimeout(timeout); reject(err); },
-      });
-    });
-
-    const sent = sendAcpEventToNode(nodeId, "acp.spawn", {
-      acpSessionId,
-      agentCommand: this.config.agentCommand,
-      agent,
-      cwd,
-    });
-    if (!sent) {
-      unregisterSpawnResolver(acpSessionId);
-      throw new AcpRuntimeError(
-        "ACP_BACKEND_UNAVAILABLE",
-        `Failed to send acp.spawn to node ${nodeId}.`,
-      );
-    }
-
-    try {
-      await spawnPromise;
-    } catch (err) {
-      throw new AcpRuntimeError(
-        "ACP_SESSION_INIT_FAILED",
-        `ACP spawn failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    this.logger?.info?.(`ACP session ensured: ${acpSessionId} on node ${nodeId}`);
-
-    return {
-      sessionKey: input.sessionKey,
-      backend: REMOTE_ACPX_BACKEND_ID,
-      runtimeSessionName: encodeHandle({
-        acpSessionId,
-        nodeId,
-        agent,
-        cwd,
-        sessionName,
+type Nodes = OpenClawPluginApi["runtime"]["nodes"];
+type Channel = Awaited<ReturnType<Nodes["openDuplex"]>>;
+const locatorSchema = z.strictObject({
+  v: z.literal(1),
+  nodeId: z.string().min(1),
+  handle: handleSchema,
+});
+const PREFIX = "remote-acpx:v1:";
+const capabilitiesSchema = z.object({
+  controls: z.array(z.enum(["session/set_mode", "session/set_config_option", "session/status"])),
+  configOptionKeys: z.array(z.string()).optional(),
+});
+const statusSchema = z.object({
+  summary: z.string().optional(),
+  acpxRecordId: z.string().optional(),
+  backendSessionId: z.string().optional(),
+  agentSessionId: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+const option = z.object({ value: z.string() });
+const configResultSchema = z
+  .object({
+    configOptions: z.array(
+      z.object({
+        id: z.string(),
+        category: z.string().nullable().optional(),
+        currentValue: z.union([z.string(), z.boolean()]),
+        options: z
+          .union([z.array(option), z.array(z.object({ options: z.array(option) }))])
+          .optional(),
       }),
-      cwd: cwd || undefined,
-    };
+    ),
+  })
+  .optional();
+
+function ownerOf(input: { sessionKey: string; agentId?: string }): Owner {
+  const sessionKey = input.sessionKey.trim().toLowerCase();
+  const encoded = parseAgentSessionKey(sessionKey)?.agentId;
+  const agentId = input.agentId?.trim() ? normalizeAgentId(input.agentId) : encoded;
+  if (!sessionKey || !agentId || (encoded && encoded !== agentId)) {
+    throw new Error(
+      "Remote ACP requires the session's OpenClaw agentId; it must agree with the session key",
+    );
   }
+  return { sessionKey, agentId };
+}
+function decodeHandle(handle: AcpRuntimeHandle) {
+  if (handle.backend !== BACKEND || !handle.runtimeSessionName.startsWith(PREFIX)) {
+    throw new Error("Remote ACP handle is not from this backend; start a new session");
+  }
+  const locator = locatorSchema.parse(
+    JSON.parse(
+      Buffer.from(handle.runtimeSessionName.slice(PREFIX.length), "base64url").toString("utf8"),
+    ),
+  );
+  for (const key of ["sessionKey", "agentId", "cwd", "acpxRecordId", "backendSessionId"] as const) {
+    if (handle[key] !== locator.handle[key])
+      throw new Error(`Remote ACP handle ${key} does not match its locator`);
+  }
+  ownerOf(handle);
+  // Core reconciles the harness's native session ID after status without rewriting
+  // runtimeSessionName. It is an observation, not node affinity or generation authority.
+  return { ...locator, handle: { ...locator.handle, agentSessionId: handle.agentSessionId } };
+}
+function encodeHandle(handle: AcpRuntimeHandle, nodeId: string): AcpRuntimeHandle {
+  return {
+    ...handle,
+    backend: BACKEND,
+    runtimeSessionName:
+      PREFIX + Buffer.from(JSON.stringify({ v: 1, nodeId, handle })).toString("base64url"),
+  };
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  // Optional promptStarted/event consumers must not cause unhandled rejections.
+  void promise.catch(() => {});
+  return { promise, resolve, reject };
+}
+class EventQueue implements AsyncIterable<AcpRuntimeEvent> {
+  private items: Array<{ event: AcpRuntimeEvent; bytes: number }> = [];
+  private bytes = 0;
+  private ended = false;
+  private wake = deferred<void>();
+  push(event: AcpRuntimeEvent) {
+    if (this.ended) return;
+    const bytes = Buffer.byteLength(JSON.stringify(event));
+    if (this.bytes + bytes > MAX_BUFFER_BYTES)
+      throw new Error("Remote ACP event consumer exceeded the 16 MiB buffer; turn cancelled");
+    this.items.push({ event, bytes });
+    this.bytes += bytes;
+    this.wake.resolve();
+  }
+  end(discard = false) {
+    this.ended = true;
+    if (discard) {
+      this.items = [];
+      this.bytes = 0;
+    }
+    this.wake.resolve();
+  }
+  async *[Symbol.asyncIterator]() {
+    while (true) {
+      const item = this.items.shift();
+      if (item) {
+        this.bytes -= item.bytes;
+        yield item.event;
+        continue;
+      }
+      if (this.ended) return;
+      this.wake = deferred<void>();
+      await this.wake.promise;
+    }
+  }
+}
+function terminal(value: unknown, nodeId: string): ServerMessage {
+  const failure = z
+    .object({
+      ok: z.literal(false),
+      error: z.object({ message: z.string(), code: z.string().optional() }),
+    })
+    .safeParse(value);
+  if (failure.success) throw new Error(failure.data.error.message);
+  const response = z
+    .object({
+      ok: z.literal(true),
+      nodeId: z.string(),
+      command: z.literal(COMMAND),
+      payload: z.unknown().optional(),
+      payloadJSON: z.string().nullable().optional(),
+    })
+    .parse(value);
+  if (response.nodeId !== nodeId) throw new Error("Remote ACP response came from another node");
+  return serverMessageSchema.parse(
+    response.payloadJSON ? JSON.parse(response.payloadJSON) : response.payload,
+  );
+}
 
-  async *runTurn(input: AcpRuntimeTurnInput): AsyncIterable<AcpRuntimeEvent> {
-    const state = decodeHandle(input.handle.runtimeSessionName);
-    if (!state) {
-      throw new AcpRuntimeError(
-        "ACP_TURN_FAILED",
-        "Invalid remote-acpx handle.",
+export function createRemoteAcpxRuntime(
+  nodes: Nodes,
+  config: Config,
+): AcpRuntime & { shutdown(): Promise<void> } {
+  const lifetime = new AbortController();
+  const pending = new Set<Promise<unknown>>();
+  function track<T>(work: Promise<T>): Promise<T> {
+    pending.add(work);
+    void work.finally(() => pending.delete(work)).catch(() => {});
+    return work;
+  }
+  function targetFor(owner: Owner): Target {
+    const target = config.targets[owner.agentId] ?? config.target;
+    if (!target)
+      throw new Error(`Configure remote-acpx target.nodeId or targets.${owner.agentId}.nodeId`);
+    return target;
+  }
+  async function open(
+    nodeId: string,
+    request: Request,
+    signal?: AbortSignal,
+    onDispatch?: () => void,
+  ) {
+    lifetime.signal.throwIfAborted();
+    encodeMessage(request);
+    const selected = (await nodes.list({ connected: true })).nodes.find(
+      (node) => node.nodeId === nodeId,
+    );
+    if (!selected)
+      throw new Error(
+        `Paired node ${nodeId} is offline or unavailable; reconnect the same node before retrying`,
+      );
+    if (!selected.commands?.includes(COMMAND) || !selected.invocableCommands?.includes(COMMAND)) {
+      throw new Error(
+        `Enable remote-acpx on node ${nodeId} and allow ${COMMAND} in gateway.nodes.commands.allow`,
       );
     }
-
-    if (!isAcpNodeConnected(state.nodeId)) {
-      throw new AcpRuntimeError(
-        "ACP_BACKEND_UNAVAILABLE",
-        `Node ${state.nodeId} disconnected.`,
-      );
-    }
-
-    // Create an async iterable backed by a queue
-    const eventQueue: AcpRuntimeEvent[] = [];
-    let closed = false;
-    let waiter: ((value: IteratorResult<AcpRuntimeEvent>) => void) | null = null;
-
-    const queueHandle = {
-      push(event: AcpRuntimeEvent) {
-        if (closed) {
-          return;
+    const combined = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+    combined.throwIfAborted();
+    onDispatch?.();
+    return await nodes.openDuplex({
+      nodeId,
+      command: COMMAND,
+      params: parseRequest(request),
+      sessionKey: request.owner.sessionKey,
+      idempotencyKey: randomUUID(),
+      timeoutMs: 0,
+      signal: combined,
+      maxMessageBytes: MAX_MESSAGE_BYTES,
+      maxOutstandingDeliveryBytes: MAX_BUFFER_BYTES,
+    });
+  }
+  async function call(nodeId: string, request: Request, signal?: AbortSignal): Promise<unknown> {
+    return track(
+      (async () => {
+        const channel = await open(nodeId, request, signal);
+        const unsubscribe = channel.onMessage(() => {
+          channel.close();
+          throw new Error("Unexpected streamed message during remote ACP control operation");
+        });
+        try {
+          const message = terminal(await channel.closed, nodeId);
+          if (message.type === "error") throw new Error(message.message);
+          if (message.type !== "value")
+            throw new Error("Remote ACP control completed without a value");
+          return message.value;
+        } finally {
+          unsubscribe();
+          channel.close();
         }
-        if (waiter) {
-          const w = waiter;
-          waiter = null;
-          w({ value: event, done: false });
-        } else {
-          eventQueue.push(event);
-        }
-      },
-      close() {
-        closed = true;
-        if (waiter) {
-          const w = waiter;
-          waiter = null;
-          w({ value: undefined as unknown as AcpRuntimeEvent, done: true });
-        }
-      },
-      error(err: Error) {
-        closed = true;
-        if (waiter) {
-          const w = waiter;
-          waiter = null;
-          w({ value: { type: "error", message: err.message }, done: false });
-        } else {
-          eventQueue.push({ type: "error", message: err.message });
-        }
-      },
-    };
-
-    registerSessionQueue(state.acpSessionId, queueHandle);
-
-    // Handle abort signal
-    const onAbort = () => {
-      queueHandle.push({ type: "error", message: "Session aborted" });
-      queueHandle.close();
-      void this.cancel({ handle: input.handle, reason: "abort-signal" }).catch((e) => {
-        log.error(`cancel on abort failed: ${e instanceof Error ? e.message : String(e)}`);
+      })(),
+    );
+  }
+  function handleRequest<
+    T extends "status" | "capabilities" | "setMode" | "setConfigOption" | "close" | "cancel",
+  >(op: T, input: { handle: AcpRuntimeHandle; [key: string]: unknown }) {
+    const { nodeId, handle } = decodeHandle(input.handle);
+    const request = parseRequest({ op, owner: ownerOf(handle), input: { ...input, handle } });
+    return { nodeId, request };
+  }
+  const runtime: AcpRuntime & { shutdown(): Promise<void> } = {
+    ownerAwareSessions: 1,
+    async shutdown() {
+      lifetime.abort(new Error("Remote ACP plugin stopped"));
+      await Promise.allSettled([...pending]);
+    },
+    async ensureSession(input) {
+      const owner = ownerOf(input);
+      const persisted = input.persistedHandle ? decodeHandle(input.persistedHandle) : undefined;
+      if (
+        persisted &&
+        (persisted.handle.agentId !== owner.agentId ||
+          persisted.handle.sessionKey !== owner.sessionKey)
+      )
+        throw new Error("Remote ACP persisted handle belongs to another session");
+      const target = persisted
+        ? { nodeId: persisted.nodeId, cwd: persisted.handle.cwd }
+        : targetFor(owner);
+      const request = parseRequest({
+        op: "ensure",
+        owner,
+        input: {
+          ...input,
+          ...owner,
+          persistedHandle: persisted?.handle,
+          cwd: input.cwd ?? target.cwd,
+        },
       });
-    };
-    if (input.signal?.aborted) {
-      unregisterSessionQueue(state.acpSessionId);
-      await this.cancel({ handle: input.handle, reason: "abort-signal" });
-      return;
-    }
-    if (input.signal) {
-      input.signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    // Set up turn timeout — uses the captured queueHandle closure
-    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
-    if (this.config.turnTimeoutMs > 0) {
-      timeoutTimer = setTimeout(() => {
-        queueHandle.push({ type: "error", message: `Turn timed out after ${this.config.turnTimeoutMs}ms` });
-        queueHandle.close();
-        void this.cancel({ handle: input.handle, reason: "timeout" }).catch((e) => {
-          log.error(`cancel on timeout failed: ${e instanceof Error ? e.message : String(e)}`);
-        });
-      }, this.config.turnTimeoutMs);
-    }
-
-    // Snapshot the cached config options so the node-host can translate them
-    // into acpx CLI flags on this fresh process invocation. The cache is the
-    // sole record of options applied since spawn — each acpx process is short
-    // lived, so there is no JSON-RPC channel that survives between turns.
-    const sessionOptions = getSessionOptions(state.acpSessionId);
-    const configOptions: Record<string, string> = sessionOptions
-      ? Object.fromEntries(sessionOptions)
-      : {};
-
-    // Send acp.turn event to node
-    const sent = sendAcpEventToNode(state.nodeId, "acp.turn", {
-      acpSessionId: state.acpSessionId,
-      agent: state.agent,
-      text: input.text,
-      sessionName: state.sessionName,
-      cwd: state.cwd,
-      permissionMode: this.config.permissionMode,
-      agentCommand: this.config.agentCommand,
-      mode: input.mode || "prompt",
-      configOptions,
-    });
-
-    if (!sent) {
-      unregisterSessionQueue(state.acpSessionId);
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
+      const handle = handleSchema.parse(await call(target.nodeId, request));
+      if (handle.sessionKey !== owner.sessionKey || handle.agentId !== owner.agentId)
+        throw new Error("Remote ACP node returned a different session owner");
+      return encodeHandle(handle, target.nodeId);
+    },
+    startTurn(input) {
+      return startTurn(input);
+    },
+    async *runTurn(input) {
+      const turn = startTurn(input);
+      try {
+        yield* turn.events;
+        const result = await turn.result;
+        if (result.status === "failed") yield { type: "error", ...result.error };
+        else yield { type: "done", status: result.status, stopReason: result.stopReason };
+      } finally {
+        await turn.closeStream();
       }
-      if (input.signal) {
-        input.signal.removeEventListener("abort", onAbort);
-      }
-      throw new AcpRuntimeError(
-        "ACP_TURN_FAILED",
-        `Failed to send acp.turn to node ${state.nodeId}.`,
+    },
+    async getCapabilities(input) {
+      if (!input.handle)
+        return { controls: ["session/set_mode", "session/set_config_option", "session/status"] };
+      const { nodeId, request } = handleRequest("capabilities", { handle: input.handle });
+      return capabilitiesSchema.parse(await call(nodeId, request));
+    },
+    async getStatus(input) {
+      const { nodeId, request } = handleRequest("status", { handle: input.handle });
+      return statusSchema.parse(await call(nodeId, request, input.signal));
+    },
+    async setMode(input) {
+      const { nodeId, request } = handleRequest("setMode", input);
+      await call(nodeId, request);
+    },
+    async setConfigOption(input) {
+      const { nodeId, request } = handleRequest("setConfigOption", input);
+      return configResultSchema.parse(await call(nodeId, request));
+    },
+    async cancel(input) {
+      const { nodeId, request } = handleRequest("cancel", input);
+      await call(nodeId, request);
+    },
+    async close(input) {
+      const { nodeId, request } = handleRequest("close", input);
+      await call(nodeId, request);
+    },
+    async prepareFreshSession(input) {
+      const owner = ownerOf(input);
+      const persisted = input.persistedHandle ? decodeHandle(input.persistedHandle) : undefined;
+      const nodeId = persisted?.nodeId ?? targetFor(owner).nodeId;
+      await call(
+        nodeId,
+        parseRequest({
+          op: "fresh",
+          owner,
+          input: { ...owner, persistedHandle: persisted?.handle },
+        }),
       );
+    },
+    async doctor() {
+      try {
+        const configured = [config.target, ...Object.values(config.targets)].filter(
+          (target): target is Target => !!target,
+        );
+        if (!configured.length)
+          throw new Error("Configure a stable paired nodeId in remote-acpx target or targets");
+        const connected = (await nodes.list({ connected: true })).nodes;
+        for (const target of configured) {
+          if (
+            !connected.some(
+              (node) => node.nodeId === target.nodeId && node.invocableCommands?.includes(COMMAND),
+            )
+          )
+            throw new Error(`Node ${target.nodeId} is unavailable or ${COMMAND} is not allowed`);
+        }
+        return {
+          ok: true,
+          message:
+            "Configured paired nodes advertise remote ACP; execution is checked at invocation time",
+        };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+  function startTurn(input: AcpRuntimeTurnInput): AcpRuntimeTurn {
+    const queue = new EventQueue();
+    const started = deferred<void>();
+    const local = new AbortController();
+    const signal = AbortSignal.any([local.signal, lifetime.signal]);
+    let dispatchAttempted = false;
+    let cancelRequested = false;
+    let channel: Channel | undefined;
+    let finished = false;
+    let cancellation: Promise<void> | undefined;
+    const elicitationIds = new Set<string>();
+    const onCallerAbort = () => {
+      void cancel({ reason: "Caller cancelled the remote ACP turn" });
+    };
+    input.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    const result = track(
+      (async () => {
+        let unsubscribe: (() => void) | undefined;
+        try {
+          if (input.signal?.aborted) return { status: "cancelled" as const };
+          const { nodeId, handle } = decodeHandle(input.handle);
+          const request = parseRequest({
+            op: "turn",
+            owner: ownerOf(handle),
+            input: {
+              handle,
+              text: input.text,
+              attachments: input.attachments,
+              mode: input.mode,
+              requestId: input.requestId,
+              elicitation: !!input.onElicitation,
+            },
+          });
+          channel = await open(nodeId, request, signal, () => {
+            dispatchAttempted = true;
+          });
+          unsubscribe = channel.onMessage((bytes) => {
+            const message = serverMessageSchema.parse(decodeMessage(bytes));
+            if (message.type === "started") {
+              started.resolve();
+              return;
+            }
+            if (message.type === "event") {
+              queue.push(message.event);
+              return;
+            }
+            if (message.type === "elicitation") {
+              if (elicitationIds.has(message.id))
+                throw new Error("Duplicate remote ACP elicitation request");
+              if (elicitationIds.size >= 32)
+                throw new Error("Too many pending remote ACP elicitation requests");
+              elicitationIds.add(message.id);
+              // Do not await UI input in the delivery callback: cancellation and later frames must flow.
+              void (async () => {
+                const response = input.onElicitation
+                  ? await input.onElicitation(message.request, { requestId: message.id, signal })
+                  : { action: "cancel" as const };
+                if (!finished && !signal.aborted)
+                  await channel?.send(
+                    encodeMessage({ type: "elicitation_response", id: message.id, response }),
+                  );
+              })()
+                .catch((error) => local.abort(error))
+                .finally(() => elicitationIds.delete(message.id));
+              return;
+            }
+            throw new Error("Unexpected remote ACP turn frame");
+          });
+          if (input.signal?.aborted)
+            void cancel({ reason: "Caller cancelled the remote ACP turn" });
+          const message = terminal(await channel.closed, nodeId);
+          if (message.type === "error") throw new Error(message.message);
+          if (message.type !== "result")
+            throw new Error(
+              "Remote ACP turn ended without a terminal result; check the session before retrying",
+            );
+          return message.result;
+        } catch (error) {
+          if (cancelRequested && !dispatchAttempted) return { status: "cancelled" as const };
+          return {
+            status: "failed" as const,
+            error: {
+              message: `${error instanceof Error ? error.message : String(error)}. The prompt may have started; inspect this session before retrying.`,
+              code: "ACP_TURN_FAILED",
+              retryable: false,
+            },
+          };
+        } finally {
+          finished = true;
+          input.signal?.removeEventListener("abort", onCallerAbort);
+          started.reject(new Error("Remote ACP turn ended before confirming prompt submission"));
+          queue.end();
+          unsubscribe?.();
+          channel?.close();
+          local.abort(new Error("Remote ACP turn settled"));
+        }
+      })(),
+    );
+    async function cancel(args?: { reason?: string }) {
+      if (finished) return;
+      cancelRequested = true;
+      cancellation ??= (async () => {
+        try {
+          if (channel)
+            await channel.send(
+              encodeMessage({ type: "cancel", reason: args?.reason } satisfies ClientMessage),
+            );
+          else
+            local.abort(
+              new Error(args?.reason ?? "Remote ACP cancelled before the channel was ready"),
+            );
+        } catch (error) {
+          if (!finished) local.abort(error);
+        }
+        await result;
+      })();
+      await cancellation;
     }
-
-    // Yield events from queue
-    try {
-      while (true) {
-        if (eventQueue.length > 0) {
-          const event = eventQueue.shift()!;
-          yield event;
-          if (event.type === "done" || event.type === "error") {
-            break;
-          }
-          continue;
-        }
-        if (closed) {
-          break;
-        }
-        // Wait for next event
-        const result = await new Promise<IteratorResult<AcpRuntimeEvent>>((resolve) => {
-          waiter = resolve;
-        });
-        if (result.done) {
-          break;
-        }
-        yield result.value;
-        if (result.value.type === "done" || result.value.type === "error") {
-          break;
-        }
-      }
-    } finally {
-      unregisterSessionQueue(state.acpSessionId);
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-      }
-      if (input.signal) {
-        input.signal.removeEventListener("abort", onAbort);
-      }
-    }
-  }
-
-  getCapabilities(): AcpRuntimeCapabilities {
     return {
-      controls: ["session/set_config_option"],
-      configOptionKeys: [...SUPPORTED_CONFIG_OPTION_KEYS],
+      requestId: input.requestId,
+      promptStarted: started.promise,
+      events: queue,
+      result,
+      cancel,
+      async closeStream(args) {
+        queue.end(true);
+        await cancel(args);
+      },
     };
   }
-
-  // Cache the config option for this session. Each acp.turn rebuilds the
-  // outbound payload from the cache, so the option takes effect on the next
-  // turn (no live ACP JSON-RPC channel exists between turns).
-  async setConfigOption(input: {
-    handle: AcpRuntimeHandle;
-    key: string;
-    value: string;
-  }): Promise<void> {
-    const state = decodeHandle(input.handle.runtimeSessionName);
-    if (!state) {
-      throw new AcpRuntimeError("ACP_TURN_FAILED", "Invalid remote-acpx handle.");
-    }
-    // Mirror ensureSession's `if (input.model)` guard: an empty-string model
-    // would otherwise be cached and emitted as `--model ""` on the next turn,
-    // which most CLIs interpret as a literal empty model id rather than unset.
-    if (input.key === "model" && !input.value) return;
-    const value = input.key === "model"
-      ? normalizeModelForAgent(state.agent, input.value)
-      : input.value;
-    setSessionOption(state.acpSessionId, input.key, value);
-  }
-
-  // Design Decision: cancel() silently returns on failure (invalid handle or send failure) rather than
-  // throwing. The remote session will self-terminate via idle timeout. Callers (abort/timeout handlers)
-  // are responsible for pushing error events and closing the queue before calling cancel().
-  async cancel(input: { handle: AcpRuntimeHandle; reason?: string }): Promise<void> {
-    const state = decodeHandle(input.handle.runtimeSessionName);
-    if (!state) {
-      log.warn("cancel: unable to decode handle, cannot send acp.kill");
-      return;
-    }
-    const sent = sendAcpEventToNode(state.nodeId, "acp.kill", {
-      acpSessionId: state.acpSessionId,
-    });
-    if (!sent) {
-      log.error(`cancel: failed to send acp.kill to node ${state.nodeId} for session ${state.acpSessionId}`);
-    }
-  }
-
-  async close(input: { handle: AcpRuntimeHandle; reason: string }): Promise<void> {
-    const state = decodeHandle(input.handle.runtimeSessionName);
-    if (state) {
-      clearSessionOptions(state.acpSessionId);
-    }
-    await this.cancel({ handle: input.handle, reason: input.reason });
-  }
+  return runtime;
 }

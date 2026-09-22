@@ -1,0 +1,6 @@
+{
+  "id": "remote-acpx-probe",
+  "name": "Remote ACP transport test probe",
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}
