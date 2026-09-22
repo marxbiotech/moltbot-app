@@ -3,15 +3,17 @@ import { parseConfig } from "./config.js";
 import {
   clientMessageSchema,
   parseRequest,
+  retainsWorker,
   type ElicitationResponse,
   type ServerMessage,
-  type WorkerStart,
 } from "./protocol.js";
-import { runWorker } from "./worker-runtime.js";
+import { createWorkerRuntime } from "./worker-runtime.js";
 
-const controller = new AbortController();
 const pending = new Map<string, (response: ElicitationResponse) => void>();
+let runtime: ReturnType<typeof createWorkerRuntime> | undefined;
+let controller: AbortController | undefined;
 let running = false;
+let stopping = false;
 
 function send(message: ServerMessage): Promise<void> {
   if (!process.connected || !process.send)
@@ -21,22 +23,37 @@ function send(message: ServerMessage): Promise<void> {
   );
 }
 
+async function shutdown(): Promise<void> {
+  stopping = true;
+  await runtime?.shutdown();
+  if (process.connected) process.disconnect();
+}
 function stop(): void {
-  controller.abort(new Error("ACP worker cancelled"));
+  stopping = true;
+  controller?.abort(new Error("ACP worker cancelled"));
   for (const resolve of pending.values()) resolve({ action: "cancel" });
   pending.clear();
+  if (!running) void shutdown().catch(() => process.exit(1));
 }
 
 async function start(value: Record<string, unknown>): Promise<void> {
   const config = parseConfig({ node: value.config }).node;
   if (!config) throw new Error("ACP worker requires node configuration");
   const request = parseRequest(value.request);
-  const message: WorkerStart = { type: "start", request, config };
-  await runWorker(message, {
-    signal: controller.signal,
+  const current = new AbortController();
+  controller = current;
+  runtime ??= createWorkerRuntime({ type: "start", request, config });
+  const terminal = await runtime.run(request, {
+    signal: current.signal,
     send,
-    onElicitation: async (request, context) => {
-      if (controller.signal.aborted || context.signal.aborted) return { action: "cancel" };
+    onElicitation: async (elicitation, context) => {
+      if (
+        request.op !== "turn" ||
+        !request.input.elicitation ||
+        current.signal.aborted ||
+        context.signal.aborted
+      )
+        return { action: "cancel" };
       const id = randomUUID();
       let cancel: () => void = () => {};
       const response = new Promise<ElicitationResponse>((resolve) => {
@@ -45,7 +62,7 @@ async function start(value: Record<string, unknown>): Promise<void> {
         context.signal.addEventListener("abort", cancel, { once: true });
       });
       try {
-        await send({ type: "elicitation", id, request });
+        await send({ type: "elicitation", id, request: elicitation });
         return await response;
       } finally {
         context.signal.removeEventListener("abort", cancel);
@@ -53,27 +70,34 @@ async function start(value: Record<string, unknown>): Promise<void> {
       }
     },
   });
+  const retain = retainsWorker(request) && terminal.type !== "error" && !stopping;
+  if (!retain) await runtime.shutdown();
+  // The response settles admission. No later request may inherit this controller.
+  running = false;
+  controller = undefined;
+  if (!retain) stopping = true;
+  await send(terminal);
+  if (!retain && process.connected) process.disconnect();
 }
 
 process.on("message", (value: unknown) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const message = value as Record<string, unknown>;
   if (message.type === "start") {
-    if (running) {
+    if (running || stopping) {
       stop();
       return;
     }
     running = true;
-    void start(message)
-      .catch(async (error: unknown) => {
-        await send({
-          type: "error",
-          message: error instanceof Error ? error.message : String(error),
-        }).catch(() => {});
-      })
-      .finally(() => {
-        if (process.connected) process.disconnect();
-      });
+    void start(message).catch(async (error: unknown) => {
+      stopping = true;
+      await runtime?.shutdown().catch(() => {});
+      await send({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      }).catch(() => {});
+      if (process.connected) process.disconnect();
+    });
     return;
   }
   const parsed = clientMessageSchema.safeParse(value);

@@ -26,8 +26,18 @@ process.on("message", (message) => {
       );
       return;
     }
-    process.send({ type: "value", value: { op: request.op, config: message.config } }, () =>
-      process.disconnect(),
+    process.send(
+      {
+        type: "value",
+        value: {
+          op: request.op,
+          config: message.config,
+          ...(request.input.agent === "report-pid" ? { pid: process.pid } : {}),
+        },
+      },
+      () => {
+        if (!["ensure", "setMode", "setConfigOption"].includes(request.op)) process.disconnect();
+      },
     );
   } else if (
     message.type === "cancel" &&

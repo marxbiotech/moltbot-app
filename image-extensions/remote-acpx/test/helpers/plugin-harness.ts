@@ -63,7 +63,10 @@ function mailbox() {
  * Only the host's paired-node inventory, approval decision and binary transport
  * are in-process stand-ins; this does not claim WebSocket/pairing coverage.
  */
-export async function createPluginHarness(t: TestContext) {
+export async function createPluginHarness(
+  t: TestContext,
+  options: { persistOnPrompt?: boolean } = {},
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), "remote-acpx-integration-"));
   const cwd = path.join(root, "node-workspace");
   const fixtureState = path.join(root, "fixture-state");
@@ -79,6 +82,7 @@ export async function createPluginHarness(t: TestContext) {
           process.execPath,
           fileURLToPath(new URL("../fixtures/agent.mjs", import.meta.url)),
           fixtureState,
+          ...(options.persistOnPrompt ? ["--persist-on-prompt"] : []),
         ],
       },
       permissionMode: "deny-all",

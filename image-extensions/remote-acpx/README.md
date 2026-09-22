@@ -94,8 +94,7 @@ than interpreted as executable commands. Gateway-supplied environment overrides
 are rejected. Node-local acpx state uses the upstream acpx file-store contract.
 
 Pair the node and explicitly approve its `remote-acpx.execute` command surface.
-Node-local execution policy must permit the command. Every operation that starts
-a worker requests a real OpenClaw **Allow once** approval, including session
+Node-local execution policy must permit the command. Every operation except cancellation requests a real OpenClaw **Allow once** approval, including session
 creation, turns, status, and controls. Cancellation of an admitted worker needs
 no new approval. `permissionMode` separately controls the harness's own ACP
 permission requests (`approve-reads`, `approve-all`, or `deny-all`); it does not
@@ -120,9 +119,15 @@ or service shutdown cancels owned processes; work does not continue detached.
 An interrupted prompt is never automatically replayed because it may already
 have changed files. Inspect the session/workspace before resubmitting it.
 
-Each operation uses an invocation-owned worker. Its launch is guarded immediately
-before spawn; acpx cleanup settles before the terminal result returns. A session
-has at most one writer, while status reads can run during a turn. Messages are
+Session setup retains its node-owned worker through initial controls and the next
+turn: some ACP harnesses, including Claude, do not persist a new session until
+its first prompt. Every invocation rechecks execution authority before either
+launching or reusing a worker. Turns join acpx cleanup and worker exit before
+returning their terminal result; close, reset, and node disconnect also release
+setup workers. Later turns resume the durable harness session in a new worker.
+An empty session lost with its node connection may require an explicit reset;
+no prompt is automatically replayed. A session has at most one writer, while
+status reads can run during a turn. Messages are
 limited to 8 MiB and pending event/delivery buffers to 16 MiB; overflow cancels
 work with an error. Upstream node heartbeats keep silent long turns alive.
 

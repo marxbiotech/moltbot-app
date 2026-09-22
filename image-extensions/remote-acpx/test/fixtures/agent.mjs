@@ -10,7 +10,13 @@ const pending = new Map();
 const clientRequests = new Map();
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const file = (id) => path.join(directory, `${id}.json`);
-const save = (id) => fs.writeFile(file(id), JSON.stringify(sessions.get(id)));
+const save = (id) => {
+  const state = sessions.get(id);
+  // Claude and other harnesses may keep a new, empty session only in memory.
+  if (process.argv.includes("--persist-on-prompt") && !state.history.length)
+    return Promise.resolve();
+  return fs.writeFile(file(id), JSON.stringify(state));
+};
 const describe = (state) => ({
   modes: {
     currentModeId: state.mode,

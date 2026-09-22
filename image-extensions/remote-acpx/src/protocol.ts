@@ -93,6 +93,10 @@ export const requestSchema = z.discriminatedUnion("op", [
   }),
 ]);
 export type Request = z.infer<typeof requestSchema>;
+/** A harness may not persist an empty session until its first prompt. */
+export function retainsWorker(request: Request): boolean {
+  return request.op === "ensure" || request.op === "setMode" || request.op === "setConfigOption";
+}
 export const envelopeSchema = z.strictObject({
   request: requestSchema,
   authorization: z.enum(["human-approved", "cancel-only"]),

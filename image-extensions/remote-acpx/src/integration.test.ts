@@ -69,6 +69,8 @@ test(
     assert.deepEqual(firstState.history, ["first prompt"]);
     assert.equal(firstState.cwd, host.cwd);
 
+    await host.disconnect();
+    host.setConnected(true);
     const restarted = await host.restart();
     const resumed = await restarted.ensureSession({ ...ensureInput, persistedHandle: handle });
     assert.equal(resumed.acpxRecordId, handle.acpxRecordId);
@@ -192,5 +194,50 @@ test(
     assert.deepEqual(JSON.parse(output.text), {
       answer: { action: "accept", content: { answer: "node response" } },
     });
+  },
+);
+
+test(
+  "a harness that persists only after its first prompt survives setup and resumes after node disconnect",
+  { timeout: 30_000 },
+  async (t) => {
+    const host = await createPluginHarness(t, { persistOnPrompt: true });
+    const handle = await host.runtime.ensureSession(ensureInput);
+    await host.runtime.setMode?.({ handle, mode: "review" });
+    const first = await collect(await start(host.runtime, handle, "first durable prompt"));
+    assert.equal(first.result.status, "completed", JSON.stringify(first.result));
+    assert.equal(JSON.parse(first.text).mode, "review");
+    await host.disconnect();
+    host.setConnected(true);
+    const second = await collect(await start(host.runtime, handle, "second prompt"));
+    assert.equal(second.result.status, "completed", JSON.stringify(second.result));
+    assert.deepEqual(JSON.parse(second.text).history, ["first durable prompt", "second prompt"]);
+    const calls = (await readFile(path.join(host.fixtureState, "requests.log"), "utf8"))
+      .trim()
+      .split("\n");
+    assert.equal(calls.filter((x) => x === "session/new").length, 1);
+    assert.equal(calls.filter((x) => x === "session/prompt").length, 2);
+    assert.ok(
+      calls.indexOf("session/load") > calls.indexOf("session/prompt"),
+      "an empty session must never be resumed before its first prompt",
+    );
+  },
+);
+
+test(
+  "a stale close cannot destroy a replacement session that has not saved its first prompt",
+  { timeout: 30_000 },
+  async (t) => {
+    const host = await createPluginHarness(t, { persistOnPrompt: true });
+    const old = await host.runtime.ensureSession(ensureInput);
+    await host.runtime.prepareFreshSession?.({ ...owner, persistedHandle: old });
+    const current = await host.runtime.ensureSession(ensureInput);
+    await assert.rejects(
+      host.runtime.close({ handle: old, reason: "stale" }),
+      /retained setup worker/,
+    );
+    const output = await collect(await start(host.runtime, current, "new generation"));
+    assert.equal(output.result.status, "completed", JSON.stringify(output.result));
+    assert.deepEqual(JSON.parse(output.text).history, ["new generation"]);
   },
 );

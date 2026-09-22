@@ -255,3 +255,28 @@ test(
     assert.equal(alive, false, "the child process must not survive its worker group");
   },
 );
+
+test(
+  "reusing session setup needs fresh authority, ignores a settled invocation abort, and drains on disconnect",
+  { timeout: 15_000 },
+  async () => {
+    const command = createRemoteAcpxNodeCommand(config, { workerUrl });
+    const request: Request = { ...ensure, input: { ...ensure.input, agent: "report-pid" } };
+    const first = harness(command, request);
+    const pid = JSON.parse(await first.result).value.pid;
+    assert.ok(Number.isSafeInteger(pid) && pid > 0);
+    first.controller.abort(new Error("settled invocation closed"));
+    const second = harness(command, request);
+    assert.equal(JSON.parse(await second.result).value.pid, pid);
+    assert.equal(second.checks(), 1);
+    const denied = harness(command, request, {
+      prepareExecAuthorization: () => () => {
+        throw new Error("authority closed");
+      },
+    });
+    await assert.rejects(denied.result, /authority closed/);
+    process.kill(pid, 0);
+    await command.onDisconnect?.();
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  },
+);
