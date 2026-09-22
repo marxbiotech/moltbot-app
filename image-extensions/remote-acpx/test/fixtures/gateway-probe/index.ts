@@ -10,7 +10,7 @@ export default {
   register(api: OpenClawPluginApi) {
     api.registerGatewayMethod(
       "remote-acpx-probe.invoke",
-      async ({ params, respond }) => {
+      async ({ params, respond, context }) => {
         try {
           const runtime = getAcpRuntimeBackend("remote-acpx")?.runtime;
           if (!runtime) throw new Error("Remote ACP backend was not registered by its service");
@@ -26,7 +26,9 @@ export default {
             const { getAcpSessionManager } = await import("openclaw/plugin-sdk/acp-runtime");
             const manager = getAcpSessionManager();
             const target = {
-              cfg: api.config,
+              // Match chat.send's current config so its manager can reuse the
+              // initialized handle after startup normalization.
+              cfg: context.getRuntimeConfig(),
               agentId: "main",
               sessionKey: "agent:main:acp:live-manager",
             };
