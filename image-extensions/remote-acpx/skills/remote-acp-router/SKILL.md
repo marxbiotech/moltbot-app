@@ -22,6 +22,17 @@ Invoke tools yourself; the user does not need to enter slash commands.
   project alias mapped to that harness. It must be registered in `agents.entries`
   and permitted by ACP policy; the allowlist alone does not register an agent.
   It is not automatically the old project's roster id.
+- Use the conversation's configured default executor unless the user names
+  one. Map the user's executor name to `agentId` case-insensitively:
+
+  | User says                        | `agentId` |
+  | -------------------------------- | --------- |
+  | claude, claude code, cc          | `claude`  |
+  | codex, cx                        | `codex`   |
+  | grok, grk                        | `grok`    |
+
+  Use a mapped id only if it is a configured, permitted executor. If the name
+  is unknown or its executor is not configured, ask the user; do not guess.
 - Pass the absolute node-local `cwd` on every `sessions_spawn` call, including
   follow-ups, closing passes, executor switches, and spawns made after a
   completion notice. Reuse the `cwd` of the conversation's configured routing,
