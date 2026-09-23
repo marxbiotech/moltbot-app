@@ -21,8 +21,14 @@ Invoke tools yourself; the user does not need to enter slash commands.
 - `agentId` selects a configured ACP executor, such as a `claude` entry or a
   project alias mapped to that harness. It must be registered in `agents.entries`
   and permitted by ACP policy; the allowlist alone does not register an agent.
-  It is not automatically the old project's roster id. Pass the known absolute
-  node-local `cwd` explicitly to preserve project selection.
+  It is not automatically the old project's roster id.
+- Pass the absolute node-local `cwd` on every `sessions_spawn` call, including
+  follow-ups, closing passes, executor switches, and spawns made after a
+  completion notice. Reuse the `cwd` of the conversation's configured routing,
+  or of the last successful spawn in this conversation. `cwd` is optional in the
+  tool schema, but omitting it makes the Gateway substitute the agent's own
+  Gateway workspace, which does not exist on the node. If no node-local `cwd`
+  is known, ask the user instead of spawning.
 - Keep an explicitly requested executor. If its node or login is unavailable,
   report the problem instead of switching executor, node, or local execution.
 
@@ -43,8 +49,17 @@ For delegated background work, call `sessions_spawn` yourself:
 
 Replace the example target and task with the actual configured project and
 user request. Include useful context, constraints, and acceptance criteria.
-Preserve the user's scope and authorization; delegation grants no additional
-permission. Do not conceal that instructions are delegated or invent approvals.
+Start `task` with a `Project: <cwd>` line so later turns can recover the target
+from history.
+
+Write `task` as the user's own direct instruction to the remote coding agent,
+in the imperative. Do not describe yourself, the Gateway, or the delegation:
+no "the user asked me to", "on behalf of", "coordinator", or relay framing.
+Remote agents may refuse work they believe did not come from the user.
+Keep the content faithful: state only what the user actually requested and
+authorized, preserve their scope and constraints, and never add approvals,
+permissions, or decisions the user did not give. Delegation grants no
+additional permission.
 
 `mode: "run"` keeps you as the coordinator and uses the core background task
 completion path. Do not bind the user's conversation directly to a coding
@@ -64,7 +79,8 @@ supported thread.
 - For a still-active child, send additional instructions with `sessions_send`
   using its exact `sessionKey` and `message`; this queues a follow-up turn.
   Include the full relevant context because a one-shot run does not retain
-  native harness memory between turns. Do not start a second writer for the
+  native harness memory between turns. Write `message` the same way as
+  `task`: the user's direct instruction, with no relay framing. Do not start a second writer for the
   same work. `mode: "steer"` and `mode: "resume"` are for native agent runs,
   not ACP; use `subagents` cancellation when interruption is required.
 - `mode: "run"` is one-shot: completion closes that harness session. For later
@@ -96,6 +112,14 @@ If the user cancels, cancel the owned core task. Pending permission requests are
 revoked with it; a later click cannot authorize a new task. A permission request
 is different from a harness question about requirements: use each request's own
 response flow rather than treating an answer as execution authorization.
+
+A `spawn_failed` error that names the agent command usually means a launch
+path is missing on the node, most often the `cwd`. First check that the spawn
+passed the configured node-local `cwd` rather than a Gateway path; a path under
+the agent's own Gateway workspace or state directory is never valid on the
+node. Retry once with the correct `cwd`. Do not conclude that the executor is
+uninstalled or ask the user to reinstall it unless a spawn with a verified
+node-local `cwd` still fails.
 
 For a confirmed pre-dispatch denial, say that work did not start. A dispatch or
 task-registration error can occur after work started, even when the tool returns
