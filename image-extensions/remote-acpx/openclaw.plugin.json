@@ -1,43 +1,102 @@
 {
   "id": "remote-acpx",
   "name": "Remote ACPX",
-  "description": "ACP runtime backend dispatching to a paired node via WebSocket, with LLM-invocable run_coder tool.",
-  "activation": { "onStartup": true },
-  "contracts": { "tools": ["run_coder", "coding_agents_list", "coding_agent_add", "coding_agent_remove", "coding_agent_sync"] },
+  "description": "ACP runtime backend for acpx on a paired node. Requires the v2026.9.5 fork with the public acp-backend SDK.",
+  "activation": {
+    "onStartup": true
+  },
   "skills": ["./skills"],
   "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
-      "nodeName": {
+      "executionApproval": {
         "type": "string",
-        "description": "Target node displayName"
+        "enum": ["always", "node-policy"],
+        "default": "always",
+        "description": "Use node-policy only for operator-authorized targets whose node-local exec policy permits full execution without prompting. Otherwise request approval for each operation."
       },
-      "agentCommand": {
-        "type": "string",
-        "description": "Command on the paired node that dispatches ACP agents. Defaults to 'acpx', which routes to per-variant CLIs (e.g. 'gemini --acp' for variant 'gemini').",
-        "default": "acpx"
+      "target": {
+        "type": "object",
+        "properties": {
+          "nodeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["nodeId"],
+        "additionalProperties": false
       },
-      "defaultAgent": {
-        "type": "string",
-        "description": "ACP agent variant used when run_coder is called without an explicit 'agent'. Recognized variants: 'claude', 'codex', 'gemini'. Other strings pass through to acpx unchanged. Selecting 'gemini' requires the paired node to have completed 'gemini auth login'.",
-        "default": "claude"
+      "targets": {
+        "default": {},
+        "type": "object",
+        "propertyNames": {
+          "type": "string",
+          "minLength": 1
+        },
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "nodeId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": ["nodeId"],
+          "additionalProperties": false
+        }
       },
-      "cwd": {
-        "type": "string"
-      },
-      "permissionMode": {
-        "type": "string",
-        "default": "approve-all"
-      },
-      "turnTimeoutMs": {
-        "type": "number",
-        "default": 300000
-      },
-      "maxOutputChars": {
-        "type": "number",
-        "description": "Max characters in the message section returned to the outer LLM.",
-        "default": 6000
+      "node": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": "string",
+            "minLength": 1
+          },
+          "stateDir": {
+            "type": "string",
+            "minLength": 1
+          },
+          "agents": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1
+            },
+            "additionalProperties": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "permissionMode": {
+            "default": "approve-reads",
+            "type": "string",
+            "enum": ["approve-all", "approve-reads", "deny-all"]
+          },
+          "nativeModes": {
+            "type": "object",
+            "propertyNames": { "type": "string", "minLength": 1 },
+            "additionalProperties": { "type": "string", "minLength": 1 },
+            "description": "Pin each OpenClaw owner agent to an advertised native mode (for example claude: auto, codex: agent). Verified via ACP mode config; unsupported modes fail closed. Use deny-all fallback with native permission callbacks."
+          }
+        },
+        "required": ["cwd", "stateDir"],
+        "additionalProperties": false
       }
-    }
+    },
+    "additionalProperties": false
   }
 }

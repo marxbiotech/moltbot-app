@@ -1,0 +1,10 @@
+{
+  "name": "remote-acpx-gateway-probe",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
