@@ -1,4 +1,4 @@
-FROM ghcr.io/marxbiotech/openclaw:mb2026.9.5-beta.4
+FROM ghcr.io/marxbiotech/openclaw:mb2026.9.5
 
 USER root
 
