@@ -25,11 +25,11 @@ Invoke tools yourself; the user does not need to enter slash commands.
 - Use the conversation's configured default executor unless the user names
   one. Map the user's executor name to `agentId` case-insensitively:
 
-  | User says                        | `agentId` |
-  | -------------------------------- | --------- |
-  | claude, claude code, cc          | `claude`  |
-  | codex, cx                        | `codex`   |
-  | grok, grk                        | `grok`    |
+  | User says                        | `agentId`    |
+  | -------------------------------- | ------------ |
+  | claude, claude code, cc          | `claude`     |
+  | codex, cx                        | `codex`      |
+  | grok, grk                        | `grok-build` |
 
   Use a mapped id only if it is a configured, permitted executor. If the name
   is unknown or its executor is not configured, ask the user; do not guess.
