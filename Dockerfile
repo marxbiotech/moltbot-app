@@ -49,3 +49,5 @@ RUN gh --version && command -v flock \
 # Exercise the installed host loader and production worker dependencies on each
 # target architecture before publishing an application image.
 RUN node /opt/moltbot/extensions/remote-acpx/test/image-smoke.mjs
+RUN node --test /opt/moltbot/extensions/reply-guard/test/policy.test.mjs
+RUN node /opt/moltbot/extensions/reply-guard/test/image-smoke.mjs
