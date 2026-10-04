@@ -61,7 +61,6 @@ export default {
   name: 'Gateway Projects',
   register(api) {
     api.registerTool(ctx => createTools(ctx), { names, optional: true });
-    // No registerCommand or plugin-global skills: environment GitOps mounts the
-    // non-user-invocable skill only in the assigned project's workspace.
+    // No registerCommand: native agent/channel policies control tool and skill access.
   },
 };

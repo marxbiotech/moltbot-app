@@ -13,7 +13,8 @@ test('registers optional agent tools, never a user command', () => {
   const manifest = JSON.parse(fs.readFileSync(new URL('./openclaw.plugin.json', import.meta.url)));
   assert.deepEqual(registrations[0][1], { names: manifest.contracts.tools, optional: true });
   for (const name of manifest.contracts.tools) assert.equal(manifest.toolMetadata[name].optional, true);
-  assert.equal(manifest.skills, undefined, 'project skill must not be discovered globally');
+  assert.deepEqual(manifest.skills, ['./skills']);
+  assert.match(fs.readFileSync(new URL('./skills/gateway_project/SKILL.md', import.meta.url), 'utf8'), /user-invocable: false/);
 });
 test('only assigned runtime context gets tools; revoked assignment fails before spawn', async () => {
   let declared = { capsule: p }; const calls = [];
