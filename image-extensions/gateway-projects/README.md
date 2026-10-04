@@ -2,7 +2,7 @@
 
 Gateway Projects 讓 agent 在 OpenClaw gateway 本機，以既有 GitHub 身分操作專案，並為不同開發任務建立可持續使用的 Git worktree。
 
-**它是 OpenClaw tool plugin，底層沿用隨 image 安裝的 CLI。** `openclaw.plugin.json` 宣告工具，`index.mjs` 透過 `api.registerTool()` 註冊 optional tool factory。環境層將此目錄加入 `plugins.load.paths`，只對指定專案 agent 額外開放工具。它沒有 `registerCommand()`，不提供使用者可直接呼叫的 slash command。
+**它是 OpenClaw tool plugin，底層沿用隨 image 安裝的 CLI。** `openclaw.plugin.json` 宣告工具，`index.mjs` 透過 `api.registerTool()` 註冊 optional tool factory。環境層將此目錄加入 `plugins.load.paths`，透過指定 channel 的 `tools.alsoAllow: ["gateway-projects"]` 開放工具。它沒有 `registerCommand()`，不提供使用者可直接呼叫的 slash command。
 
 ```text
 指定頻道 → OpenClaw agent tool → 非同步 CLI 子程序 → Git／GitHub
@@ -30,7 +30,7 @@ Gateway 上的 agent 若只具備 shell，還需要解決三件事才能直接�
 | `project.mjs` → `gateway-project` | 讀取專案設定、建立／重用任務 worktree，或帶入認證啟動 `gh` |
 | `credential.mjs` → `git-credential-gateway-project` | 實作 Git credential protocol，為符合設定的 GitHub HTTPS 路徑提供現有 PAT |
 | `config.mjs` | 載入 JSON 設定，檢查選定專案的基本欄位 |
-| 環境 repo `moltbot-env` | 維護 image tag/digest、SOPS Secret、專案宣告、明確的頻道綁定，以及 agent workspace／技能掛載 |
+| 環境 repo `moltbot-env` | 維護 image tag/digest、SOPS Secret、專案宣告、明確的頻道綁定，以及原生 channel tools policy／agent 與 channel skills filter |
 | PVC | 保存 repo、worktree 與任務狀態；不靠容器可寫層保存工作 |
 
 ### `prepare` 的流程
@@ -68,7 +68,7 @@ project ID + TASK_KEY
 
 Tool factory 只在非 sandbox 的指定 Slack 上下文提供工具：agent 必須是 `project-<id>`、workspace 必須符合宣告、account／channel 必須匹配，且有 session key。每次執行前會重讀 registry；撤回指定後，舊 tool instance 也會拒絕執行。沒有使用者 slash command，但使用者仍可自然語言請 agent 完成已授權的工作。
 
-配套 `gateway_project` skill 由環境 repo 掛載到專案 workspace，設定 `user-invocable: false`；不在 plugin manifest 宣告全域 skills，以免其他 agent 自動載入。`user-invocable` 控制的是 skill 的 slash 入口，不是禁止 agent 呼叫 tool 的開關。
+配套 `gateway_project` skill 與 plugin 一起版本化，透過 manifest 的 `skills` 宣告載入，設定 `user-invocable: false`。環境使用 `agents.defaults.skills` 明確列出既有技能，專案 agent 與指定 channel 的 `skills: ["gateway_project"]` 決定技能可見性；不需要 ConfigMap、init container 或 workspace 掛載。Plugin 載入與技能可見性是不同的設定：未設定 filter 的 agent 會看到所有符合條件的 plugin skills。`user-invocable` 控制的是 skill 的 slash 入口，不是禁止 agent 呼叫 tool 的開關。
 
 CLI 子程序透過 argv 執行，不經 shell interpolation。預設 120 秒逾時、stdout＋stderr 上限 1 MiB；取消、逾時或超量時終止 CLI process group，避免其 Git 子程序繼續持有鎖。上限／取消錯誤不回傳部分輸出；這些限制僅適用 plugin 呼叫，直接使用 CLI 不受此 wrapper 管理。Wrapper 遮蔽輸出中與現有 PAT 完全相同的文字，不是任意秘密內容的通用過濾器。
 
@@ -164,4 +164,4 @@ node --test image-extensions/gateway-projects/*.test.mjs
 
 Plugin 測試另外涵蓋未授權上下文不提供工具、撤回宣告後拒絕呼叫、argv 傳遞、錯誤狀態、PAT 遮蔽、取消、逾時及輸出上限。
 
-Docker build 會執行這些測試、gateway-projects host-loader／skill discovery smoke test 與既有 remote-acpx smoke test。發布沿用本 repo 的 image workflow；環境 repo 再固定 immutable tag 與 digest。更新 README 本身不需要改動已部署的執行行為。
+Docker build 會執行這些測試、gateway-projects host-loader／plugin skill discovery 與 agent allowlist smoke test 與既有 remote-acpx smoke test。發布沿用本 repo 的 image workflow；環境 repo 再固定 immutable tag 與 digest。更新 README 本身不需要改動已部署的執行行為。
