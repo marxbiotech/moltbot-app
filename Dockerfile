@@ -43,7 +43,8 @@ RUN set -eu; \
 USER node
 
 RUN gh --version && command -v flock \
-    && node --test /opt/moltbot/extensions/gateway-projects/project.test.mjs
+    && node --test /opt/moltbot/extensions/gateway-projects/*.test.mjs \
+    && node /opt/moltbot/extensions/gateway-projects/image-smoke.mjs
 
 # Exercise the installed host loader and production worker dependencies on each
 # target architecture before publishing an application image.
