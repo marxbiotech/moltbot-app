@@ -1,0 +1,7 @@
+{
+  "name": "@moltbot/gateway-projects",
+  "version": "2026.10.5",
+  "private": true,
+  "type": "module",
+  "openclaw": { "extensions": ["./index.mjs"] }
+}

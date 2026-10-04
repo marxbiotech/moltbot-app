@@ -1,0 +1,11 @@
+{
+  "id": "gateway-projects",
+  "name": "Gateway Projects",
+  "description": "Agent-only tools backed by the gateway project CLI, available in explicitly assigned project conversations.",
+  "contracts": { "tools": ["gateway_project_prepare", "gateway_project_github"] },
+  "toolMetadata": {
+    "gateway_project_prepare": { "optional": true },
+    "gateway_project_github": { "optional": true }
+  },
+  "configSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+}
