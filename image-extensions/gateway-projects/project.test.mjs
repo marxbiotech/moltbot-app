@@ -12,10 +12,11 @@ test('credentials are scoped; concurrent tasks and dirty continuations are prese
   try {
     const home = path.join(root, 'home'); fs.mkdirSync(home);
     const workspace = path.join(root, 'workspace');
-    const configPath = path.join(root, 'projects.json');
-    fs.writeFileSync(configPath, JSON.stringify({ capsule: { repository: 'example/capsule', workspace, authorName: 'Test', authorEmail: 'test@example.invalid' } }));
-    const env = { ...process.env, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GATEWAY_PROJECT_CONFIG: configPath, AGENT_GITHUB_PAT: 'test-only-sentinel' };
+    const configPath = path.join(root, 'openclaw.json');
+    fs.writeFileSync(configPath, JSON.stringify({ plugins: { entries: { 'gateway-projects': { enabled: true, config: { projects: { capsule: { repository: 'example/capsule', workspace, authorName: 'Test', authorEmail: 'test@example.invalid' } } } } } } }));
+    const env = { ...process.env, HOME: home, GIT_CONFIG_NOSYSTEM: '1', OPENCLAW_CONFIG_PATH: configPath, AGENT_GITHUB_PAT: 'test-only-sentinel' };
     delete env.GATEWAY_PROJECT_LOCKED;
+    delete env.GATEWAY_PROJECT_REGISTRY_JSON;
     const exec = (cmd, args, options = {}) => {
       const r = spawnSync(cmd, args, { encoding: 'utf8', env, ...options });
       assert.equal(r.status, 0, r.stderr); return r.stdout.trim();
