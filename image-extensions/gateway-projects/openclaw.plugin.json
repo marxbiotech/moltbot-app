@@ -18,8 +18,61 @@
   },
   "configSchema": {
     "type": "object",
-    "properties": {},
-    "additionalProperties": false
+    "additionalProperties": false,
+    "properties": {
+      "projects": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9-]{0,47}$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "workspace",
+            "authorName",
+            "authorEmail",
+            "slackAccountId",
+            "slackChannelIds"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+            },
+            "workspace": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "authorName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "authorEmail": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baseBranch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "slackAccountId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "slackChannelIds": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[CG][A-Z0-9]+$"
+              }
+            }
+          }
+        }
+      }
+    }
   },
   "skills": [
     "./skills"

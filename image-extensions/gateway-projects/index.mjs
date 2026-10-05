@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, projectConfig } from './config.mjs';
+import { registryFromConfig, projectConfig } from './config.mjs';
 import { runCli } from './process.mjs';
 
 const cli = fileURLToPath(new URL('./project.mjs', import.meta.url));
 const names = ['gateway_project_prepare', 'gateway_project_github'];
 const result = (details, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details, ...(isError ? { isError: true } : {}) });
 
-export function assignedProject(ctx, registry = loadConfig()) {
+export function assignedProject(ctx, registry = registryFromConfig(ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config)) {
   if (ctx.sandboxed || ctx.messageChannel !== 'slack' || !ctx.sessionKey || !ctx.nativeChannelId) return null;
   const matches = Object.entries(registry).filter(([id, p]) =>
     ctx.agentId === `project-${id}` && ctx.workspaceDir === p.workspace &&
@@ -17,14 +17,15 @@ export function assignedProject(ctx, registry = loadConfig()) {
   return matches.length === 1 ? matches[0][0] : null;
 }
 
-export function createTools(ctx, { run = runCli, registry = loadConfig, project = projectConfig } = {}) {
+export function createTools(ctx, { run = runCli, registry = () => registryFromConfig(ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config), project = projectConfig } = {}) {
   const id = assignedProject(ctx, registry());
   if (!id) return null;
   const execute = action => async (_callId, params, signal) => {
     try {
-      // Recheck the mounted declaration on execution, including after removal.
-      if (assignedProject(ctx, registry()) !== id) throw new Error('Project is no longer assigned to this conversation');
-      const p = project(id);
+      // Recheck the current host configuration, then pass one consistent snapshot.
+      const current = registry();
+      if (assignedProject(ctx, current) !== id) throw new Error('Project is no longer assigned to this conversation');
+      const p = project(id, current);
       let argv;
       if (action === 'prepare') {
         if (typeof params.task !== 'string' || !params.task.trim() || params.task.length > 128) throw new Error('task must be a stable nonempty task identifier (max 128 characters)');
@@ -33,7 +34,7 @@ export function createTools(ctx, { run = runCli, registry = loadConfig, project 
         if (!Array.isArray(params.args) || !params.args.length || params.args.length > 100 || params.args.some(a => typeof a !== 'string' || a.length > 16384 || a.includes('\0'))) throw new Error('args must contain 1–100 CLI argument strings');
         argv = [cli, 'gh', id, ...params.args];
       }
-      const output = await run(argv, { signal, cwd: fs.existsSync(p.workspace) ? p.workspace : os.tmpdir() });
+      const output = await run(argv, { signal, cwd: fs.existsSync(p.workspace) ? p.workspace : os.tmpdir(), env: { ...process.env, GATEWAY_PROJECT_REGISTRY_JSON: JSON.stringify({ [id]: p }) } });
       if (output.exitCode !== 0) return result(output, true);
       return result(action === 'prepare' ? JSON.parse(output.stdout) : output);
     } catch (error) {

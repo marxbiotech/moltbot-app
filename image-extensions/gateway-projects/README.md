@@ -66,7 +66,7 @@ project ID + TASK_KEY
 - `gateway_project_prepare({ task: "issue-42" })`：plugin 從可信上下文選擇專案，將 session key 與 task 組合後交給 CLI，回傳 worktree／branch 等結構化結果。Agent 不傳 project ID、channel ID 或 session key。
 - `gateway_project_github({ args: ["issue", "view", "42"] })`：以 argv array 呼叫 CLI，回傳 `exitCode`、`signal`、`stdout`、`stderr`。非零退出或 wrapper 失敗會標示 `isError`。
 
-Tool factory 只在非 sandbox 的指定 Slack 上下文提供工具：agent 必須是 `project-<id>`、workspace 必須符合宣告、account／channel 必須匹配，且有 session key。每次執行前會重讀 registry；撤回指定後，舊 tool instance 也會拒絕執行。沒有使用者 slash command，但使用者仍可自然語言請 agent 完成已授權的工作。
+Tool factory 只在非 sandbox 的指定 Slack 上下文提供工具：agent 必須是 `project-<id>`、workspace 必須符合宣告、account／channel 必須匹配，且有 session key。每次執行前會讀取 host 的最新 runtime config（若 host 未提供動態 getter，使用該次 tool factory 的設定快照）；host 更新設定後撤回指定，舊 tool instance 也會拒絕執行。沒有使用者 slash command，但使用者仍可自然語言請 agent 完成已授權的工作。
 
 配套 `gateway_project` skill 與 plugin 一起版本化，透過 manifest 的 `skills` 宣告載入，設定 `user-invocable: false`。環境使用 `agents.defaults.skills` 明確列出既有技能，專案 agent 與指定 channel 的 `skills: ["gateway_project"]` 決定技能可見性；不需要 ConfigMap、init container 或 workspace 掛載。Plugin 載入與技能可見性是不同的設定：未設定 filter 的 agent 會看到所有符合條件的 plugin skills。`user-invocable` 控制的是 skill 的 slash 入口，不是禁止 agent 呼叫 tool 的開關。
 
@@ -76,23 +76,38 @@ GitHub tool 的 cwd 是專案 workspace（尚未建立時使用暫存目錄）�
 
 ## 設定
 
-預設讀取 `/etc/moltbot/gateway-projects/projects.json`。測試或不同部署可用 `GATEWAY_PROJECT_CONFIG` 指定另一個 JSON 檔案。
+專案資料直接宣告在 OpenClaw 的 `plugins.entries.gateway-projects.config.projects`，由 plugin manifest 的 JSON schema 驗證；不需要額外 registry ConfigMap、volume 或 Helmfile 特例。
 
 ```json
 {
-  "example-project": {
-    "repository": "example-org/example-repo",
-    "slackAccountId": "default",
-    "slackChannelIds": ["C0123456789"],
-    "workspace": "/home/node/.openclaw/project-workspaces/example-project",
-    "baseBranch": "main",
-    "authorName": "developer-bot",
-    "authorEmail": "developer-bot@example.invalid"
+  "plugins": {
+    "entries": {
+      "gateway-projects": {
+        "enabled": true,
+        "config": {
+          "projects": {
+            "example-project": {
+              "repository": "example-org/example-repo",
+              "slackAccountId": "default",
+              "slackChannelIds": ["C0123456789"],
+              "workspace": "/home/node/.openclaw/project-workspaces/example-project",
+              "baseBranch": "main",
+              "authorName": "developer-bot",
+              "authorEmail": "developer-bot@example.invalid"
+            }
+          }
+        }
+      }
+    }
   }
 }
 ```
 
-`baseBranch` 未提供時使用 `main`。Project ID 必須符合 `^[a-z][a-z0-9-]{0,47}$`；workspace 必須是絕對路徑並由部署方配置在 PVC。設定目前只做基本欄位檢查，不是完整的 JSON schema 驗證；應由受信任的 GitOps 設定產生。
+Plugin 取得可信 runtime config，檢查指派後將選定專案透過 `GATEWAY_PROJECT_REGISTRY_JSON` 子程序環境交給 CLI；不修改 gateway 的 process.env，也不將 PAT 寫進設定。CLI 的 Git／flock 子程序繼承這份設定快照。
+
+在 worktree 直接操作 Git 或獨立執行 CLI 時，credential helper／CLI 讀取同一份 OpenClaw **JSON** 設定：優先 `OPENCLAW_CONFIG_PATH`，其次 `OPENCLAW_STATE_DIR/openclaw.json`，最後 `$HOME/.openclaw/openclaw.json`。GitOps 輸出為 JSON；此獨立 CLI fallback 不解析 JSON5／include。測試可使用子程序 registry JSON，正式設定不再依賴 `/etc/moltbot/gateway-projects/projects.json`。
+
+`baseBranch` 未提供時使用 `main`。Project ID 必須符合 `^[a-z][a-z0-9-]{0,47}$`；workspace 必須是絕對路徑並由部署方配置在 PVC。
 
 每個專案應使用不同 workspace；CLI 不會檢查兩個專案是否設定了相同目錄。GitHub 存取權必須事先授予 PAT 對應帳號，工具本身不建立或擴大權限。
 

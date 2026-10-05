@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import test from 'node:test';
 import plugin, { createTools } from './index.mjs';
+import { loadConfig } from './config.mjs';
 import { runCli } from './process.mjs';
 
 const p = { repository: 'example/capsule', workspace: os.tmpdir(), slackChannelIds: ['C123'] };
@@ -50,4 +51,19 @@ test('abort terminates the CLI process group', async () => {
   const promise = runCli(['-e', 'setInterval(()=>{},1000)'], { signal: controller.signal });
   setTimeout(() => controller.abort(), 30);
   await assert.rejects(promise, /cancelled/);
+});
+
+test('native config supplies a selected CLI snapshot and live revocation', async () => {
+  const project = { ...p, authorName: 'Test', authorEmail: 'test@example.invalid' };
+  let config = { plugins: { entries: { 'gateway-projects': { enabled: true, config: { projects: { capsule: project } } } } } };
+  const calls = [];
+  const tools = createTools({ ...context, getRuntimeConfig: () => config }, { run: async (_argv, options) => {
+    calls.push(options);
+    assert.deepEqual(loadConfig(options.env), { capsule: project });
+    return { exitCode: 0, stdout: '{}', stderr: '' };
+  } });
+  assert.equal((await tools[0].execute('1', { task: 'issue-42' })).isError, undefined);
+  config.plugins.entries['gateway-projects'].enabled = false;
+  assert.equal((await tools[0].execute('2', { task: 'issue-42' })).isError, true);
+  assert.equal(calls.length, 1);
 });
