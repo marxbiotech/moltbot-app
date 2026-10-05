@@ -7,7 +7,7 @@ import { loadConfig } from './config.mjs';
 import { runCli } from './process.mjs';
 
 const p = { repository: 'example/capsule', workspace: os.tmpdir(), slackChannelIds: ['C123'] };
-const context = { agentId: 'project-capsule', workspaceDir: p.workspace, messageChannel: 'slack', nativeChannelId: 'C123', sessionKey: 'agent:project-capsule:slack:channel:c123:thread:123.45' };
+const context = { agentId: 'main', workspaceDir: '/persona/workspace', messageChannel: 'slack', nativeChannelId: 'C123', sessionKey: 'agent:main:slack:channel:c123:thread:123.45' };
 test('registers optional agent tools, never a user command', () => {
   const registrations = [];
   plugin.register({ registerTool: (...args) => registrations.push(args), registerCommand: () => assert.fail('no slash command') });
@@ -20,7 +20,9 @@ test('registers optional agent tools, never a user command', () => {
 test('only assigned runtime context gets tools; revoked assignment fails before spawn', async () => {
   let declared = { capsule: p }; const calls = [];
   const deps = { registry: () => declared, project: () => p, run: async (argv, options) => { calls.push({ argv, options }); return { exitCode: 0, stdout: JSON.stringify({ worktree: '/task' }), stderr: '' }; } };
-  for (const change of [{ agentId: 'main' }, { nativeChannelId: 'COTHER' }, { messageChannel: 'telegram' }, { workspaceDir: '/other' }, { agentAccountId: 'other' }, { sessionKey: '' }, { sandboxed: true }]) assert.equal(createTools({ ...context, ...change }, deps), null);
+  for (const change of [{ nativeChannelId: 'COTHER' }, { messageChannel: 'telegram' }, { agentAccountId: 'other' }, { sessionKey: '' }, { sandboxed: true }]) assert.equal(createTools({ ...context, ...change }, deps), null);
+  assert(createTools({ ...context, agentId: 'another-persona-agent', workspaceDir: '/different' }, deps));
+  assert.equal(createTools(context, { ...deps, registry: () => ({ capsule: p, ambiguous: p }) }), null);
   const tools = createTools(context, deps);
   const abort = new AbortController();
   const prepared = await tools[0].execute('1', { task: 'issue-42' }, abort.signal);

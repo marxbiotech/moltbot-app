@@ -32,7 +32,8 @@ of this skill does not authorize unrelated publishing, merging or deployments.
 Never print credentials, invoke the credential helper to view its output, store a
 token in a remote URL, or use `/gh_apps token` in chat.
 
-Keep project notes in this dedicated workspace. Do not copy project context to the
-main agent's memory/workspace or send it to channels outside this project's explicit
-assignments. GitHub issues and PRs are the shared progress record across assigned
+Keep project files and task notes in the returned project worktree. The persona's
+main agent and memory are shared; do not proactively send project context to
+channels outside this project's explicit assignments. Use another persona when
+separate memory or identity is required. GitHub issues and PRs are the shared progress record across assigned
 channels. This workflow runs on the gateway in the returned task worktree.
