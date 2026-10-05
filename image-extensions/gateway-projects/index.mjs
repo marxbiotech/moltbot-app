@@ -11,7 +11,6 @@ const result = (details, isError = false) => ({ content: [{ type: 'text', text: 
 export function assignedProject(ctx, registry = registryFromConfig(ctx.getRuntimeConfig?.() ?? ctx.runtimeConfig ?? ctx.config)) {
   if (ctx.sandboxed || ctx.messageChannel !== 'slack' || !ctx.sessionKey || !ctx.nativeChannelId) return null;
   const matches = Object.entries(registry).filter(([id, p]) =>
-    ctx.agentId === `project-${id}` && ctx.workspaceDir === p.workspace &&
     (ctx.agentAccountId || 'default') === (p.slackAccountId || 'default') &&
     Array.isArray(p.slackChannelIds) && p.slackChannelIds.includes(ctx.nativeChannelId));
   return matches.length === 1 ? matches[0][0] : null;

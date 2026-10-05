@@ -25,7 +25,7 @@ Gateway 上的 agent 若只具備 shell，還需要解決三件事才能直接�
 | 元件 | 責任 |
 | --- | --- |
 | 本 repo 的 `Dockerfile` | 安裝固定版本、分架構 SHA256 驗證的官方 `gh`；建立 CLI symlink；執行 Linux 測試 |
-| `index.mjs`／`openclaw.plugin.json` | 註冊兩個 agent tools，以可信 agent、workspace、Slack account／channel 與 session 決定專案 |
+| `index.mjs`／`openclaw.plugin.json` | 註冊兩個 agent tools，以可信 Slack account／channel 與 session 決定專案 |
 | `process.mjs` | 非同步啟動 CLI、傳遞取消訊號、限制執行時間與輸出量、遮蔽現有 PAT |
 | `project.mjs` → `gateway-project` | 讀取專案設定、建立／重用任務 worktree，或帶入認證啟動 `gh` |
 | `credential.mjs` → `git-credential-gateway-project` | 實作 Git credential protocol，為符合設定的 GitHub HTTPS 路徑提供現有 PAT |
@@ -66,9 +66,9 @@ project ID + TASK_KEY
 - `gateway_project_prepare({ task: "issue-42" })`：plugin 從可信上下文選擇專案，將 session key 與 task 組合後交給 CLI，回傳 worktree／branch 等結構化結果。Agent 不傳 project ID、channel ID 或 session key。
 - `gateway_project_github({ args: ["issue", "view", "42"] })`：以 argv array 呼叫 CLI，回傳 `exitCode`、`signal`、`stdout`、`stderr`。非零退出或 wrapper 失敗會標示 `isError`。
 
-Tool factory 只在非 sandbox 的指定 Slack 上下文提供工具：agent 必須是 `project-<id>`、workspace 必須符合宣告、account／channel 必須匹配，且有 session key。每次執行前會讀取 host 的最新 runtime config（若 host 未提供動態 getter，使用該次 tool factory 的設定快照）；host 更新設定後撤回指定，舊 tool instance 也會拒絕執行。沒有使用者 slash command，但使用者仍可自然語言請 agent 完成已授權的工作。
+Tool factory 只在非 sandbox 的指定 Slack 上下文提供工具：account／channel 必須匹配且唯一選定一個專案，並有 session key；不要求專案專屬 agent 或讓 persona workspace 等於 Git workspace。每次執行前會讀取 host 的最新 runtime config（若 host 未提供動態 getter，使用該次 tool factory 的設定快照）；host 更新設定後撤回指定，舊 tool instance 也會拒絕執行。沒有使用者 slash command，但使用者仍可自然語言請 agent 完成已授權的工作。
 
-配套 `gateway_project` skill 與 plugin 一起版本化，透過 manifest 的 `skills` 宣告載入，設定 `user-invocable: false`。環境使用 `agents.defaults.skills` 明確列出既有技能，專案 agent 與指定 channel 的 `skills: ["gateway_project"]` 決定技能可見性；不需要 ConfigMap、init container 或 workspace 掛載。Plugin 載入與技能可見性是不同的設定：未設定 filter 的 agent 會看到所有符合條件的 plugin skills。`user-invocable` 控制的是 skill 的 slash 入口，不是禁止 agent 呼叫 tool 的開關。
+配套 `gateway_project` skill 與 plugin 一起版本化，透過 manifest 的 `skills` 宣告載入，設定 `user-invocable: false`。環境讓既有 main agent 的技能清單包含 `gateway_project`，指定 channel 使用 `skills: ["gateway_project"]`，兩層清單取交集。其他有 channel filter 的頻道可排除它；未設 filter 的 DM／介面可能看見通用 skill 說明，但工具仍只對 registry 指定的 Slack 頻道提供；不需要 ConfigMap、init container 或 workspace 掛載。Plugin 載入與技能可見性是不同的設定：未設定 filter 的 agent 會看到所有符合條件的 plugin skills。`user-invocable` 控制的是 skill 的 slash 入口，不是禁止 agent 呼叫 tool 的開關。
 
 CLI 子程序透過 argv 執行，不經 shell interpolation。預設 120 秒逾時、stdout＋stderr 上限 1 MiB；取消、逾時或超量時終止 CLI process group，避免其 Git 子程序繼續持有鎖。上限／取消錯誤不回傳部分輸出；這些限制僅適用 plugin 呼叫，直接使用 CLI 不受此 wrapper 管理。Wrapper 遮蔽輸出中與現有 PAT 完全相同的文字，不是任意秘密內容的通用過濾器。
 
@@ -151,7 +151,7 @@ Workspace 內容如下：
 
 ## 注意事項與操作界線
 
-- **不是安全沙箱。** Plugin 會驗證其工具呼叫的上下文；Agent／workspace 分離由環境層提供。直接呼叫 CLI 可繞過 plugin，CLI 不驗證 Slack channel ID，也不限制 shell 可讀取哪些檔案。同一 container user 仍可存取共同檔案系統及其環境憑證。
+- **不是安全沙箱。** Plugin 會驗證其工具呼叫的上下文；同一 persona 沿用 main agent，workspace／持久記憶共用；需要隔離時建立另一個 persona。直接呼叫 CLI 可繞過 plugin，CLI 不驗證 Slack channel ID，也不限制 shell 可讀取哪些檔案。同一 container user 仍可存取共同檔案系統及其環境憑證。
 - **`GH_REPO` 是預設目標，不是 allowlist。** `gh` 參數原樣轉交，`--repo` 或 `gh api` 可以指定其他目標。Helper 的路徑比對只控制這個 Git credential helper 何時回傳 token；最終權限界線是 GitHub 帳號／PAT 的權限。
 - 不手動執行 credential helper 來查看其 stdout，不使用 `gh auth token` 輸出憑證，不把 token 放在 remote URL、commit、PR、聊天或 debug log。父程序本來就持有 PAT；wrapper 並未將它從其他子程序的環境移除。
 - 同一 TASK_KEY 對應同一 worktree。它不提供同任務的多寫入者協調，呼叫端需要避免同時修改同一任務。
