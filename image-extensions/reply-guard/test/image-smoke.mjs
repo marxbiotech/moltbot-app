@@ -35,8 +35,7 @@ const load = entry => loadPlugins({
 });
 const hooksOf = registry => registry.typedHooks.filter(h => h.pluginId === plugin.id && h.hookName === 'reply_payload_sending');
 
-// The manifest schema (checked by the host's own validator, so the host's real
-// AJV rules apply) and parseConfig must agree on every shared config. A schema that
+// The manifest schema (checked by the host's own validator) and parseConfig must agree on every shared config. A schema that
 // accepts what parseConfig rejects would pass host validation and then fail open at
 // register(). Duplicate ids are the one thing JSON Schema cannot express.
 const { configSchema } = JSON.parse(fs.readFileSync(new URL('../openclaw.plugin.json', import.meta.url), 'utf8'));
@@ -51,7 +50,6 @@ for (const [config, , marker] of invalidConfigs) {
 console.log('PASS: host JSON Schema validator and parseConfig agree on every shared config');
 
 // An entry with no config block must still load, and needs no conversation-access grant.
-// (The loader may hand the plugin schema defaults; parseConfig(undefined) is a unit test.)
 const bare = await load({});
 assert.equal(bare.plugins.find(p => p.id === plugin.id)?.status, 'loaded');
 assert.equal(hooksOf(bare).length, 1);

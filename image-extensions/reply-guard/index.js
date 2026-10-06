@@ -3,7 +3,7 @@
 // first and the host then refuses to start) leaves no hook installed, and a
 // handler error is logged by the host and the reply is delivered. Suppression
 // must never take down unrelated replies, so the signal for a dead guard is the
-// host's `[plugins] reply-guard failed during register` (or `invalid config`) line.
+// host's `[plugins] reply-guard failed during register` line.
 const CONFIG_KEYS = ['debug', 'rules'];
 const RULE_KEYS = ['id', 'match'];
 const SECTIONS = ['context', 'event', 'payload'];
