@@ -1,0 +1,8 @@
+{
+  "name": "@moltbot/reply-guard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "openclaw": { "extensions": ["./index.js"] },
+  "scripts": { "test": "node --test test/policy.test.mjs" }
+}

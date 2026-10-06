@@ -1,0 +1,126 @@
+{
+  "id": "reply-guard",
+  "name": "Reply Guard",
+  "description": "Configurable outbound reply cancellation with routing-context diagnostics.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "Log rule decisions at info level. Context values are printed only for channelId, accountId, conversationId and sessionKey; every other context field is shown as [omitted]. Payload text and media are never logged."
+      },
+      "rules": {
+        "type": "array",
+        "default": [],
+        "description": "Cancellation rules (OR). Rule ids must be unique, which the plugin enforces at startup because JSON Schema cannot express it. A config that violates this schema makes the whole gateway config invalid, so the gateway refuses to start. A duplicate id, which only the plugin can detect, stops the plugin from loading and leaves every reply unguarded.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "match"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            },
+            "match": {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "context": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "propertyNames": {
+                    "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$"
+                  },
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": [
+                          "string",
+                          "number",
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": [
+                            "string",
+                            "number",
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                },
+                "event": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "kind": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "tool",
+                            "block",
+                            "final"
+                          ]
+                        },
+                        {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "enum": [
+                              "tool",
+                              "block",
+                              "final"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                "payload": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "isError": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "boolean"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
