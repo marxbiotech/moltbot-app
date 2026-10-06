@@ -1,9 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import plugin, { parseConfig } from '../index.js';
+import { invalidConfigs, rule, validConfigs } from './config-cases.mjs';
 const PREFIX = '[reply-guard] ';
-const rule = { id: 'line-errors', match: { context: { channelId: 'line' }, payload: { isError: true } } };
 function setup(config, logger) {
   let hook;
   const logs = [];
@@ -92,11 +91,18 @@ test('debug logs routing values only: other context fields are omitted by name',
   assert.equal(logs[1].decision, 'allow');
   assert.equal(logs[1].rules[0].conditions[0].matched, false);
 });
-test('a non-scalar value under a routing key is omitted too', () => {
-  const { hook, logs } = setup({ debug: true, rules: [] });
+test('a non-scalar value under a routing key is omitted too, including from rule conditions', () => {
+  const { hook, logs } = setup({ debug: true, rules: [{ id: 'chan', match: { context: { channelId: 'line' } } }] });
   hook({ kind: 'final', payload: {} }, { channelId: { nested: 'PRIVATE_NESTED' } });
   assert.equal(logs[0].context.channelId, '[omitted]');
+  assert.deepEqual([logs[0].rules[0].conditions[0].present, logs[0].rules[0].conditions[0].matched, 'actual' in logs[0].rules[0].conditions[0]], [true, false, false]);
   assert.equal(JSON.stringify(logs).includes('PRIVATE_'), false);
+});
+test('an unserializable routing value does not drop the debug line or change the decision', () => {
+  const { hook, logs } = setup({ debug: true, rules: [{ id: 'chan', match: { context: { channelId: 'line' } } }] });
+  assert.equal(hook({ kind: 'final', payload: {} }, { channelId: 10n }), undefined);
+  assert.equal(logs[0].context.channelId, '[omitted]');
+  assert.equal('actual' in logs[0].rules[0].conditions[0], false);
 });
 test('logger failure cannot bypass cancellation, and is reported through warn when possible', () => {
   const { hook } = setup({ debug: true, rules: [rule] }, { info() { throw new Error('disk full'); } });
@@ -114,73 +120,12 @@ test('register copies the config, so later mutation cannot change live rules', (
   config.rules[0].match.context.channelId = 'discord';
   assert.equal(hook({ kind: 'final', payload: {} }, { channelId: 'line' }).cancel, true);
 });
-// Each case names the rule or field it complains about, so an operator can find it.
-const invalidConfigs = [
-  [{ debug: 'true' }, /debug must be boolean/],
-  [{ rules: {} }, /rules must be an array/],
-  [{ rules: null }, /rules must be an array/],
-  [{ extra: 1 }, /unknown config key "extra"/],
-  [[], /config must be an object/],
-  [{ rules: [null] }, /rules\[0\] must be an object/],
-  [{ rules: [{ id: 'x', match: { context: { a: 1 } }, extra: 1 }] }, /rules\[0\] has unknown key "extra"/],
-  [{ rules: [{ id: 7, match: { context: { a: 1 } } }] }, /rules\[0\] needs an id/],
-  [{ rules: [{ id: 'bad id', match: { context: { a: 1 } } }] }, /rules\[0\] needs an id/],
-  [{ rules: [rule, rule] }, /duplicate rule id "line-errors" at rules\[1\]/],
-  [{ rules: [{ id: 'all', match: {} }] }, /rule "all" needs a non-empty match/],
-  [{ rules: [{ id: 'bad', match: { context: {} } }] }, /rule "bad" needs a non-empty match\.context/],
-  [{ rules: [{ id: 'bad', match: { other: { a: 1 } } }] }, /rule "bad" has unknown match section "other"/],
-  [{ rules: [{ id: 'bad', match: { payload: { text: 'private' } } }] }, /rule "bad" has unsupported match field payload\.text/],
-  [{ rules: [{ id: 'bad', match: { event: { text: 'x' } } }] }, /rule "bad" has unsupported match field event\.text/],
-  [{ rules: [{ id: 'bad', match: { context: { 'a.b': 1 } } }] }, /rule "bad" has unsupported match field context\.a\.b/],
-  [{ rules: [{ id: 'bad', match: { context: { channelId: [] } } }] }, /rule "bad" context\.channelId must be a scalar or a non-empty array/],
-  [{ rules: [{ id: 'bad', match: { context: { channelId: { a: 1 } } } }] }, /rule "bad" context\.channelId must be a scalar/],
-  [{ rules: [{ id: 'bad', match: { context: { n: Number.NaN } } }] }, /rule "bad" context\.n must be a scalar/],
-  [{ rules: [{ id: 'bad', match: { event: { kind: 'unknown' } } }] }, /rule "bad" event\.kind must be one of tool\/block\/final/],
-  [{ rules: [{ id: 'bad', match: { payload: { isError: 'true' } } }] }, /rule "bad" payload\.isError must be boolean/],
-];
 test('reject empty, duplicate, misspelled and malformed configs, naming the problem', () => {
   for (const [config, message] of invalidConfigs) assert.throws(() => parseConfig(config), message, JSON.stringify(config));
 });
 test('context keys are not restricted by name: only routing fields are ever echoed', () => {
   for (const key of ['token', 'text', 'senderId', 'tokenizerId']) assert.doesNotThrow(() => parseConfig({ rules: [{ id: 'k', match: { context: { [key]: 'x' } } }] }));
 });
-// The manifest schema must accept what parseConfig accepts (and vice versa), except
-// duplicate ids, which JSON Schema cannot express. Walk the schema by hand: no validator dependency.
-const schema = JSON.parse(fs.readFileSync(new URL('../openclaw.plugin.json', import.meta.url), 'utf8')).configSchema;
-function schemaAccepts(config) {
-  const types = value => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
-  const scalarOk = (value, allowed) => allowed.includes(types(value)) && (typeof value !== 'number' || Number.isFinite(value));
-  const valueOk = (value, spec) => spec.anyOf.some(option => (option.type === 'array'
-    ? Array.isArray(value) && value.length >= option.minItems && value.every(item => (option.items.enum ? option.items.enum.includes(item) : scalarOk(item, option.items.type)))
-    : option.enum ? option.enum.includes(value) : option.type === 'boolean' ? typeof value === 'boolean' : scalarOk(value, option.type)));
-  const isObject = value => types(value) === 'object';
-  if (!isObject(config) || Object.keys(config).some(k => !(k in schema.properties))) return false;
-  if (config.debug !== undefined && typeof config.debug !== 'boolean') return false;
-  if (config.rules === undefined) return true;
-  if (!Array.isArray(config.rules)) return false;
-  const rulesSchema = schema.properties.rules.items;
-  return config.rules.every(r => {
-    if (!isObject(r) || Object.keys(r).some(k => !(k in rulesSchema.properties)) || typeof r.id !== 'string' || !new RegExp(rulesSchema.properties.id.pattern).test(r.id) || !isObject(r.match) || !Object.keys(r.match).length) return false;
-    return Object.entries(r.match).every(([section, fields]) => {
-      const sectionSchema = rulesSchema.properties.match.properties[section];
-      if (!sectionSchema || !isObject(fields) || !Object.keys(fields).length) return false;
-      return Object.entries(fields).every(([key, value]) => {
-        if (section === 'context') return new RegExp(sectionSchema.propertyNames.pattern).test(key) && valueOk(value, sectionSchema.additionalProperties);
-        return key in sectionSchema.properties && valueOk(value, sectionSchema.properties[key]);
-      });
-    });
-  });
-}
-test('manifest schema and parseConfig agree on every shared valid/invalid config', () => {
-  const valid = [undefined, {}, { debug: false }, { debug: true, rules: [] }, { rules: [rule] },
-    { rules: [{ id: 'k', match: { context: { token: 'x', n: [1, 2], z: null }, event: { kind: ['tool', 'final'] }, payload: { isError: false } } }] }];
-  for (const config of valid) {
-    assert.doesNotThrow(() => parseConfig(config), JSON.stringify(config));
-    if (config === undefined) continue; // absent config never reaches the schema
-    assert.equal(schemaAccepts(config), true, JSON.stringify(config));
-  }
-  for (const [config] of invalidConfigs) {
-    if (config?.rules?.length === 2 && config.rules[0] === config.rules[1]) continue; // duplicate ids: runtime-only
-    assert.equal(schemaAccepts(config), false, JSON.stringify(config));
-  }
+test('every shared valid config parses', () => {
+  for (const config of [undefined, null, ...validConfigs]) assert.doesNotThrow(() => parseConfig(config), JSON.stringify(config));
 });

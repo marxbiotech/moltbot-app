@@ -10,7 +10,7 @@ Load `/opt/moltbot/extensions/reply-guard` in `plugins.load.paths`, then configu
 ```yaml
 plugins:
   # Only needed where an allowlist is already set (e.g. merlin): add reply-guard
-  # to it, or the plugin is silently never loaded.
+  # to it, or the plugin is not loaded (only a config warning says so).
   # allow: [..., reply-guard]
   entries:
     reply-guard:
@@ -42,27 +42,41 @@ can be matched, but debug output echoes only routing fields (below).
 The pinned host exposes routing fields such as `channelId`, `accountId`,
 `conversationId`, and `sessionKey`; fields may be absent on some delivery paths,
 and values can differ between paths: on the routed/durable path `conversationId`
-is the delivery target, on the inbound path it is the resolved inbound
-conversation. Capture IDs with debug on each path you need to match.
+is the delivery target, on the inbound path it is the raw inbound address
+(`OriginatingTo`, else `To`, else `From`), which may carry a channel prefix such
+as `line:group:...`. Capture IDs with debug on each path you need to match.
 Event matching supports `kind` (tool/block/final); payload matching supports only
 boolean `isError`.
 
-The config is validated at startup. These are rejected: unknown config keys,
-`rules` that is not an array, rules with an unknown key or a malformed or
-duplicate `id`, an empty `match` or empty match section, unknown sections,
-unsupported event/payload keys, and values that are not a scalar or a non-empty
-array of scalars. `rules: []` is valid and means allow everything. Rule IDs and
-expected values appear in debug output, so keep them descriptive, not sensitive.
+The config is checked twice. The manifest schema and the plugin's own parser
+reject: unknown config keys, a non-boolean `debug`, `rules` that is not an array,
+rules with an unknown key or a malformed `id`, an empty `match` or empty match
+section, unknown sections, unsupported event/payload keys, an `event.kind`
+outside tool/block/final, a non-boolean `isError`, and values that are not a
+scalar or a non-empty array of scalars. The parser alone also rejects duplicate
+rule ids, which JSON Schema cannot express. `rules: []` is valid and means allow
+everything. Rule IDs and expected values appear in debug output, so keep them
+descriptive, not sensitive.
 
-## Failure behaviour: fail open
+## Failure behaviour: two different outcomes
 
-An invalid config makes `register()` throw. The host logs one
-`[plugins] reply-guard failed during register` line, installs no hook and keeps
-running, so **every reply is delivered**. The manifest schema rejects most bad
-configs before that point, but rule-id uniqueness cannot be expressed in JSON
-Schema and is only enforced at startup. After changing rules, confirm the plugin
-reports `loaded` (`openclaw plugins list --json`). A handler error at runtime is
-also fail-open: the host logs it and the reply is delivered.
+- **A config the schema rejects stops the gateway.** Core config validation
+  checks each enabled plugin entry against the manifest schema, so one bad rule
+  makes the whole `openclaw.json` invalid and the gateway refuses to start (exit
+  78, which `--atomic` does not undo). Every channel goes down, not just this
+  plugin. Run `openclaw config validate --json` before deploying rule changes.
+- **A duplicate rule id fails open.** It passes the schema and then makes
+  `register()` throw. At startup the host logs
+  `[plugins] reply-guard failed during register from <source>: ...`, installs no
+  hook and keeps running, so **every reply is delivered**. To check after a
+  deploy, look for that line in the gateway log, or run
+  `openclaw plugins inspect reply-guard --runtime --json`, which loads the
+  runtime in the CLI process and re-runs `register()`. Do not rely on
+  `openclaw plugins list`: it reads persisted metadata and reports `loaded` even
+  when `register()` failed.
+
+A handler error while a reply is being processed is also fail-open: the host logs
+it and the reply is delivered.
 
 ## Discover context with debug
 

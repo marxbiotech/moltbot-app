@@ -17,7 +17,7 @@
       "rules": {
         "type": "array",
         "default": [],
-        "description": "Cancellation rules (OR). Rule ids must be unique, which the plugin enforces at startup because JSON Schema cannot express it. Invalid rules stop the plugin from loading, which leaves every reply unguarded.",
+        "description": "Cancellation rules (OR). Rule ids must be unique, which the plugin enforces at startup because JSON Schema cannot express it. A config that violates this schema makes the whole gateway config invalid, so the gateway refuses to start. A duplicate id, which only the plugin can detect, stops the plugin from loading and leaves every reply unguarded.",
         "items": {
           "type": "object",
           "additionalProperties": false,

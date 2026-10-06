@@ -1,7 +1,9 @@
-// Design Decision: this guard fails open. A register-time error (invalid config)
-// leaves no hook installed, and a handler error is logged by the host and the
-// reply is delivered. Suppression must never take down unrelated replies, so
-// the signal for a dead guard is the host's `[plugins] reply-guard failed` line.
+// Design Decision: this guard fails open. A register-time error (in practice a
+// duplicate rule id, because the manifest schema rejects every other bad config
+// first and the host then refuses to start) leaves no hook installed, and a
+// handler error is logged by the host and the reply is delivered. Suppression
+// must never take down unrelated replies, so the signal for a dead guard is the
+// host's `[plugins] reply-guard failed during register` (or `invalid config`) line.
 const CONFIG_KEYS = ['debug', 'rules'];
 const RULE_KEYS = ['id', 'match'];
 const SECTIONS = ['context', 'event', 'payload'];
@@ -64,8 +66,8 @@ function evaluate(rules, event, context) {
       const present = own(sources[section], key);
       const actual = present ? sources[section][key] : undefined;
       const matched = present && asList(expected).includes(actual);
-      // Rules may match any context field, but only routing fields are echoed back.
-      const visible = section !== 'context' || LOGGED_CONTEXT.includes(key);
+      // Rules may match any context field, but only scalar routing values are echoed back.
+      const visible = (section !== 'context' || LOGGED_CONTEXT.includes(key)) && scalar(actual);
       return { field: `${section}.${key}`, expected, present, ...(present && visible ? { actual } : {}), matched };
     }));
     return { id: rule.id, matched: conditions.every(c => c.matched), conditions };
@@ -92,7 +94,7 @@ export default {
       const decision = matched.length ? { cancel: true, reason: `reply-guard:${matched[0]}` } : undefined;
       if (config.debug) {
         try {
-          api.logger.info(`[reply-guard] ${JSON.stringify({ context: loggableContext(context), event: { kind: event.kind }, payload: own(event.payload, 'isError') ? { isError: event.payload.isError } : {}, rules: results, decision: decision ? 'cancel' : 'allow', matchedRules: matched })}`);
+          api.logger.info(`[reply-guard] ${JSON.stringify({ context: loggableContext(context), event: scalar(event.kind) ? { kind: event.kind } : {}, payload: own(event.payload, 'isError') && scalar(event.payload.isError) ? { isError: event.payload.isError } : {}, rules: results, decision: decision ? 'cancel' : 'allow', matchedRules: matched })}`);
         } catch (error) {
           // Diagnostics must never alter a delivery decision, but a debug run that
           // prints nothing is baffling, so say why (best effort).
