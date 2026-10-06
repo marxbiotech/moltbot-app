@@ -12,11 +12,12 @@
       "debug": {
         "type": "boolean",
         "default": false,
-        "description": "Log routing context and rule decisions at info level, excluding message contents and credentials."
+        "description": "Log rule decisions at info level. Context values are printed only for channelId, accountId, conversationId and sessionKey; every other context field is shown as [omitted]. Payload text and media are never logged."
       },
       "rules": {
         "type": "array",
         "default": [],
+        "description": "Cancellation rules (OR). Rule ids must be unique, which the plugin enforces at startup because JSON Schema cannot express it. Invalid rules stop the plugin from loading, which leaves every reply unguarded.",
         "items": {
           "type": "object",
           "additionalProperties": false,
