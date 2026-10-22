@@ -265,13 +265,14 @@ the temporary file. They never connect to a real messaging account.
 ## Images
 
 The application Dockerfile pins
-`ghcr.io/marxbiotech/openclaw:mb2026.9.5`, which contains the public ACP
+`ghcr.io/marxbiotech/openclaw:mb2026.9.5-1`, which contains the public ACP
 backend contract, configured node execution guard, and admitted-run native permission relay. The host package version is `2026.9.5`; the `mb` prefix
-identifies the fork's image release.
+identifies the fork's image release, and the `-1` suffix is a fork rebuild of the same
+host version (here: Node 24.22.1 base images for the October 2026 Node.js security release).
 
-Application image tags derive from that base version and the application commit:
-`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-<short-commit>`.
-Builds from `main` also move `:latest` and `:mb2026.9.5`; feature-branch builds
+Application image tags derive from that base tag and the application commit:
+`ghcr.io/marxbiotech/moltbot-app:mb2026.9.5-1-<short-commit>`.
+Builds from `main` also move `:latest` and `:mb2026.9.5-1`; feature-branch builds
 publish only the versioned tag. The image build runs
 `test/image-smoke.mjs` as the non-root runtime user to check actual plugin
 registration, agent skill discovery, and production worker imports on each target architecture.
