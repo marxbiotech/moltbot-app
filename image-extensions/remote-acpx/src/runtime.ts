@@ -395,7 +395,7 @@ export function createRemoteAcpxRuntime(
               mode: input.mode,
               requestId: input.requestId,
               elicitation: !!input.onElicitation,
-              permissions: !!input.onPermissionRequest,
+              permissions: !!input.onNativePermissionRequest,
             },
           });
           channel = await open(nodeId, request, signal, () => {
@@ -450,7 +450,7 @@ export function createRemoteAcpxRuntime(
                 let response: unknown;
                 try {
                   if (!interactionSignal.aborted)
-                    response = await input.onPermissionRequest?.(message.request, {
+                    response = await input.onNativePermissionRequest?.(message.request, {
                       signal: interactionSignal,
                     });
                 } catch {

@@ -1,7 +1,7 @@
 {
   "id": "remote-acpx",
   "name": "Remote ACPX",
-  "description": "ACP runtime backend for acpx on a paired node. Requires the v2026.9.5 fork with the public acp-backend SDK.",
+  "description": "ACP runtime backend for acpx on a paired node. Requires the v2026.10.6 fork with the public acp-backend SDK.",
   "activation": {
     "onStartup": true
   },

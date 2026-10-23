@@ -105,7 +105,7 @@ export const envelopeSchema = z.strictObject({
 export type ElicitationHandler = NonNullable<AcpRuntimeTurnInput["onElicitation"]>;
 export type ElicitationRequest = Parameters<ElicitationHandler>[0];
 export type ElicitationResponse = Awaited<ReturnType<ElicitationHandler>>;
-export type PermissionHandler = NonNullable<AcpRuntimeTurnInput["onPermissionRequest"]>;
+export type PermissionHandler = NonNullable<AcpRuntimeTurnInput["onNativePermissionRequest"]>;
 export type PermissionRequest = Parameters<PermissionHandler>[0];
 // Permanent grants are intentionally not part of the remote transport.
 export const permissionResponseSchema = z.strictObject({
