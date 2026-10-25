@@ -54,6 +54,8 @@ async function environment(name) {
     OPENCLAW_NO_RESPAWN: "1",
     OPENCLAW_SHELL: "exec",
     NO_COLOR: "1",
+    // Opt-in failure stacks from the child CLIs; nothing else is inherited.
+    ...(process.env.OPENCLAW_DEBUG ? { OPENCLAW_DEBUG: process.env.OPENCLAW_DEBUG } : {}),
   };
 }
 const gatewayEnv = await environment("gateway");
@@ -178,7 +180,13 @@ try {
     logging: { file: path.join(root, "gateway.log") },
     browser: { enabled: false },
     cron: { enabled: false },
-    ...(agentSpawn ? { tools: { profile: "full", exec: { security: "full", ask: "off" } } } : {}),
+    // The model peer asserts on direct tool schemas; 2026.10 defers them behind
+    // Tool Search unless it is turned off.
+    tools: {
+      toolSearch: false,
+      codeMode: false,
+      ...(agentSpawn ? { profile: "full", exec: { security: "full", ask: "off" } } : {}),
+    },
     acp: {
       enabled: true,
       backend: "remote-acpx",
@@ -241,6 +249,18 @@ try {
       path.join(nodeEnv.OPENCLAW_STATE_DIR, "exec-approvals.json"),
       JSON.stringify({ version: 1, defaults: { security: "full", ask: "off" } }),
     );
+    // 2026.10 keeps exec approvals in SQLite and refuses to run beside a legacy
+    // file; import it the way an upgraded paired node does.
+    const doctor = launch(
+      ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"],
+      nodeEnv,
+      "Node doctor",
+    );
+    const doctorExit = await new Promise((resolve, reject) => {
+      doctor.once("error", reject);
+      doctor.once("exit", resolve);
+    });
+    if (doctorExit !== 0) throw new Error(`Node doctor failed: ${logs.get(doctor)}`);
   }
   const gateway = launch(
     ["gateway", "run", "--port", String(port), "--bind", "loopback"],
@@ -304,7 +324,13 @@ try {
     if (list.paired?.some((entry) => entry.deviceId === nodeId)) return { alreadyPaired: true };
   });
   if (!device.alreadyPaired) {
-    await request("device.pair.approve", { requestId: device.requestId });
+    // 2026.10 may auto-approve a loopback node between the list and this call.
+    await request("device.pair.approve", { requestId: device.requestId }).catch(async (error) => {
+      const paired = (await request("device.pair.list")).paired?.some(
+        (entry) => entry.deviceId === nodeId,
+      );
+      if (!paired) throw error;
+    });
     await stop(node);
     node = launch(
       [
@@ -327,7 +353,8 @@ try {
     const pending = (await request("node.pair.list")).pending?.find(
       (entry) => entry.nodeId === nodeId,
     );
-    if (pending) await request("node.pair.approve", { requestId: pending.requestId });
+    if (pending)
+      await request("node.pair.approve", { requestId: pending.requestId }).catch(() => {});
     return (await request("node.list")).nodes?.find(
       (entry) =>
         entry.nodeId === nodeId &&

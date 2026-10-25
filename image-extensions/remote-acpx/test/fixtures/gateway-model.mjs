@@ -20,7 +20,9 @@ export async function startGatewayModel({ skillPath, cwd, task = "remote-agent-o
       let content;
       if (
         text.includes(task) &&
-        text.includes(task.startsWith("permission-write") ? '\\"answer\\"' : '\\"history\\"')
+        // 2026.10 hands the child result over as quoted conversation data, so the
+        // child's JSON keys arrive escaped one level deeper than in 2026.9.
+        new RegExp(String.raw`\\+"${task.startsWith("permission-write") ? "answer" : "history"}\\+"`).test(text)
       ) {
         state.completed = true;
         content = "REMOTE-ACP-PARENT-RESULT: remote agent completed the requested work.";

@@ -259,7 +259,7 @@ for (const outcome of [
       let asked = 0;
       const output = await collect(
         await start(host.runtime, handle, "permission-write", {
-          onPermissionRequest: async (request, { signal }) => {
+          onNativePermissionRequest: async (request, { signal }) => {
             asked++;
             assert.equal(signal.aborted, false);
             assert.equal(request.sessionId, handle.backendSessionId);
@@ -286,7 +286,7 @@ test(
     const handle = await host.runtime.ensureSession(ensureInput);
     const output = await collect(
       await start(host.runtime, handle, "permission-write-permanent-only", {
-        onPermissionRequest: async () => ({ outcome: "allow_once" }),
+        onNativePermissionRequest: async () => ({ outcome: "allow_once" }),
       }),
     );
     assert.equal(output.result.status, "completed", JSON.stringify(output.result));
@@ -309,7 +309,7 @@ for (const end of ["cancel", "disconnect"] as const) {
       let approve!: (value: { outcome: "allow_once" }) => void;
       let scope!: AbortSignal;
       const turn = await start(host.runtime, handle, "permission-write", {
-        onPermissionRequest: async (_request, { signal }) => {
+        onNativePermissionRequest: async (_request, { signal }) => {
           scope = signal;
           notify();
           return await new Promise((resolve) => {
@@ -327,7 +327,7 @@ for (const end of ["cancel", "disconnect"] as const) {
       if (end === "cancel") {
         const next = await collect(
           await start(host.runtime, handle, "permission-write", {
-            onPermissionRequest: async () => ({ outcome: "reject_once" }),
+            onNativePermissionRequest: async () => ({ outcome: "reject_once" }),
           }),
         );
         assert.equal(next.result.status, "completed", JSON.stringify(next.result));
