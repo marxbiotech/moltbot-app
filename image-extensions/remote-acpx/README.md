@@ -1,11 +1,11 @@
-# Remote ACPX for v2026.10.6
+# Remote ACPX for v2026.10.7
 
 This plugin lets a Gateway agent run ACP coding sessions through `acpx@0.19.4`
 on one explicitly selected paired node. The Gateway uses OpenClaw's ACP session,
 task, cancellation, and reply delivery owners. Workspaces, harness processes,
 credentials, and acpx records remain on the node.
 
-Use the v2026.10.6 fork containing `openclaw/plugin-sdk/acp-backend` on both hosts.
+Use the v2026.10.7 fork (any `>=2026.10.6-beta.1` build) containing `openclaw/plugin-sdk/acp-backend` on both hosts.
 Autonomous execution also requires the node host's
 `prepareConfiguredExecAuthorization()` capability.
 Native permission relay additionally requires the fork's optional
@@ -265,14 +265,14 @@ the temporary file. They never connect to a real messaging account.
 ## Images
 
 The application Dockerfile pins
-`ghcr.io/marxbiotech/openclaw:mb2026.10.6-beta.1`, which contains the public ACP
-backend contract, configured node execution guard, and admitted-run native permission relay. The host package version is `2026.10.6`; the `mb` prefix
+`ghcr.io/marxbiotech/openclaw:mb2026.10.7-beta.1`, which contains the public ACP
+backend contract, configured node execution guard, and admitted-run native permission relay. The host package version is `2026.10.7`; the `mb` prefix
 identifies the fork's image release, and the `-beta.N` suffix is a fork prerelease of the same
 host version.
 
 Application image tags derive from that base tag and the application commit:
-`ghcr.io/marxbiotech/moltbot-app:mb2026.10.6-beta.1-<short-commit>`.
-Builds from `main` also move `:latest` and `:mb2026.10.6-beta.1`; feature-branch builds
+`ghcr.io/marxbiotech/moltbot-app:mb2026.10.7-beta.1-<short-commit>`.
+Builds from `main` also move `:latest` and `:mb2026.10.7-beta.1`; feature-branch builds
 publish only the versioned tag. The image build runs
 `test/image-smoke.mjs` as the non-root runtime user to check actual plugin
 registration, agent skill discovery, and production worker imports on each target architecture.
