@@ -193,7 +193,9 @@ capability is disabled; its permission requests still use the same callback.
 
 The packaged `remote-acp-router` skill teaches the Gateway agent to call
 `sessions_spawn` itself with `runtime: "acp"`, an allowed harness, a node-local
-`cwd`, `mode: "run"`, and `streamTo: "parent"`. The user supplies the task in
+`cwd`, and `mode: "run"`, without `streamTo: "parent"` (on OpenClaw 2026.10 that
+relays every ~220-character fragment of child output as its own parent turn and
+reply). The user supplies the task in
 ordinary language. The core owns background completion delivery; the Gateway
 agent summarizes the result. Standard session tools carry follow-up instructions,
 and `subagents` lists, waits for, or cancels owned tasks. The user does not need

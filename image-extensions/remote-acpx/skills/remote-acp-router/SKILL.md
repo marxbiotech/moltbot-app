@@ -53,7 +53,6 @@ For delegated background work, call `sessions_spawn` yourself:
   "agentId": "claude",
   "cwd": "/absolute/project/on/node",
   "mode": "run",
-  "streamTo": "parent",
   "task": "Investigate the failing tests in this project, fix the cause, and report the changes and verification results."
 }
 ```
@@ -73,7 +72,9 @@ permissions, or decisions the user did not give. Delegation grants no
 additional permission.
 
 `mode: "run"` keeps you as the coordinator and uses the core background task
-completion path. Do not bind the user's conversation directly to a coding
+completion path. Do not add `streamTo: "parent"`: it turns every fragment of
+the child's output into a separate turn and reply in the user's conversation,
+while the completion path already returns the full result. Do not bind the user's conversation directly to a coding
 harness as a substitute for delegation. Use `mode: "session", thread: true`
 only when the user actually requests a persistent harness conversation in a
 supported thread.
