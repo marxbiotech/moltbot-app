@@ -49,7 +49,6 @@ export async function startGatewayModel({ skillPath, cwd, task = "remote-agent-o
             agentId: "fixture",
             cwd,
             mode: "run",
-            streamTo: "parent",
             task,
           },
         };
