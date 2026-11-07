@@ -2,6 +2,7 @@
 // isolated, temporary Gateway; it is not part of the production plugin entry.
 import { randomUUID } from "node:crypto";
 import { getAcpRuntimeBackend, type AcpRuntimeHandle } from "openclaw/plugin-sdk/acp-backend";
+import { getAcpSessionManager } from "openclaw/plugin-sdk/acp-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
 export default {
@@ -23,7 +24,6 @@ export default {
           if (input.op === "managerInitialize" || input.op === "managerStatus") {
             // Private core access is confined to this fixture. Real chat.send
             // admission below owns runTurn and its unforgeable execution context.
-            const { getAcpSessionManager } = await import("openclaw/plugin-sdk/acp-runtime");
             const manager = getAcpSessionManager();
             const target = {
               // Match chat.send's current config so its manager can reuse the
